@@ -404,6 +404,38 @@ The second one only became visible once the first was fixed, and the first only
 became visible once the profile was read at all. Worth remembering before
 concluding that a stack is simply slow.
 
+### What is left, and what will not help
+
+After both fixes the profile at 512x512 is 60 ms, and convolution is 82% of it
+— which is where the arithmetic is, so that is the right shape. GroupNorm is
+down to 11% from 34%, and the pointwise operations are 7%.
+
+The largest single item is the Winograd batched matmul, 41% across the three
+widths. It is **memory bound, and cooperative matrix would not help it**: at
+level 0 it moves 537 MB to do 8.6 GFLOP, an arithmetic intensity of 16 FLOP per
+byte against a ridge point of 64 on this device. It achieves 405 GB/s of a
+possible 960, so there is perhaps 2x of tuning in it, but no more.
+
+The reason is inherent to the algorithm. Winograd F(2,3) carries sixteen values
+for every four outputs, so the transform domain is **four times** the size of
+the activations. It trades arithmetic for bandwidth, which is the resource that
+is actually scarce here. It still wins — 59 ms against 84 with it disabled —
+but it wins less than it would on a compute-bound workload.
+
+So the two levers left both move less data rather than doing less arithmetic:
+
+- **`f16` activations.** Halves the traffic everywhere, and the profile is
+  bandwidth bound almost end to end. Three of meganeura's seventy-seven shaders
+  currently mention `f16`, and none of them are in the convolution path, so this
+  is a real project rather than a flag.
+- **Implicit-GEMM Winograd**, folding the transforms into the matmul so the
+  transform-domain tensors are never written to memory at all. That removes the
+  4x expansion from the bandwidth bill entirely, and is the larger rewrite.
+
+Neither is a small change, and the profile should be re-read after either,
+because both of the fixes above only became visible once the one before it was
+out of the way.
+
 ### Barriers are not the bottleneck, yet
 
 Meganeura groups dispatches by dependency level and puts a global barrier
