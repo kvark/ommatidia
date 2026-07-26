@@ -61,6 +61,7 @@ struct Args {
     batch: u32,
     tile: u32,
     learning_rate: f32,
+    learning_rate_final: Option<f32>,
     base_channels: u32,
     levels: usize,
     blocks_per_level: usize,
@@ -86,6 +87,7 @@ impl Default for Args {
             batch: 4,
             tile: 64,
             learning_rate: 2e-4,
+            learning_rate_final: None,
             base_channels: 64,
             levels: 3,
             blocks_per_level: 2,
@@ -115,6 +117,9 @@ usage: ommatidia-train [options]
   --batch N            crops per step  [4]
   --tile N             square crop size, in input pixels  [64]
   --lr F               Adam learning rate  [2e-4]
+  --lr-final F         decay the rate to this by the last step, on a cosine.
+                       Worth setting on a long run: a rate that was right for
+                       the first hour is too coarse to settle in the last one
   --base-channels N    channel width of the first level  [64]
   --levels N           U-Net levels  [3]
   --blocks N           residual blocks per level  [2]
@@ -137,8 +142,12 @@ usage: ommatidia-train [options]
 ";
 
 fn parse_args() -> Result<Args, String> {
+    parse_from(std::env::args().skip(1))
+}
+
+fn parse_from(argv: impl Iterator<Item = String>) -> Result<Args, String> {
     let mut args = Args::default();
-    let mut argv = std::env::args().skip(1);
+    let mut argv = argv;
     while let Some(flag) = argv.next() {
         let mut value = || argv.next().ok_or_else(|| format!("{flag} needs a value"));
         match flag.as_str() {
@@ -152,6 +161,10 @@ fn parse_args() -> Result<Args, String> {
             "--batch" => args.batch = value()?.parse().map_err(|e| format!("--batch: {e}"))?,
             "--tile" => args.tile = value()?.parse().map_err(|e| format!("--tile: {e}"))?,
             "--lr" => args.learning_rate = value()?.parse().map_err(|e| format!("--lr: {e}"))?,
+            "--lr-final" => {
+                args.learning_rate_final =
+                    Some(value()?.parse().map_err(|e| format!("--lr-final: {e}"))?)
+            }
             "--base-channels" => {
                 args.base_channels = value()?
                     .parse()
@@ -189,6 +202,14 @@ fn parse_args() -> Result<Args, String> {
             }
             "--eval-crops" => {
                 args.eval_crops = value()?.parse().map_err(|e| format!("--eval-crops: {e}"))?
+            }
+            "--eval-every" => {
+                args.eval_every = value()?.parse().map_err(|e| format!("--eval-every: {e}"))?
+            }
+            "--checkpoint-every" => {
+                args.checkpoint_every = value()?
+                    .parse()
+                    .map_err(|e| format!("--checkpoint-every: {e}"))?
             }
             other => return Err(format!("unknown option {other:?}\n\n{USAGE}")),
         }
@@ -350,6 +371,16 @@ fn main() {
     let training_started = std::time::Instant::now();
 
     for step in 0..args.steps {
+        if let Some(final_rate) = args.learning_rate_final {
+            // Cosine from the initial rate down to the final one. Nothing
+            // exotic; the point is only that the last hour of a long run
+            // settles rather than keeps bouncing at the rate that suited the
+            // first one.
+            let progress = step as f32 / (args.steps.max(2) - 1) as f32;
+            let cosine = 0.5 * (1.0 + (std::f32::consts::PI * progress).cos());
+            session.set_learning_rate(final_rate + (args.learning_rate - final_rate) * cosine);
+        }
+
         let batch = batcher.next().expect("cannot read a batch");
         session.set_input("cond", &batch.cond);
         session.set_input("target", &batch.target);
@@ -569,5 +600,64 @@ impl Evaluator {
             started.elapsed().as_secs_f32()
         );
         Some(gain as f32)
+    }
+}
+
+#[cfg(test)]
+mod cli_tests {
+    use super::*;
+
+    fn parse(words: &[&str]) -> Result<Args, String> {
+        parse_from(words.iter().map(|w| w.to_string()))
+    }
+
+    /// Every flag the usage text advertises has to actually be accepted.
+    ///
+    /// Adding the field, the default, and the usage line while forgetting the
+    /// match arm compiles perfectly and fails only when someone passes the
+    /// flag — which, on a run meant to last hours, is discovered late.
+    #[test]
+    fn every_documented_flag_is_parsed() {
+        // A value that parses as a number, a float, and a path alike.
+        const VALUE: &str = "1";
+        for line in USAGE.lines() {
+            let trimmed = line.trim_start();
+            let Some(rest) = trimmed.strip_prefix("--") else {
+                continue;
+            };
+            let flag = format!("--{}", rest.split_whitespace().next().unwrap());
+            if flag == "--help" {
+                continue; // exits the process
+            }
+            // Flags whose value is constrained beyond "parses as a number".
+            let words: Vec<&str> = match flag.as_str() {
+                "--objective" => vec!["--objective", "direct"],
+                "--color-only" => vec!["--color-only"],
+                "--val-fraction" => vec!["--val-fraction", "0.1"],
+                _ => vec![&flag, VALUE],
+            };
+            let result = parse(&words);
+            assert!(
+                result.is_ok(),
+                "{flag} is documented but not accepted: {:?}",
+                result.err()
+            );
+        }
+    }
+
+    #[test]
+    fn the_periodic_flags_reach_the_fields() {
+        let args = parse(&["--eval-every", "250", "--checkpoint-every", "500"]).unwrap();
+        assert_eq!(args.eval_every, 250);
+        assert_eq!(args.checkpoint_every, 500);
+        // And stay off unless asked for, so a short run pays nothing.
+        let plain = parse(&[]).unwrap();
+        assert_eq!(plain.eval_every, 0);
+        assert_eq!(plain.checkpoint_every, 0);
+    }
+
+    #[test]
+    fn an_unknown_flag_is_rejected() {
+        assert!(parse(&["--not-a-flag", "1"]).is_err());
     }
 }
