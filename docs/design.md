@@ -341,9 +341,59 @@ The trainer scores a held-out split periodically rather than only at the end,
 which is what makes a multi-hour run steerable, and checkpoints on the same
 cadence so a crash costs one interval rather than everything.
 
+## The latency problem
+
+The premise is a real-time budget, and the current network is nowhere near one.
+Measured on a quiet 7900 XT, the trained direct model takes 353 ms to produce a
+2048x2048 frame, which is 175 ms at 1080p against a budget of one or two.
+
+Where it goes, from `gpu_profile`'s per-pass timings at 512x512 input:
+
+| | share |
+|---|---|
+| convolution (Winograd transforms, batched matmuls, GEMM) | ~62% |
+| GroupNorm + SiLU | ~34% |
+| everything else | ~4% |
+
+The passes account for the wall clock, so this is not launch overhead — the
+device is genuinely busy. Two numbers explain the rest.
+
+**The network is far too large.** The backbone is about 539 GFLOP per frame at
+512x512 input, so roughly 1067 GFLOP for a 1080p output. Two milliseconds of
+that would need 533 TFLOPS, which is nine times what the hardware can do at
+peak. Even a perfect implementation lands at 17 ms. A DLSS-class network is
+single-digit GFLOP; this one is two to three orders of magnitude above that.
+The architecture has to change, and no amount of kernel work substitutes.
+
+**The stack is at 10% of peak, and has a floor.** 2157 GFLOP in 353 ms is 6.1
+TFLOPS effective against roughly 61 available. Worse, shrinking the model stops
+helping: cutting it from 6.5M parameters to 16k, which is about 75x fewer
+FLOPs, bought only 8x in time. Below a few hundred thousand parameters the cost
+stops tracking arithmetic and settles on a floor — around 18 ms at 512x512
+input on a quiet device, so about 35 ms at 1080p, for a 16k-parameter network.
+That floor is per-dispatch and per-activation overhead, not arithmetic.
+
+So both have to move, and in that order. Shrinking the architecture is worth
+roughly 200x and is ours to do; it gets the cost down to where the floor
+becomes the binding constraint. Lifting the floor is a kernel-level
+conversation about fusing normalisation into convolution and about `f16`
+activations, and it is worth roughly another 17x. Neither alone reaches two
+milliseconds.
+
+Two things that turned out **not** to be the problem, recorded so they are not
+re-investigated: Winograd, which is break-even here — disabling it via
+`MEGANEURA_NO_WINOGRAD` halves the dispatch count from 145 to 73 and changes
+the frame time by less than the measurement noise — and launch overhead, which
+the pass timings rule out.
+
 ## Roadmap
 
 **Now.** Static frame, no history. Everything above.
+
+**A network that can actually run.** Ahead of everything below, for the reason
+above: quality work on something that takes 175 ms per frame is quality work on
+something nobody can ship. Fewer channels at full resolution is the first
+lever, since that is where both the arithmetic and the bandwidth are.
 
 **Temporal context.** The largest quality win available, and the reason DLSS
 works as well as it does: motion vectors plus a history buffer turn upscaling
