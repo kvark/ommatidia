@@ -77,6 +77,7 @@ struct Args {
     eval_crops: usize,
     eval_every: usize,
     checkpoint_every: usize,
+    eval_only: bool,
 }
 
 impl Default for Args {
@@ -104,6 +105,7 @@ impl Default for Args {
             eval_crops: 64,
             eval_every: 0,
             checkpoint_every: 0,
+            eval_only: false,
         }
     }
 }
@@ -138,6 +140,9 @@ usage: ommatidia-train [options]
                        the end  [0]
   --checkpoint-every N save the checkpoint every N steps as well as at the
                        end, so a long run survives a crash  [0]
+  --eval-only          load the checkpoint at --out and score it without
+                       training, so a finished run can be re-examined under a
+                       different --sampler-steps
   --color-only         condition on colour alone, ignoring the dataset's
                        G-buffer planes; the other half of that ablation is
                        simply leaving this off
@@ -201,6 +206,7 @@ fn parse_from(argv: impl Iterator<Item = String>) -> Result<Args, String> {
             }
             "--eval-out" => args.eval_out = Some(PathBuf::from(value()?)),
             "--color-only" => args.color_only = true,
+            "--eval-only" => args.eval_only = true,
             "--val-fraction" => {
                 args.val_fraction = value()?
                     .parse()
@@ -314,6 +320,47 @@ fn main() {
     );
 
     let schedule = Schedule::cosine(args.timesteps);
+
+    if args.eval_only {
+        // The configuration the checkpoint carries wins over anything rebuilt
+        // from the flags, because the weights only mean anything in the graph
+        // they were fitted in. What stays under the caller's control is
+        // everything outside that graph — the sampler budget above all, which
+        // is the reason to re-score a finished run at all.
+        let (stored, paths) = match checkpoint::load_config(&args.out) {
+            Ok(pair) => pair,
+            Err(e) => {
+                eprintln!("cannot read the checkpoint at {}: {e}", args.out.display());
+                std::process::exit(1);
+            }
+        };
+        let mut evaluator = Evaluator::new(&stored);
+        if let Err(e) = evaluator.session.load_checkpoint(&paths.weights) {
+            eprintln!("cannot load {}: {e}", paths.weights.display());
+            std::process::exit(1);
+        }
+        let mut batcher = batcher::Batcher::new(
+            reader,
+            stored,
+            schedule.clone(),
+            split.training(),
+            args.seed,
+        );
+        println!(
+            "scoring {} with {} sampler steps",
+            paths.weights.display(),
+            args.sampler_steps
+        );
+        evaluator.score(
+            &mut batcher,
+            split,
+            &args,
+            &schedule,
+            args.eval_out.as_deref(),
+        );
+        return;
+    }
+
     let model = model::build(&config, true).expect("validated above");
     println!(
         "{} samples, {}x{} -> {}x{}, {} conditioning channels, {} output channels",
@@ -377,7 +424,7 @@ fn main() {
     // compile and a checkpoint round trip.
     print!("building the evaluation session... ");
     let _ = std::io::stdout().flush();
-    let mut evaluator = Evaluator::new(&config, &model);
+    let mut evaluator = Evaluator::new(&config);
     println!("done");
 
     let mut recent = Vec::new();
@@ -486,14 +533,20 @@ struct Evaluator {
 }
 
 impl Evaluator {
-    fn new(config: &ModelConfig, model: &model::Model) -> Self {
+    /// Build the inference session for `config`.
+    ///
+    /// The parameter set is taken from the inference model rather than from a
+    /// training one, because they are the same: only the batch differs between
+    /// the two graphs, and no parameter's shape depends on it. That is also
+    /// what lets a checkpoint be scored with no training session in sight.
+    fn new(config: &ModelConfig) -> Self {
         let mut eval_config = config.clone();
         eval_config.batch = 1;
         let eval_model =
-            model::build(&eval_config, false).expect("the training config already validated");
+            model::build(&eval_config, false).expect("the caller validated this config");
         let session = meganeura::build_inference_session(&eval_model.graph);
-        let names = model.params.iter().map(|p| p.name.clone()).collect();
-        let widest = model.params.iter().map(|p| p.len).max().unwrap_or(0);
+        let names = eval_model.params.iter().map(|p| p.name.clone()).collect();
+        let widest = eval_model.params.iter().map(|p| p.len).max().unwrap_or(0);
         Self {
             session,
             config: eval_config,
@@ -645,17 +698,18 @@ mod cli_tests {
                 continue; // exits the process
             }
             // Flags whose value is constrained beyond "parses as a number".
-            let words: Vec<&str> = match flag.as_str() {
-                "--objective" => vec!["--objective", "direct"],
-                "--color-only" => vec!["--color-only"],
-                "--val-fraction" => vec!["--val-fraction", "0.1"],
-                _ => vec![&flag, VALUE],
+            // Arity is not listed: a flag is tried with a value and then
+            // without, so a new switch needs no entry here to stay covered.
+            let candidates: Vec<Vec<&str>> = match flag.as_str() {
+                "--objective" => vec![vec!["--objective", "direct"]],
+                "--val-fraction" => vec![vec!["--val-fraction", "0.1"]],
+                _ => vec![vec![&flag, VALUE], vec![&flag]],
             };
-            let result = parse(&words);
+            let accepted = candidates.iter().any(|words| parse(words).is_ok());
             assert!(
-                result.is_ok(),
-                "{flag} is documented but not accepted: {:?}",
-                result.err()
+                accepted,
+                "{flag} is documented but not accepted, with a value or without: {:?}",
+                parse(&candidates[0]).err()
             );
         }
     }
