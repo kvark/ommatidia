@@ -387,6 +387,12 @@ fn main() {
         config.objective,
         config.levels()
     );
+    // What this shape would cost at a real output extent, so a configuration
+    // can be ruled out before it is trained rather than after.
+    println!(
+        "convolution cost: {:.1} GFLOP per 1080p frame",
+        config.flops(1920 * 1080)
+    );
 
     print!("compiling... ");
     use std::io::Write as _;

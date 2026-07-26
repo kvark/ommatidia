@@ -139,6 +139,73 @@ impl ModelConfig {
         self.base_channels * self.level_multipliers[level]
     }
 
+    /// Multiply-accumulates the convolutions cost for one frame, in GFLOP.
+    ///
+    /// Counts the convolutions only, which is where essentially all the
+    /// arithmetic is — the normalisations and activations are bandwidth, not
+    /// flops, and are counted nowhere here even though they take a third of
+    /// the measured frame. So this is a floor on the cost, useful for ruling a
+    /// configuration out rather than for predicting its runtime.
+    ///
+    /// `output_pixels` lets a configuration compiled for one tile be costed at
+    /// the extent it would actually run at.
+    pub fn flops(&self, output_pixels: usize) -> f64 {
+        // The network runs at input resolution; the tile it was compiled for
+        // is irrelevant to the cost per output pixel.
+        let input_pixels = output_pixels as f64 / (self.scale * self.scale) as f64;
+        let mut total = 0.0;
+        // Two multiply-accumulates per tap, k*k taps.
+        let conv = |pixels: f64, cin: u32, cout: u32, k: u32| {
+            2.0 * pixels * cin as f64 * cout as f64 * (k * k) as f64
+        };
+
+        let mut pixels = input_pixels;
+        let mut channels = self.base_channels;
+        total += conv(pixels, self.in_channels(), self.base_channels, 3); // stem
+
+        // Encoder, then the downsample that follows every level but the last.
+        let levels = self.levels();
+        let mut skips = Vec::new();
+        for level in 0..levels {
+            let width = self.channels_at(level);
+            for _ in 0..self.blocks_per_level {
+                total += conv(pixels, channels, width, 3) + conv(pixels, width, width, 3);
+                if channels != width {
+                    total += conv(pixels, channels, width, 1); // residual projection
+                }
+                channels = width;
+            }
+            if level + 1 < levels {
+                skips.push((pixels, channels));
+                pixels /= 4.0; // half in each axis
+                total += conv(pixels, width, width, 3); // strided downsample
+            }
+        }
+
+        // Middle: two blocks at the narrowest extent.
+        for _ in 0..2 {
+            total += conv(pixels, channels, channels, 3) * 2.0;
+        }
+
+        // Decoder: upsample, concatenate the skip, then narrow back down.
+        for level in (0..levels.saturating_sub(1)).rev() {
+            let (skip_pixels, skip_channels) = skips.pop().expect("a skip per level");
+            pixels = skip_pixels;
+            channels += skip_channels;
+            let width = self.channels_at(level);
+            for _ in 0..self.blocks_per_level {
+                total += conv(pixels, channels, width, 3) + conv(pixels, width, width, 3);
+                if channels != width {
+                    total += conv(pixels, channels, width, 1);
+                }
+                channels = width;
+            }
+        }
+
+        total += conv(pixels, channels, self.target_channels(), 3); // head
+        total / 1e9
+    }
+
     /// Elements in one conditioning tensor of a batch.
     pub fn cond_len(&self) -> usize {
         (self.batch * self.cond_channels() * self.tile * self.tile) as usize
@@ -701,5 +768,66 @@ mod tests {
         let model = build(&small(), true).unwrap();
         assert!(model.params.iter().any(|p| p.name == "time.in.weight"));
         assert!(model.params.iter().any(|p| p.name.contains("time_proj")));
+    }
+}
+
+#[cfg(test)]
+mod flop_tests {
+    use super::*;
+
+    fn default_backbone() -> ModelConfig {
+        ModelConfig {
+            scale: 2,
+            tile: 512,
+            batch: 1,
+            base_channels: 64,
+            level_multipliers: vec![1, 2, 4],
+            blocks_per_level: 2,
+            cond_planes: PlaneSet::new()
+                .with(Plane::Color)
+                .with(Plane::Depth)
+                .with(Plane::Normal)
+                .with(Plane::DiffuseAlbedo)
+                .with(Plane::SpecularF0)
+                .with(Plane::Roughness),
+            objective: Objective::Direct,
+            ..ModelConfig::default()
+        }
+    }
+
+    /// Pinned against an independent hand count of the same architecture, so a
+    /// change to the builder that the estimator does not follow shows up.
+    #[test]
+    fn the_estimate_matches_a_hand_count() {
+        // 512x512 input, so 1024x1024 out.
+        let gflop = default_backbone().flops(1024 * 1024);
+        assert!(
+            (500.0..580.0).contains(&gflop),
+            "expected ~539 GFLOP for the default backbone, got {gflop:.0}"
+        );
+    }
+
+    #[test]
+    fn cost_scales_with_output_pixels() {
+        let config = default_backbone();
+        let small = config.flops(1024 * 1024);
+        let big = config.flops(2048 * 2048);
+        assert!(
+            (big / small - 4.0).abs() < 1e-6,
+            "four times the pixels should cost four times as much: {small} vs {big}",
+        );
+    }
+
+    /// Halving the width should quarter the arithmetic, near enough — the stem
+    /// and head scale linearly rather than quadratically, so it is not exact.
+    #[test]
+    fn width_dominates_the_cost() {
+        let mut narrow = default_backbone();
+        narrow.base_channels = 32;
+        let ratio = default_backbone().flops(1 << 20) / narrow.flops(1 << 20);
+        assert!(
+            (3.4..4.0).contains(&ratio),
+            "halving the width changed the cost by {ratio:.2}x"
+        );
     }
 }
