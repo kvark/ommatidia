@@ -31,11 +31,57 @@ integration time:
   fixing the timestep to zero and dropping the noise input, as a direct
   regressor.
 
-So the plan is to establish the quality ceiling with diffusion first, then buy
-the latency back through step distillation (consistency / adversarial
-distillation to 1-4 steps), with the direct regressor as the always-available
-fast path and as the baseline that distillation has to beat. `Objective` in
-`ommatidia::model` is the switch.
+So the plan was to establish the quality ceiling with diffusion first, then buy
+the latency back through step distillation, with the direct regressor as the
+always-available fast path and as the baseline that distillation has to beat.
+`Objective` in `ommatidia::model` is the switch.
+
+### That plan did not survive contact with the measurement
+
+Matched backbone, matched data, matched everything but the objective, on 2400
+scenes with 360 held out:
+
+| objective | steps | held-out vs nearest |
+|---|---|---|
+| direct | 8000 | **+5.12 dB** |
+| diffusion, 20 sampler steps | 12000 | +1.54 dB |
+| diffusion, 1 sampler step | 12000 | +3.31 dB |
+
+Diffusion was given half again as much training and lost by a wide margin. And
+the sampler, the thing the whole formulation is built around, makes the result
+*worse* the more it is used — monotonically, on the same checkpoint:
+
+| sampler steps | 1 | 2 | 4 | 8 | 16 | 20 |
+|---|---|---|---|---|---|---|
+| dB | +3.31 | +3.31 | +2.49 | +2.72 | +1.99 | +1.55 |
+
+With x0-prediction, a single DDIM step from the top of the chain returns the
+model's `x0` estimate directly, with no re-noising. So the best thing this
+diffusion model can do is to stop being a diffusion model.
+
+The reason is that the premise at the top of this section is wrong for *this*
+conditioning. Upscaling is ill-posed when the input is an image. It is much
+closer to determined when the input is a low resolution render **plus the
+renderer's own depth, normals, albedo, specular reflectance, and roughness** —
+the network is not being asked to invent plausible detail, it is being asked to
+resolve detail that the conditioning already implies. When the conditional
+distribution is near a delta function, there is nothing for a sampler to
+explore: iterating only accumulates the model's own error, and the capacity
+spent learning to denoise at every noise level is capacity not spent on the one
+mapping that matters.
+
+Caveats, because this is one experiment: a single seed, one dataset, one model
+size, one scale factor, and a scene distribution that is procedural rather than
+authored. A harder distribution — thin geometry, strong specular detail, a
+larger scale factor — would push back toward ill-posed, and the conclusion
+could change with it. What is not in doubt is that on this problem, as posed,
+the diffusion machinery cost quality rather than buying it.
+
+**So the direct objective is the main line**, not the fallback, and the
+sub-pixel residual formulation below stands on its own without the noise
+schedule. The diffusion path stays because the backbone is shared and the
+comparison is worth being able to re-run, and because the caveats above are
+real. It is no longer the thing to beat.
 
 ## Formulation: sub-pixel residual diffusion
 
@@ -290,8 +336,10 @@ and the format reserves the plane. The generator gets more involved because
 samples stop being independent, so it has to emit camera trajectories rather
 than isolated poses, and the record has to carry the previous frame's output.
 
-**Step distillation.** Bring the sampler down to 1-4 steps, measured against
-the direct regressor baseline.
+**Step distillation.** Deprioritised. It was going to buy the diffusion path's
+latency back, but the measurement above says one step already beats twenty on
+this problem, so there is nothing to distil — the fast path and the good path
+turned out to be the same path.
 
 **Standalone.** Drop the `blade-graphics` requirement from the public API and
 connect at raw Vulkan: the host passes `VkImage` handles and a `VkCommandBuffer`
