@@ -14,9 +14,10 @@ its output.
 > no temporal context. See [`docs/design.md`](docs/design.md) for the
 > formulation and the roadmap.
 
-On 2400 procedural scenes at 128x128 to 256x256, with 360 held out, the
-network beats nearest upsampling by **5.12 dB**. Two findings from that run
-are worth knowing before reading further:
+On 2400 procedural scenes at 128x128 to 256x256, with 360 held out, the network
+beats nearest upsampling by **5.04 dB** at **28 ms** for a 1080p frame — down
+from 656 ms for the same quality at the start of the work. Findings worth
+knowing before reading further:
 
 - **The direct objective beats the diffusion one**, by 5.12 dB against 1.54,
   with the diffusion arm given half again as much training. Worse for
@@ -26,11 +27,16 @@ are worth knowing before reading further:
   accumulates the model's own error.
 - **The G-buffer is worth half a decibel** over colour alone, steadily, for
   channels the renderer produced anyway.
-- **It is not real-time yet, but the gap is closing.** A 1080p frame took 656
-  ms; two kernel fixes in meganeura — parallelising GroupNorm over the image
-  and making the Winograd transforms read contiguously — took it to 122 ms,
-  with the weights untouched. The budget is two. See the latency section of the
-  design doc for where the rest is.
+- **It is not real-time yet, but 23x of the gap has closed.** Two kernel fixes
+  in meganeura — parallelising GroupNorm over the image, and making the
+  Winograd transforms read contiguously — were worth 5.4x with the weights
+  untouched. The rest was not needing the large network at all: a 649k
+  parameter model matches the 6.5M one once it is trained out. The budget is
+  2 ms; see the latency section of the design doc for where the remaining 14x
+  might come from.
+- **Compare shapes at convergence, not at a fixed step count.** A sweep that
+  gave every shape 5000 steps ranked them almost exactly wrong, because the
+  large ones were the undertrained ones.
 
 ## Layout
 
