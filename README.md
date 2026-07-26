@@ -26,11 +26,11 @@ are worth knowing before reading further:
   accumulates the model's own error.
 - **The G-buffer is worth half a decibel** over colour alone, steadily, for
   channels the renderer produced anyway.
-- **It is not real-time yet, by a long way.** A 1080p frame takes 656 ms, and
-  the smallest network that beats nearest at all still takes 21 ms against a
-  budget of two. Nothing measured exceeds 2.7% of the device's throughput, so
-  the gap is efficiency rather than a wall — see the latency section of the
-  design doc for where it goes and what to do about it.
+- **It is not real-time yet, but the gap is closing.** A 1080p frame took 656
+  ms; two kernel fixes in meganeura — parallelising GroupNorm over the image
+  and making the Winograd transforms read contiguously — took it to 122 ms,
+  with the weights untouched. The budget is two. See the latency section of the
+  design doc for where the rest is.
 
 ## Layout
 

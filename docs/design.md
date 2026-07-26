@@ -347,19 +347,25 @@ The premise is a real-time budget, and the network is nowhere near one. All
 figures below are measured at 720x720 input, which is 1440x1440 out — the same
 2.07 million pixels as a 1080p frame — on an otherwise idle 7900 XT.
 
-| shape | params | GFLOP | ms @1080p | % of peak | held-out dB |
-|---|---|---|---|---|---|
-| base 64, 3 levels, 2 blocks | 6.50M | 1096 | 656 | 2.7% | +5.07 |
-| base 32, 3 levels, 1 block | 1.15M | 182 | 131 | 2.3% | +3.91 |
-| base 24, 3 levels, 1 block | 649k | 104 | 89 | 1.9% | **+4.10** |
-| base 16, 2 levels, 1 block | 72k | 33 | 42 | 1.3% | +2.92 |
-| base 8, 2 levels, 1 block | 19k | 9 | 21 | 0.7% | +1.45 |
+| shape | params | GFLOP | before | after | % of peak | held-out dB |
+|---|---|---|---|---|---|---|
+| base 64, 3 levels, 2 blocks | 6.50M | 1096 | 656 | **122** | 15% | +5.07 |
+| base 32, 3 levels, 1 block | 1.15M | 182 | 131 | **35** | 8.6% | +3.91 |
+| base 24, 3 levels, 1 block | 649k | 104 | 89 | **28** | 6.1% | +4.10 |
+| base 16, 2 levels, 1 block | 72k | 33 | 42 | **15** | 3.5% | +2.92 |
+| base 8, 2 levels, 1 block | 19k | 9 | 21 | **8.8** | 1.7% | +1.45 |
 
-Two readings. Shrinking the network works better than its arithmetic suggests
-is safe to assume — 119x fewer flops bought 32x less time — but it runs out:
-the smallest shape measured still costs 21 ms against a 2 ms budget, and buys
-only +1.45 dB. And **nothing here exceeds 2.7% of the device's throughput**,
-so the remaining factor of ten is efficiency rather than a hard floor.
+The "after" column is the same networks and the same weights, following two
+kernel fixes in meganeura described below — 5.4x on the reference shape, 2.3x
+at the small end. Quality is untouched: a checkpoint trained before the changes
+scores 0.001247 where it scored 0.001248, which is float reassociation.
+
+Shrinking the network still works better than its arithmetic suggests — 119x
+fewer flops for 14x less time — and still runs out: the smallest shape costs
+8.8 ms against a 2 ms budget and buys only +1.45 dB. But the headroom argument
+has changed shape. The best quality point is now within 14x of the budget
+rather than 45x, and utilisation runs from 1.7% to 15%, so there is still a lot
+left on the table.
 
 Where the time goes, from `gpu_profile`'s per-pass timings:
 
@@ -369,29 +375,34 @@ Where the time goes, from `gpu_profile`'s per-pass timings:
 | GroupNorm + SiLU | ~34% |
 | everything else | ~4% |
 
-### GroupNorm is parallel in the batch, not in the image
+### Two kernels were leaving the device idle
 
-`GroupNorm` dispatches `batch * num_groups` workgroups of 256 threads. At
-inference the batch is one, so with eight groups that is **2048 threads,
-whatever the resolution** — around 2% of what the device wants in flight, and
-it does not improve as the image grows. The kernel is shaped for training,
-where the batch supplies the parallelism.
+Both were shaped for training, where a large batch supplies the parallelism,
+and both starve at a batch of one.
 
-Raising the group count is a direct test, since it changes the parallelism and
-nothing else about the work:
+**GroupNorm was parallel in the batch, not in the image.** It launched
+`batch * num_groups` workgroups of 256 threads — at inference with eight
+groups, 2048 threads, whatever the resolution, on a tensor of millions of
+elements. Raising the group count showed the shape of it directly, since that
+changes the parallelism and nothing else: 340 ms at 8 groups, 244 at 32, 230 at
+64. That is not a usable fix, because groups are a modelling choice and
+training base 24 with one channel per group cost 1.55 dB. The fix is to split
+each group's elements into slices with a workgroup each, in two passes — one
+writing partial sums, one combining them and normalising. The frame went from
+340 ms to 239.
 
-| groups | workgroups | ms/frame at 512x512 |
-|---|---|---|
-| 8 | 8 | 340 |
-| 32 | 32 | 244 |
-| 64 | 64 | 230 |
+**The Winograd transforms read and wrote a megabyte apart per lane.** With
+GroupNorm out of the way the input transform stood at 68% of the frame, taking
+eight times the batched matmul it exists to make cheaper. Both transforms
+indexed threads as `tile_idx = idx / channels`, putting neighbouring threads on
+neighbouring channels, which are `H * W` apart in the input and `total_tiles`
+apart in the transform domain. Every wave scattered, on the load and the store
+alike. Swapping the decomposition so neighbouring threads take neighbouring
+tiles makes the store contiguous and the load walk a row: 239 ms to 59.
 
-A third of the frame, recovered by parallelism alone. That is not a usable fix
-by itself — `num_groups` is a modelling choice, and training base 24 with 24
-groups, which is one channel per group, cost 1.55 dB against the same shape
-with 8. The fix belongs in the kernel: split the reduction over the spatial
-extent in two passes, so the parallelism follows the image rather than the
-batch. Worth roughly 30% of the frame at no cost in quality.
+The second one only became visible once the first was fixed, and the first only
+became visible once the profile was read at all. Worth remembering before
+concluding that a stack is simply slow.
 
 ### Barriers are not the bottleneck, yet
 
