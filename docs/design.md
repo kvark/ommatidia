@@ -343,11 +343,25 @@ cadence so a crash costs one interval rather than everything.
 
 ## The latency problem
 
-The premise is a real-time budget, and the current network is nowhere near one.
-Measured on a quiet 7900 XT, the trained direct model takes 353 ms to produce a
-2048x2048 frame, which is 175 ms at 1080p against a budget of one or two.
+The premise is a real-time budget, and the network is nowhere near one. All
+figures below are measured at 720x720 input, which is 1440x1440 out — the same
+2.07 million pixels as a 1080p frame — on an otherwise idle 7900 XT.
 
-Where it goes, from `gpu_profile`'s per-pass timings at 512x512 input:
+| shape | params | GFLOP | ms @1080p | % of peak | held-out dB |
+|---|---|---|---|---|---|
+| base 64, 3 levels, 2 blocks | 6.50M | 1096 | 656 | 2.7% | +5.07 |
+| base 32, 3 levels, 1 block | 1.15M | 182 | 131 | 2.3% | +3.91 |
+| base 24, 3 levels, 1 block | 649k | 104 | 89 | 1.9% | **+4.10** |
+| base 16, 2 levels, 1 block | 72k | 33 | 42 | 1.3% | +2.92 |
+| base 8, 2 levels, 1 block | 19k | 9 | 21 | 0.7% | +1.45 |
+
+Two readings. Shrinking the network works better than its arithmetic suggests
+is safe to assume — 119x fewer flops bought 32x less time — but it runs out:
+the smallest shape measured still costs 21 ms against a 2 ms budget, and buys
+only +1.45 dB. And **nothing here exceeds 2.7% of the device's throughput**,
+so the remaining factor of ten is efficiency rather than a hard floor.
+
+Where the time goes, from `gpu_profile`'s per-pass timings:
 
 | | share |
 |---|---|
@@ -355,66 +369,58 @@ Where it goes, from `gpu_profile`'s per-pass timings at 512x512 input:
 | GroupNorm + SiLU | ~34% |
 | everything else | ~4% |
 
-The passes account for the wall clock, so this is not launch overhead — the
-device is genuinely busy. Two numbers explain the rest.
+### GroupNorm is parallel in the batch, not in the image
 
-**The network is far too large.** The backbone is about 539 GFLOP per frame at
-512x512 input, so roughly 1067 GFLOP for a 1080p output. Two milliseconds of
-that would need 533 TFLOPS, which is nine times what the hardware can do at
-peak. Even a perfect implementation lands at 17 ms. A DLSS-class network is
-single-digit GFLOP; this one is two to three orders of magnitude above that.
-The architecture has to change, and no amount of kernel work substitutes.
+`GroupNorm` dispatches `batch * num_groups` workgroups of 256 threads. At
+inference the batch is one, so with eight groups that is **2048 threads,
+whatever the resolution** — around 2% of what the device wants in flight, and
+it does not improve as the image grows. The kernel is shaped for training,
+where the batch supplies the parallelism.
 
-**The stack is at 10% of peak, and has a floor.** 2157 GFLOP in 353 ms is 6.1
-TFLOPS effective against roughly 61 available. Worse, shrinking the model stops
-helping: cutting it from 6.5M parameters to 16k, which is about 75x fewer
-FLOPs, bought only 8x in time. Below a few hundred thousand parameters the cost
-stops tracking arithmetic and settles on a floor — around 18 ms at 512x512
-input on a quiet device, so about 35 ms at 1080p, for a 16k-parameter network.
-That floor is per-dispatch and per-activation overhead, not arithmetic.
+Raising the group count is a direct test, since it changes the parallelism and
+nothing else about the work:
 
-### Shrinking the architecture does not get there
+| groups | workgroups | ms/frame at 512x512 |
+|---|---|---|
+| 8 | 8 | 340 |
+| 32 | 32 | 244 |
+| 64 | 64 | 230 |
 
-Five shapes trained on the same data for 5000 steps each, then timed. The
-milliseconds are corrected for a 5.8x contention factor, calibrated from the
-reference shape measured both on a quiet device and beside another job:
+A third of the frame, recovered by parallelism alone. That is not a usable fix
+by itself — `num_groups` is a modelling choice, and training base 24 with 24
+groups, which is one channel per group, cost 1.55 dB against the same shape
+with 8. The fix belongs in the kernel: split the reduction over the spatial
+extent in two passes, so the parallelism follows the image rather than the
+batch. Worth roughly 30% of the frame at no cost in quality.
 
-| shape | params | GFLOP @1080p | ms @1080p | held-out dB |
-|---|---|---|---|---|
-| base 64, 3 levels, 2 blocks | 6.50M | 1090 | 297 | +5.07 |
-| base 32, 3 levels, 1 block | 1.15M | 179 | 99 | +3.91 |
-| base 24, 3 levels, 1 block | 649k | 102 | 81 | **+4.10** |
-| base 16, 2 levels, 1 block | 71k | 31 | 56 | +2.92 |
-| base 8, 2 levels, 1 block | 18k | 8 | 33 | +1.45 |
+### Barriers are not the bottleneck, yet
 
-Cutting the arithmetic by **130x** cut the time by **9x**. The smallest network
-measured — eighteen thousand parameters, eight GFLOP, and only +1.45 dB of
-quality — still costs 33 ms at 1080p against a two millisecond budget.
+Meganeura groups dispatches by dependency level and puts a global barrier
+between groups. The network is a chain, so this comes to 145 dispatches in 117
+groups — 1.24 dispatches per group, which is close to one barrier each.
 
-So the floor is the binding constraint, and no architecture reaches real time
-on this stack. At 8 GFLOP and roughly 50 dispatches, 33 ms is about 17x above
-even a bandwidth bound on the activations, so it is not launch overhead and not
-memory traffic: the kernels themselves lose efficiency at low channel counts,
-where a workgroup covering eight channels leaves most of the device idle.
+That sounds bad and currently is not: forcing one dispatch per group with
+`MEGANEURA_SERIAL_DISPATCH`, which adds 28 more barriers, changes the frame
+time by less than the measurement noise (340.6 and 340.7 ms against 340.4 and
+341.6). The chain's dependencies are real, so a finer-grained barrier would
+have little to overlap.
 
-Two caveats on the quality column. Every shape got the same 5000 steps, so the
-larger ones are the more undertrained — which is why base 24 scores above base
-32, and why this is a snapshot of the frontier rather than its converged shape.
-And these are single runs at one seed.
+It becomes a problem at the target. A hundred-odd global barriers at even ten
+microseconds apiece is most of a 2 ms budget, so reaching real time means
+fewer dispatches — fusing convolution with the normalisation and activation
+around it — rather than cheaper barriers.
 
-So both have to move, and in that order. Shrinking the architecture is worth about 9x
-in practice rather than the 130x its arithmetic suggests, and the table above
-is that measurement. Lifting the floor is worth the remaining 17x and is a
-kernel-level conversation: fusing normalisation into convolution, `f16`
-activations, and above all occupancy at the channel counts a real-time network
-actually uses. That is now the blocking work — the architecture lever is spent
-before it reaches the target.
+### A correction
 
-Two things that turned out **not** to be the problem, recorded so they are not
-re-investigated: Winograd, which is break-even here — disabling it via
-`MEGANEURA_NO_WINOGRAD` halves the dispatch count from 145 to 73 and changes
-the frame time by less than the measurement noise — and launch overhead, which
-the pass timings rule out.
+An earlier version of this section reported 175 ms at 1080p and 10% of peak.
+Both were wrong: the benchmark inherited the small configuration the smoke
+tests use, so it was costing a base-16 two-level network with four
+conditioning channels and calling it the trained one. The real figure is 656
+ms and 2.7%. The benchmark now builds the shape explicitly and measures at the
+1080p pixel count instead of extrapolating from a quarter of it.
+
+A second correction: a 9x figure for what shrinking the architecture buys was
+measured while another job had the GPU. Idle, it is 32x.
 
 ## Roadmap
 

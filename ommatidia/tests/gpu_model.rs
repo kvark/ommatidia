@@ -150,15 +150,32 @@ fn direct_objective_runs_without_a_timestep() {
 #[test]
 #[ignore = "requires a GPU"]
 fn frame_cost_at_realistic_extents() {
-    // Square, because ModelConfig carries one extent for both axes. A 16:9
-    // frame of the same area is the honest comparison.
-    for tile in [256u32, 512, 768, 1024] {
+    // Square, because ModelConfig carries one extent for both axes. 720^2 in
+    // is 1440^2 out, which has the same 2.07M pixels as 1080p, so that row is
+    // the 1080p cost measured rather than extrapolated.
+    //
+    // Note this deliberately does *not* inherit `config()`: that is a small
+    // shape for the smoke tests, and costing it while calling it the trained
+    // network is how the first version of this benchmark reported a number
+    // four times too low.
+    for tile in [256u32, 512, 720, 1024] {
         let config = ModelConfig {
             scale: 2,
             tile,
             batch: 1,
+            cond_planes: PlaneSet::new()
+                .with(Plane::Color)
+                .with(Plane::Depth)
+                .with(Plane::Normal)
+                .with(Plane::DiffuseAlbedo)
+                .with(Plane::SpecularF0)
+                .with(Plane::Roughness),
+            base_channels: 64,
+            level_multipliers: vec![1, 2, 4],
+            blocks_per_level: 2,
+            num_groups: 8,
             objective: Objective::Direct,
-            ..config()
+            ..ModelConfig::default()
         };
         let Ok(model) = build(&config, false) else {
             println!("{tile}^2: rejected by validate()");
@@ -189,10 +206,11 @@ fn frame_cost_at_realistic_extents() {
         let at_1080p = ns_per_pixel * 1920.0 * 1080.0 / 1e6;
         let at_4k = ns_per_pixel * 3840.0 * 2160.0 / 1e6;
         println!(
-            "{tile}^2 -> {}^2: {:.2} ms/frame, {ns_per_pixel:.3} ns/output pixel \
-             => {at_1080p:.1} ms at 1080p, {at_4k:.1} ms at 4K",
+            "{tile}^2 -> {}^2: {:.1} ms/frame, {:.1} GFLOP, {ns_per_pixel:.3} ns/output pixel \
+             => {at_1080p:.0} ms at 1080p, {at_4k:.0} ms at 4K",
             tile * config.scale,
             per_frame * 1e3,
+            config.flops(out_pixels as usize),
         );
     }
 }
@@ -206,7 +224,9 @@ fn frame_cost_at_realistic_extents() {
 #[test]
 #[ignore = "requires a GPU"]
 fn frame_cost_by_model_size() {
-    const TILE: u32 = 512;
+    // 720^2 in is 1440^2 out: the same 2.07M pixels as a 1080p frame, so these
+    // are measured at the extent that matters rather than scaled to it.
+    const TILE: u32 = 720;
     // The same shapes the quality sweep trains, so the two tables line up.
     let shapes: [(u32, usize, usize, &str); 5] = [
         (64, 3, 2, "reference"),
@@ -224,8 +244,15 @@ fn frame_cost_by_model_size() {
             level_multipliers: (0..levels).map(|i| 1 << i).collect(),
             blocks_per_level: blocks,
             num_groups: 8,
+            cond_planes: PlaneSet::new()
+                .with(Plane::Color)
+                .with(Plane::Depth)
+                .with(Plane::Normal)
+                .with(Plane::DiffuseAlbedo)
+                .with(Plane::SpecularF0)
+                .with(Plane::Roughness),
             objective: Objective::Direct,
-            ..config()
+            ..ModelConfig::default()
         };
         let Ok(model) = build(&config, false) else {
             println!("{label}: rejected by validate()");

@@ -1,0 +1,27 @@
+== base 24, 3 levels, num_groups 32 (vs +4.10 dB at num_groups 8)
+18:40:14
+residual gain 15.26 (standard deviation 0.0656), measured over 16 samples
+2040 samples for training, 360 held out for scoring
+2400 samples, 128x128 -> 256x256, 14 conditioning channels, 12 output channels
+conditioning on Color, Depth, Normal, DiffuseAlbedo, SpecularF0, Roughness
+Direct objective, 3 levels, 649200 parameters
+convolution cost: 104.1 GFLOP per 1080p frame
+compiling... 0.7s, 203 dispatches on AMD Radeon RX 7900 XT (RADV NAVI31)
+building the evaluation session... done
+step     500: loss 1.161115  (39.6 steps/s, 0m elapsed)
+step    1000: loss 0.981520  (40.0 steps/s, 0m elapsed)
+  held-out over 64 crops in 0.3s: nearest 0.004057, network 0.002923, +1.42 dB
+step    1500: loss 0.871763  (39.7 steps/s, 1m elapsed)
+step    2000: loss 0.799123  (39.8 steps/s, 1m elapsed)
+  held-out over 64 crops in 0.3s: nearest 0.004057, network 0.002531, +2.05 dB
+step    2500: loss 0.758883  (39.7 steps/s, 1m elapsed)
+step    3000: loss 0.707124  (39.8 steps/s, 1m elapsed)
+  held-out over 64 crops in 0.3s: nearest 0.004057, network 0.002333, +2.40 dB
+step    3500: loss 0.690006  (39.7 steps/s, 1m elapsed)
+step    4000: loss 0.697353  (39.8 steps/s, 2m elapsed)
+  held-out over 64 crops in 0.3s: nearest 0.004057, network 0.002257, +2.55 dB
+step    4500: loss 0.670076  (39.7 steps/s, 2m elapsed)
+step    5000: loss 0.665781  (39.8 steps/s, 2m elapsed)
+loss 1.161115 -> 0.665781 over 5000 steps in 125.7s
+wrote /tmp/claude-1000/-x-Code-ommatidia/813ead43-6521-47d9-ace1-e3dae7f29a44/scratchpad/runs/groups24.safetensors and /tmp/claude-1000/-x-Code-ommatidia/813ead43-6521-47d9-ace1-e3dae7f29a44/scratchpad/runs/groups24.ron
+  held-out over 64 crops in 0.3s: nearest 0.004057, network 0.002257, +2.55 dB

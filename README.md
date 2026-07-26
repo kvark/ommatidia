@@ -26,6 +26,11 @@ are worth knowing before reading further:
   accumulates the model's own error.
 - **The G-buffer is worth half a decibel** over colour alone, steadily, for
   channels the renderer produced anyway.
+- **It is not real-time yet, by a long way.** A 1080p frame takes 656 ms, and
+  the smallest network that beats nearest at all still takes 21 ms against a
+  budget of two. Nothing measured exceeds 2.7% of the device's throughput, so
+  the gap is efficiency rather than a wall — see the latency section of the
+  design doc for where it goes and what to do about it.
 
 ## Layout
 

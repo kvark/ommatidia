@@ -43,6 +43,49 @@ fn config(tile: u32) -> ModelConfig {
     }
 }
 
+/// GroupNorm launches `batch * num_groups` workgroups regardless of how big
+/// the image is, so at batch 1 it runs on a handful of the device's compute
+/// units whatever the resolution. Raising the group count is a direct test of
+/// that: it changes the parallelism and nothing else about the work.
+///
+/// The normalisation is not equivalent across these, so this is a timing probe
+/// rather than a configuration anyone would train.
+#[test]
+#[ignore = "requires a GPU"]
+fn group_norm_parallelism_is_independent_of_image_size() {
+    if std::env::var("MEGANEURA_GPU_TIMING").is_err() {
+        println!("set MEGANEURA_GPU_TIMING=1 for per-pass timings; skipping");
+        return;
+    }
+    for groups in [8u32, 32, 64] {
+        let mut config = config(512);
+        config.num_groups = groups;
+        let model = build(&config, false).expect("build");
+        let mut session = meganeura::build_inference_session(&model.graph);
+        model.initialize(&mut session, 1);
+        let mut rng = Rng::new(1);
+        let cond: Vec<f32> = (0..config.cond_len()).map(|_| rng.normal() * 0.5).collect();
+        session.set_input("cond", &cond);
+
+        for _ in 0..3 {
+            session.step();
+            session.wait();
+        }
+        const RUNS: u32 = 6;
+        let started = std::time::Instant::now();
+        for _ in 0..RUNS {
+            session.step();
+            session.wait();
+        }
+        let wall = started.elapsed().as_secs_f64() / RUNS as f64;
+        println!(
+            "num_groups {groups:>3} => {:>4} workgroups per GroupNorm, {:.1} ms/frame",
+            groups,
+            wall * 1e3
+        );
+    }
+}
+
 #[test]
 #[ignore = "requires a GPU"]
 fn where_the_frame_time_goes() {
@@ -58,6 +101,10 @@ fn where_the_frame_time_goes() {
     model.initialize(&mut session, 1);
 
     let dispatches = session.plan().dispatches.len();
+    // Every group boundary is a global barrier: it drains the pipeline and
+    // forbids the next dispatch overlapping the previous one. A chain-shaped
+    // network puts one dispatch in most groups.
+    let groups = session.num_groups();
     let mut rng = Rng::new(1);
     let cond: Vec<f32> = (0..config.cond_len()).map(|_| rng.normal() * 0.5).collect();
     session.set_input("cond", &cond);
@@ -76,9 +123,11 @@ fn where_the_frame_time_goes() {
     let wall = started.elapsed().as_secs_f64() / RUNS as f64;
 
     println!(
-        "\n{TILE}^2 -> {}^2, {} parameters, {dispatches} dispatches",
+        "\n{TILE}^2 -> {}^2, {} parameters, {dispatches} dispatches in {groups} barrier groups \
+         ({:.2} dispatches per group)",
         TILE * config.scale,
         model.params.iter().map(|p| p.len).sum::<usize>(),
+        dispatches as f64 / groups as f64,
     );
     println!("unprofiled wall clock: {:.2} ms/frame", wall * 1e3);
     println!(

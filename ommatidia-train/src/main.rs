@@ -66,6 +66,7 @@ struct Args {
     base_channels: u32,
     levels: usize,
     blocks_per_level: usize,
+    num_groups: u32,
     timesteps: usize,
     sampler_steps: usize,
     objective: Objective,
@@ -94,6 +95,7 @@ impl Default for Args {
             base_channels: 64,
             levels: 3,
             blocks_per_level: 2,
+            num_groups: 8,
             timesteps: 1000,
             sampler_steps: 20,
             objective: Objective::Diffusion,
@@ -128,6 +130,9 @@ usage: ommatidia-train [options]
   --base-channels N    channel width of the first level  [64]
   --levels N           U-Net levels  [3]
   --blocks N           residual blocks per level  [2]
+  --num-groups N       GroupNorm groups. Also sets how many workgroups the
+                       normalisation launches, which at batch 1 is its entire
+                       parallelism, so raising it is worth real time  [8]
   --timesteps N        diffusion schedule length  [1000]
   --sampler-steps N    DDIM steps used when evaluating  [20]
   --objective KIND     diffusion or direct  [diffusion]
@@ -184,6 +189,9 @@ fn parse_from(argv: impl Iterator<Item = String>) -> Result<Args, String> {
             "--levels" => args.levels = value()?.parse().map_err(|e| format!("--levels: {e}"))?,
             "--blocks" => {
                 args.blocks_per_level = value()?.parse().map_err(|e| format!("--blocks: {e}"))?
+            }
+            "--num-groups" => {
+                args.num_groups = value()?.parse().map_err(|e| format!("--num-groups: {e}"))?
             }
             "--timesteps" => {
                 args.timesteps = value()?.parse().map_err(|e| format!("--timesteps: {e}"))?
@@ -303,6 +311,7 @@ fn main() {
         base_channels: args.base_channels,
         level_multipliers: (0..args.levels).map(|i| 1 << i).collect(),
         blocks_per_level: args.blocks_per_level,
+        num_groups: args.num_groups,
         residual_gain: gain,
         objective: args.objective,
         ..ModelConfig::default()
