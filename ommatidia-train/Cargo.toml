@@ -1,0 +1,19 @@
+[package]
+name = "ommatidia-train"
+description = "Training driver for the ommatidia reconstruction network"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[dependencies]
+ommatidia.workspace = true
+bytemuck.workspace = true
+env_logger.workspace = true
+half.workspace = true
+log.workspace = true
+meganeura.workspace = true
+png.workspace = true

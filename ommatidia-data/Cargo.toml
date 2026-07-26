@@ -1,0 +1,27 @@
+[package]
+name = "ommatidia-data"
+description = "Training data generation for ommatidia, rendered with Blade"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[dependencies]
+ommatidia.workspace = true
+blade-graphics.workspace = true
+blade-render.workspace = true
+blade-asset.workspace = true
+blade-macros = "0.3"
+bytemuck.workspace = true
+choir.workspace = true
+env_logger.workspace = true
+half.workspace = true
+log.workspace = true
+mint.workspace = true
+png.workspace = true
+
+[dev-dependencies]
+naga = { workspace = true }
