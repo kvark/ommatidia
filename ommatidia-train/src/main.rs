@@ -73,6 +73,8 @@ struct Args {
     color_only: bool,
     val_fraction: f32,
     eval_crops: usize,
+    eval_every: usize,
+    checkpoint_every: usize,
 }
 
 impl Default for Args {
@@ -96,6 +98,8 @@ impl Default for Args {
             color_only: false,
             val_fraction: 0.15,
             eval_crops: 64,
+            eval_every: 0,
+            checkpoint_every: 0,
         }
     }
 }
@@ -122,6 +126,10 @@ usage: ommatidia-train [options]
   --eval-out DIR       write comparison PNGs of the first held-out crop
   --val-fraction F     share of the set held out for scoring  [0.15]
   --eval-crops N       cap on held-out crops scored  [64]
+  --eval-every N       score the held-out set every N steps, 0 for only at
+                       the end  [0]
+  --checkpoint-every N save the checkpoint every N steps as well as at the
+                       end, so a long run survives a crash  [0]
   --color-only         condition on colour alone, ignoring the dataset's
                        G-buffer planes; the other half of that ablation is
                        simply leaving this off
@@ -329,6 +337,13 @@ fn main() {
     );
     let diffusing = config.objective == Objective::Diffusion;
 
+    // Built up front so scoring mid-run costs a parameter copy rather than a
+    // compile and a checkpoint round trip.
+    print!("building the evaluation session... ");
+    let _ = std::io::stdout().flush();
+    let mut evaluator = Evaluator::new(&config, &model);
+    println!("done");
+
     let mut recent = Vec::new();
     let mut first_average = f32::NAN;
     let mut last_average = f32::NAN;
@@ -360,10 +375,26 @@ fn main() {
             }
             last_average = average;
             let rate = (step + 1) as f32 / training_started.elapsed().as_secs_f32();
+            let elapsed = training_started.elapsed().as_secs_f32();
             println!(
-                "step {:>6}: loss {average:.6}  ({rate:.1} steps/s)",
-                step + 1
+                "step {:>7}: loss {average:.6}  ({rate:.1} steps/s, {:.0}m elapsed)",
+                step + 1,
+                elapsed / 60.0,
             );
+        }
+
+        let last = step + 1 == args.steps;
+        if args.eval_every > 0 && (step + 1) % args.eval_every == 0 && !last {
+            evaluator.sync(&session);
+            evaluator.score(&mut batcher, split, &args, &schedule, None);
+        }
+        if args.checkpoint_every > 0 && (step + 1) % args.checkpoint_every == 0 && !last {
+            // A long run should not lose everything to a crash, and an
+            // intermediate checkpoint is also what makes an overtrained run
+            // recoverable.
+            if let Err(e) = checkpoint::save(&mut session, &config, &args.out) {
+                eprintln!("cannot save the checkpoint: {e}");
+            }
         }
     }
 
@@ -386,141 +417,157 @@ fn main() {
     }
 
     drop(session);
-    evaluate(
-        &args,
-        &config,
-        &schedule,
+    evaluator.score(
         &mut batcher,
         split,
+        &args,
+        &schedule,
         args.eval_out.as_deref(),
     );
 }
 
-/// Reconstruct the held-out samples and report how the network compares to
-/// nearest upsampling.
+/// Holds an inference session alongside the training one, so the held-out set
+/// can be scored mid-run without a checkpoint round trip.
 ///
-/// Over a grid of crops across every validation sample, not one crop of one
-/// training sample: a single tile is far too small and too lucky to separate
-/// two configurations, and scoring on data the network was fitted to measures
-/// memorisation rather than reconstruction.
-///
-/// A separate inference session, because the training graph ends at the loss
-/// and has the training batch size baked in, while sampling needs the
-/// prediction and runs one crop at a time. Parameters do not depend on the
-/// batch, so the checkpoint loads straight into it.
-fn evaluate(
-    args: &Args,
-    config: &ModelConfig,
-    schedule: &Schedule,
-    batcher: &mut batcher::Batcher,
-    split: Split,
-    dir: Option<&std::path::Path>,
-) {
-    let mut eval_config = config.clone();
-    eval_config.batch = 1;
-    let model = model::build(&eval_config, false).expect("the training config already validated");
+/// The training graph ends at the loss and has the training batch size baked
+/// in, so sampling needs its own. Parameters do not depend on the batch, which
+/// is what lets them be copied straight across.
+struct Evaluator {
+    session: meganeura::Session,
+    config: ModelConfig,
+    names: Vec<String>,
+    scratch: Vec<f32>,
+}
 
-    print!("evaluating: compiling inference graph... ");
-    use std::io::Write as _;
-    let _ = std::io::stdout().flush();
-    let mut session = meganeura::build_inference_session(&model.graph);
-    let paths = checkpoint::Paths::from_stem(&args.out);
-    if let Err(e) = session.load_checkpoint(&paths.weights) {
-        eprintln!("\ncannot load {}: {e}", paths.weights.display());
-        return;
-    }
-    println!("done");
-
-    let layout = *batcher.layout();
-    // Non-overlapping tiles, so no pixel is counted twice.
-    let crops = Crop::grid(&layout, eval_config.tile, eval_config.tile);
-    if crops.is_empty() {
-        eprintln!("the tile is larger than a sample, nothing to evaluate");
-        return;
-    }
-
-    let mut baseline_total = 0.0f64;
-    let mut network_total = 0.0f64;
-    let mut counted = 0usize;
-    let started = std::time::Instant::now();
-
-    'outer: for index in split.validation() {
-        let sample = match batcher.reader().sample(index) {
-            Ok(sample) => sample,
-            Err(e) => {
-                eprintln!("cannot read validation sample {index}: {e}");
-                break;
-            }
-        };
-        for &crop in &crops {
-            if counted >= args.eval_crops {
-                break 'outer;
-            }
-            let predicted = eval::reconstruct(
-                &mut session,
-                &eval_config,
-                schedule,
-                &sample,
-                &layout,
-                crop,
-                args.sampler_steps,
-                // Vary the sampler noise per crop, so the score is not one
-                // lucky or unlucky draw repeated.
-                args.seed.wrapping_add(counted as u64),
-            );
-            let low = ommatidia::batch::crop_color(&sample, &layout, crop);
-            let reference = ommatidia::batch::crop_reference(&sample, &layout, crop);
-            let baseline = eval::nearest(
-                &low,
-                crop.tile as usize,
-                crop.tile as usize,
-                eval_config.scale as usize,
-            );
-
-            baseline_total += eval::error(&baseline, &reference) as f64;
-            network_total += eval::error(&predicted, &reference) as f64;
-
-            // The first crop also goes out as images, for eyeballing.
-            if counted == 0
-                && let Some(dir) = dir
-            {
-                let hr_extent = crop.tile * eval_config.scale;
-                for (name, image, width) in [
-                    ("input", &low, crop.tile),
-                    ("nearest", &baseline, hr_extent),
-                    ("predicted", &predicted, hr_extent),
-                    ("reference", &reference, hr_extent),
-                ] {
-                    let path = dir.join(format!("{name}.png"));
-                    if let Err(e) = eval::write_png(&path, image, width, width) {
-                        eprintln!("cannot write {}: {e}", path.display());
-                    }
-                }
-                println!("wrote comparison images to {}", dir.display());
-            }
-            counted += 1;
+impl Evaluator {
+    fn new(config: &ModelConfig, model: &model::Model) -> Self {
+        let mut eval_config = config.clone();
+        eval_config.batch = 1;
+        let eval_model =
+            model::build(&eval_config, false).expect("the training config already validated");
+        let session = meganeura::build_inference_session(&eval_model.graph);
+        let names = model.params.iter().map(|p| p.name.clone()).collect();
+        let widest = model.params.iter().map(|p| p.len).max().unwrap_or(0);
+        Self {
+            session,
+            config: eval_config,
+            names,
+            scratch: vec![0.0; widest],
         }
     }
 
-    if counted == 0 {
-        eprintln!("no validation crops were evaluated");
-        return;
+    /// Copy every parameter from the training session into the inference one.
+    fn sync(&mut self, from: &meganeura::Session) {
+        for name in &self.names {
+            let Some(len) = from.param_size(name) else {
+                continue;
+            };
+            let slice = &mut self.scratch[..len];
+            from.read_param(name, slice);
+            self.session.upload_param(name, slice);
+        }
     }
-    let baseline_error = baseline_total / counted as f64;
-    let network_error = network_total / counted as f64;
-    println!(
-        "held-out reconstruction over {counted} crops from {} samples ({:.1}s):",
-        split.validation().len(),
-        started.elapsed().as_secs_f32()
-    );
-    println!("  nearest {baseline_error:.6}, network {network_error:.6}");
-    if network_error < baseline_error {
-        let gain = 10.0 * (baseline_error / network_error).log10();
-        println!("  the network beats nearest upsampling by {gain:.2} dB");
-    } else {
+
+    /// Reconstruct the held-out samples and report against nearest upsampling.
+    ///
+    /// Over a grid of crops across every validation sample, not one crop of one
+    /// training sample: a single tile is far too small and too lucky to
+    /// separate two configurations, and scoring on data the network was fitted
+    /// to measures memorisation rather than reconstruction.
+    fn score(
+        &mut self,
+        batcher: &mut batcher::Batcher,
+        split: Split,
+        args: &Args,
+        schedule: &Schedule,
+        dir: Option<&std::path::Path>,
+    ) -> Option<f32> {
+        let layout = *batcher.layout();
+        // Non-overlapping tiles, so no pixel is counted twice.
+        let crops = Crop::grid(&layout, self.config.tile, self.config.tile);
+        if crops.is_empty() {
+            eprintln!("the tile is larger than a sample, nothing to evaluate");
+            return None;
+        }
+
+        let mut baseline_total = 0.0f64;
+        let mut network_total = 0.0f64;
+        let mut counted = 0usize;
+        let started = std::time::Instant::now();
+
+        'outer: for index in split.validation() {
+            let sample = match batcher.reader().sample(index) {
+                Ok(sample) => sample,
+                Err(e) => {
+                    eprintln!("cannot read validation sample {index}: {e}");
+                    break;
+                }
+            };
+            for &crop in &crops {
+                if counted >= args.eval_crops {
+                    break 'outer;
+                }
+                let predicted = eval::reconstruct(
+                    &mut self.session,
+                    &self.config,
+                    schedule,
+                    &sample,
+                    &layout,
+                    crop,
+                    args.sampler_steps,
+                    // Vary the sampler noise per crop, so the score is not one
+                    // lucky or unlucky draw repeated.
+                    args.seed.wrapping_add(counted as u64),
+                );
+                let low = ommatidia::batch::crop_color(&sample, &layout, crop);
+                let reference = ommatidia::batch::crop_reference(&sample, &layout, crop);
+                let baseline = eval::nearest(
+                    &low,
+                    crop.tile as usize,
+                    crop.tile as usize,
+                    self.config.scale as usize,
+                );
+
+                baseline_total += eval::error(&baseline, &reference) as f64;
+                network_total += eval::error(&predicted, &reference) as f64;
+
+                // The first crop also goes out as images, for eyeballing.
+                if counted == 0
+                    && let Some(dir) = dir
+                {
+                    let hr_extent = crop.tile * self.config.scale;
+                    for (name, image, width) in [
+                        ("input", &low, crop.tile),
+                        ("nearest", &baseline, hr_extent),
+                        ("predicted", &predicted, hr_extent),
+                        ("reference", &reference, hr_extent),
+                    ] {
+                        let path = dir.join(format!("{name}.png"));
+                        if let Err(e) = eval::write_png(&path, image, width, width) {
+                            eprintln!("cannot write {}: {e}", path.display());
+                        }
+                    }
+                }
+                counted += 1;
+            }
+        }
+
+        if counted == 0 {
+            eprintln!("no validation crops were evaluated");
+            return None;
+        }
+        let baseline_error = baseline_total / counted as f64;
+        let network_error = network_total / counted as f64;
+        let gain = if network_error > 0.0 {
+            10.0 * (baseline_error / network_error).log10()
+        } else {
+            f64::INFINITY
+        };
         println!(
-            "  the network is not beating nearest upsampling — expected early \
-             in training, since the head starts at zero"
+            "  held-out over {counted} crops in {:.1}s: nearest {baseline_error:.6}, \
+             network {network_error:.6}, {gain:+.2} dB",
+            started.elapsed().as_secs_f32()
         );
+        Some(gain as f32)
     }
 }

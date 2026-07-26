@@ -81,20 +81,73 @@ fn ground(half_extent: f32, y: f32) -> (Vec<blade_render::Vertex>, Vec<u32>) {
     (vertices, vec![0, 3, 2, 0, 2, 1])
 }
 
+/// An axis-aligned box, with a rotation about the vertical axis.
+///
+/// Worth having alongside the spheres because it is the case the upscaler
+/// finds hardest and the spheres never present: a straight silhouette at an
+/// arbitrary angle, which is exactly where a spatial upscaler produces
+/// staircase artifacts, and a hard normal discontinuity at every edge.
+fn box_shape(center: [f32; 3], half: [f32; 3], yaw: f32) -> (Vec<blade_render::Vertex>, Vec<u32>) {
+    let (sin, cos) = yaw.sin_cos();
+    let rotate = |v: [f32; 3]| [v[0] * cos - v[2] * sin, v[1], v[0] * sin + v[2] * cos];
+
+    // Each face gets its own four vertices, so the normals stay hard.
+    let faces: [([f32; 3], [f32; 3]); 6] = [
+        ([1.0, 0.0, 0.0], [0.0, 0.0, 1.0]),
+        ([-1.0, 0.0, 0.0], [0.0, 0.0, -1.0]),
+        ([0.0, 1.0, 0.0], [1.0, 0.0, 0.0]),
+        ([0.0, -1.0, 0.0], [1.0, 0.0, 0.0]),
+        ([0.0, 0.0, 1.0], [-1.0, 0.0, 0.0]),
+        ([0.0, 0.0, -1.0], [1.0, 0.0, 0.0]),
+    ];
+
+    let mut vertices = Vec::with_capacity(24);
+    let mut indices = Vec::with_capacity(36);
+    for (normal, tangent) in faces {
+        let bitangent = cross(normal, tangent);
+        let base = vertices.len() as u32;
+        for (u, v) in [(-1.0f32, -1.0f32), (1.0, -1.0), (1.0, 1.0), (-1.0, 1.0)] {
+            let local = [
+                (normal[0] + u * tangent[0] + v * bitangent[0]) * half[0],
+                (normal[1] + u * tangent[1] + v * bitangent[1]) * half[1],
+                (normal[2] + u * tangent[2] + v * bitangent[2]) * half[2],
+            ];
+            let world = rotate(local);
+            vertices.push(blade_render::Vertex {
+                position: [
+                    center[0] + world[0],
+                    center[1] + world[1],
+                    center[2] + world[2],
+                ],
+                bitangent_sign: 1.0,
+                tex_coords: [(u + 1.0) * 0.5, (v + 1.0) * 0.5],
+                normal: encode_normal(rotate(normal)),
+                tangent: encode_normal(rotate(tangent)),
+            });
+        }
+        // Counter-clockwise seen from outside, matching the spheres.
+        indices.extend_from_slice(&[base, base + 1, base + 2, base, base + 2, base + 3]);
+    }
+    (vertices, indices)
+}
+
 /// How much variety to put into a generated scene.
 pub struct SceneConfig {
     /// Shaded spheres scattered over the ground.
     pub sphere_count: usize,
+    /// Shaded boxes scattered over the ground.
+    pub box_count: usize,
     /// Emissive spheres acting as local lights.
     pub light_count: usize,
-    /// Radius of the disc the spheres are scattered over.
+    /// Radius of the disc the objects are scattered over.
     pub spread: f32,
 }
 
 impl Default for SceneConfig {
     fn default() -> Self {
         Self {
-            sphere_count: 12,
+            sphere_count: 9,
+            box_count: 5,
             light_count: 3,
             spread: 4.0,
         }
@@ -104,17 +157,26 @@ impl Default for SceneConfig {
 /// Build one scene. The same `seed` always produces the same geometry.
 pub fn build(config: &SceneConfig, seed: u64) -> Vec<blade_render::ProceduralGeometry> {
     let mut rng = Rng::new(seed);
-    let mut geometries = Vec::with_capacity(config.sphere_count + config.light_count + 1);
+    let mut geometries =
+        Vec::with_capacity(config.sphere_count + config.box_count + config.light_count + 1);
 
     let (vertices, indices) = ground(config.spread * 3.0, 0.0);
+    let ground_tone = 0.25 + 0.45 * rng.uniform();
     geometries.push(blade_render::ProceduralGeometry {
         name: "ground".into(),
         vertices,
         indices,
-        // A mid-grey dielectric floor, which bounces light without dominating.
-        base_color_factor: [0.5, 0.5, 0.5, 1.0],
+        // A dielectric floor that bounces light without dominating. Its tone
+        // and roughness vary per scene, since a floor of one fixed brightness
+        // would let the network learn the backdrop rather than the geometry.
+        base_color_factor: [
+            ground_tone,
+            ground_tone * (0.85 + 0.3 * rng.uniform()),
+            ground_tone * (0.85 + 0.3 * rng.uniform()),
+            1.0,
+        ],
         metalness: 0.0,
-        roughness: 0.8,
+        roughness: 0.4 + 0.55 * rng.uniform(),
         emissive_factor: [0.0; 3],
     });
 
@@ -140,6 +202,34 @@ pub fn build(config: &SceneConfig, seed: u64) -> Vec<blade_render::ProceduralGeo
             // Kept off the mirror end: a near-zero roughness lobe is one the
             // real-time estimator cannot resolve at all, so those pixels teach
             // the network noise rather than structure.
+            roughness: 0.15 + 0.75 * rng.uniform(),
+            emissive_factor: [0.0; 3],
+        });
+    }
+
+    for i in 0..config.box_count {
+        let angle = std::f32::consts::TAU * rng.uniform();
+        let distance = config.spread * rng.uniform().sqrt();
+        let half = [
+            0.25 + 0.45 * rng.uniform(),
+            0.3 + 0.9 * rng.uniform(),
+            0.25 + 0.45 * rng.uniform(),
+        ];
+        // Resting on the ground, turned to an arbitrary angle so the edges do
+        // not line up with the pixel grid.
+        let center = [distance * angle.cos(), half[1], distance * angle.sin()];
+        let (vertices, indices) = box_shape(center, half, std::f32::consts::TAU * rng.uniform());
+        geometries.push(blade_render::ProceduralGeometry {
+            name: format!("box{i}"),
+            vertices,
+            indices,
+            base_color_factor: [
+                0.2 + 0.7 * rng.uniform(),
+                0.2 + 0.7 * rng.uniform(),
+                0.2 + 0.7 * rng.uniform(),
+                1.0,
+            ],
+            metalness: if rng.uniform() < 0.4 { 1.0 } else { 0.0 },
             roughness: 0.15 + 0.75 * rng.uniform(),
             emissive_factor: [0.0; 3],
         });
@@ -353,17 +443,20 @@ mod tests {
         let a = build(&config, 1);
         let b = build(&config, 1);
         let c = build(&config, 2);
-        assert_eq!(a.len(), config.sphere_count + config.light_count + 1);
+        assert_eq!(
+            a.len(),
+            config.sphere_count + config.box_count + config.light_count + 1
+        );
         assert_eq!(a[1].roughness, b[1].roughness, "same seed, same scene");
         assert_ne!(a[1].roughness, c[1].roughness, "seeds should differ");
     }
 
     #[test]
-    fn spheres_rest_on_the_ground() {
+    fn shaded_objects_rest_on_the_ground() {
         let config = SceneConfig::default();
         for geometry in build(&config, 5)
             .iter()
-            .filter(|g| g.name.starts_with("sphere"))
+            .filter(|g| g.name.starts_with("sphere") || g.name.starts_with("box"))
         {
             let lowest = geometry
                 .vertices
