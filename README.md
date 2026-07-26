@@ -14,6 +14,19 @@ its output.
 > no temporal context. See [`docs/design.md`](docs/design.md) for the
 > formulation and the roadmap.
 
+On 2400 procedural scenes at 128x128 to 256x256, with 360 held out, the
+network beats nearest upsampling by **5.12 dB**. Two findings from that run
+are worth knowing before reading further:
+
+- **The direct objective beats the diffusion one**, by 5.12 dB against 1.54,
+  with the diffusion arm given half again as much training. Worse for
+  diffusion, its sampler makes its own output worse the more it is used —
+  +3.31 dB at one step, +1.55 at twenty. Conditioning on the renderer's
+  G-buffer leaves little for a sampler to explore, so iterating only
+  accumulates the model's own error.
+- **The G-buffer is worth half a decibel** over colour alone, steadily, for
+  channels the renderer produced anyway.
+
 ## Layout
 
 | crate | what it does |
@@ -32,17 +45,20 @@ the `Context` a host renderer owns is not the type meganeura's session accepts.
 ```sh
 # Render a training set. Pick the GPU with OMMATIDIA_DEVICE_ID if there are several.
 cargo run --release -p ommatidia-data -- \
-    --out data/train.omd --samples 192 --lr 128x128 --scale 2
+    --out data/train.omd --samples 2400 --lr 128x128 --scale 2
 
 # Train, then reconstruct a crop and write input/nearest/predicted/reference PNGs.
 cargo run --release -p ommatidia-train -- \
-    --data data/train.omd --steps 2000 --objective direct \
+    --data data/train.omd --steps 8000 --objective direct --batch 8 \
+    --lr 3e-4 --lr-final 1e-5 --eval-every 1000 --checkpoint-every 1000 \
     --out runs/first --eval-out runs/first-eval
 ```
 
-`--objective direct` regresses the frame in one forward pass; `diffusion` is
-the quality ceiling and needs far more training. Both share a backbone, so a
-checkpoint of either loads into the same runtime.
+`--objective direct` regresses the frame in one forward pass and is the main
+line; `diffusion` shares the same backbone and is kept for comparison, not
+because it wins — see the status note above. A checkpoint of either loads into
+the same runtime, and `--eval-only` re-scores a finished one without retraining
+it, which is how the sampler-step sweep above was measured.
 
 Each sample stores the colour alongside the renderer's own depth, normals,
 albedo, specular reflectance, and roughness. That is the structural advantage a
@@ -71,6 +87,18 @@ upscaler.upscale(
 
 Connecting at raw Vulkan instead, so C++ engines can call in, is on the
 roadmap; the internals do not change, only the surface.
+
+Note the sampler still walks the chain on the host, one roundtrip per step, so
+a diffusion checkpoint is far from a frame budget. A direct one is a single
+forward pass, which is the other reason it is the main line.
+
+## A long run
+
+`scripts/curriculum.sh` drives one unattended, serialising its runs so they do
+not contend, and waiting rather than failing if the device is short of memory.
+`scripts/curve.py` lines the resulting runs up by step. Calibrate the step rate
+first: it is set by whatever else is using the GPU rather than by model size,
+and the cosine schedule needs the total step count up front.
 
 ## Tests
 
