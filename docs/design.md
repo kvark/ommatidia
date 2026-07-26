@@ -373,12 +373,42 @@ stops tracking arithmetic and settles on a floor — around 18 ms at 512x512
 input on a quiet device, so about 35 ms at 1080p, for a 16k-parameter network.
 That floor is per-dispatch and per-activation overhead, not arithmetic.
 
-So both have to move, and in that order. Shrinking the architecture is worth
-roughly 200x and is ours to do; it gets the cost down to where the floor
-becomes the binding constraint. Lifting the floor is a kernel-level
-conversation about fusing normalisation into convolution and about `f16`
-activations, and it is worth roughly another 17x. Neither alone reaches two
-milliseconds.
+### Shrinking the architecture does not get there
+
+Five shapes trained on the same data for 5000 steps each, then timed. The
+milliseconds are corrected for a 5.8x contention factor, calibrated from the
+reference shape measured both on a quiet device and beside another job:
+
+| shape | params | GFLOP @1080p | ms @1080p | held-out dB |
+|---|---|---|---|---|
+| base 64, 3 levels, 2 blocks | 6.50M | 1090 | 297 | +5.07 |
+| base 32, 3 levels, 1 block | 1.15M | 179 | 99 | +3.91 |
+| base 24, 3 levels, 1 block | 649k | 102 | 81 | **+4.10** |
+| base 16, 2 levels, 1 block | 71k | 31 | 56 | +2.92 |
+| base 8, 2 levels, 1 block | 18k | 8 | 33 | +1.45 |
+
+Cutting the arithmetic by **130x** cut the time by **9x**. The smallest network
+measured — eighteen thousand parameters, eight GFLOP, and only +1.45 dB of
+quality — still costs 33 ms at 1080p against a two millisecond budget.
+
+So the floor is the binding constraint, and no architecture reaches real time
+on this stack. At 8 GFLOP and roughly 50 dispatches, 33 ms is about 17x above
+even a bandwidth bound on the activations, so it is not launch overhead and not
+memory traffic: the kernels themselves lose efficiency at low channel counts,
+where a workgroup covering eight channels leaves most of the device idle.
+
+Two caveats on the quality column. Every shape got the same 5000 steps, so the
+larger ones are the more undertrained — which is why base 24 scores above base
+32, and why this is a snapshot of the frontier rather than its converged shape.
+And these are single runs at one seed.
+
+So both have to move, and in that order. Shrinking the architecture is worth about 9x
+in practice rather than the 130x its arithmetic suggests, and the table above
+is that measurement. Lifting the floor is worth the remaining 17x and is a
+kernel-level conversation: fusing normalisation into convolution, `f16`
+activations, and above all occupancy at the channel counts a real-time network
+actually uses. That is now the blocking work — the architecture lever is spent
+before it reaches the target.
 
 Two things that turned out **not** to be the problem, recorded so they are not
 re-investigated: Winograd, which is break-even here — disabling it via

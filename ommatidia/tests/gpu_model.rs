@@ -207,13 +207,13 @@ fn frame_cost_at_realistic_extents() {
 #[ignore = "requires a GPU"]
 fn frame_cost_by_model_size() {
     const TILE: u32 = 512;
-    let shapes: [(u32, usize, usize, &str); 6] = [
-        (64, 3, 2, "default"),
-        (48, 3, 1, "narrower, one block"),
-        (32, 3, 1, "half width"),
-        (32, 2, 1, "half width, two levels"),
-        (16, 2, 1, "quarter width, two levels"),
-        (16, 1, 1, "quarter width, flat"),
+    // The same shapes the quality sweep trains, so the two tables line up.
+    let shapes: [(u32, usize, usize, &str); 5] = [
+        (64, 3, 2, "reference"),
+        (32, 3, 1, "base 32, 3 levels"),
+        (24, 3, 1, "base 24, 3 levels"),
+        (16, 2, 1, "base 16, 2 levels"),
+        (8, 2, 1, "base 8, 2 levels"),
     ];
     for (base, levels, blocks, label) in shapes {
         let config = ModelConfig {
@@ -251,8 +251,9 @@ fn frame_cost_by_model_size() {
         let out_pixels = (TILE * config.scale) as f64 * (TILE * config.scale) as f64;
         let at_1080p = per_frame * 1e9 / out_pixels * 1920.0 * 1080.0 / 1e6;
         println!(
-            "{label:<28} base {base:>3}, {levels} levels, {blocks} blocks: \
-             {params:>9} params, {:>7.1} ms/frame => {at_1080p:>7.1} ms at 1080p",
+            "{label:<20} {params:>8} params, {:>7.1} GFLOP/1080p, \
+             {:>7.1} ms/frame => {at_1080p:>7.1} ms at 1080p",
+            config.flops(1920 * 1080),
             per_frame * 1e3,
         );
     }

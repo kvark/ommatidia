@@ -1,0 +1,108 @@
+==================================================================
+== pareto base 32, 3 levels, 1 blocks  16:40:14
+residual gain 15.26 (standard deviation 0.0656), measured over 16 samples
+2040 samples for training, 360 held out for scoring
+2400 samples, 128x128 -> 256x256, 14 conditioning channels, 12 output channels
+conditioning on Color, Depth, Normal, DiffuseAlbedo, SpecularF0, Roughness
+Direct objective, 3 levels, 1150784 parameters
+convolution cost: 182.4 GFLOP per 1080p frame
+compiling... 0.0s, 203 dispatches on AMD Radeon RX 7900 XT (RADV NAVI31)
+building the evaluation session... done
+step     500: loss 0.924559  (2.6 steps/s, 3m elapsed)
+step    1000: loss 0.648499  (2.5 steps/s, 7m elapsed)
+  held-out over 64 crops in 2.6s: nearest 0.004057, network 0.002067, +2.93 dB
+step    1500: loss 0.595491  (2.5 steps/s, 10m elapsed)
+step    2000: loss 0.557534  (2.5 steps/s, 13m elapsed)
+  held-out over 64 crops in 2.7s: nearest 0.004057, network 0.001824, +3.47 dB
+step    2500: loss 0.550332  (2.5 steps/s, 16m elapsed)
+step    3000: loss 0.529869  (2.5 steps/s, 20m elapsed)
+  held-out over 64 crops in 2.7s: nearest 0.004057, network 0.001692, +3.80 dB
+step    3500: loss 0.520939  (2.5 steps/s, 23m elapsed)
+step    4000: loss 0.532872  (2.5 steps/s, 26m elapsed)
+  held-out over 64 crops in 2.8s: nearest 0.004057, network 0.001648, +3.91 dB
+step    4500: loss 0.516478  (2.5 steps/s, 30m elapsed)
+step    5000: loss 0.513940  (2.5 steps/s, 33m elapsed)
+loss 0.924559 -> 0.513940 over 5000 steps in 1983.2s
+wrote /tmp/claude-1000/-x-Code-ommatidia/813ead43-6521-47d9-ace1-e3dae7f29a44/scratchpad/runs/pareto-b32-l3.safetensors and /tmp/claude-1000/-x-Code-ommatidia/813ead43-6521-47d9-ace1-e3dae7f29a44/scratchpad/runs/pareto-b32-l3.ron
+  held-out over 64 crops in 2.7s: nearest 0.004057, network 0.001648, +3.91 dB
+==================================================================
+== pareto base 24, 3 levels, 1 blocks  17:13:21
+residual gain 15.26 (standard deviation 0.0656), measured over 16 samples
+2040 samples for training, 360 held out for scoring
+2400 samples, 128x128 -> 256x256, 14 conditioning channels, 12 output channels
+conditioning on Color, Depth, Normal, DiffuseAlbedo, SpecularF0, Roughness
+Direct objective, 3 levels, 649200 parameters
+convolution cost: 104.1 GFLOP per 1080p frame
+compiling... 0.0s, 203 dispatches on AMD Radeon RX 7900 XT (RADV NAVI31)
+building the evaluation session... done
+step     500: loss 1.074467  (2.8 steps/s, 3m elapsed)
+step    1000: loss 0.761826  (4.8 steps/s, 4m elapsed)
+  held-out over 64 crops in 0.5s: nearest 0.004057, network 0.002122, +2.81 dB
+step    1500: loss 0.638861  (5.2 steps/s, 5m elapsed)
+step    2000: loss 0.581028  (4.4 steps/s, 8m elapsed)
+  held-out over 64 crops in 2.6s: nearest 0.004057, network 0.001815, +3.49 dB
+step    2500: loss 0.561270  (3.9 steps/s, 11m elapsed)
+step    3000: loss 0.535622  (3.7 steps/s, 14m elapsed)
+  held-out over 64 crops in 2.6s: nearest 0.004057, network 0.001639, +3.94 dB
+step    3500: loss 0.523930  (3.5 steps/s, 17m elapsed)
+step    4000: loss 0.534101  (3.4 steps/s, 19m elapsed)
+  held-out over 64 crops in 2.7s: nearest 0.004057, network 0.001578, +4.10 dB
+step    4500: loss 0.515668  (3.3 steps/s, 22m elapsed)
+step    5000: loss 0.513184  (3.3 steps/s, 25m elapsed)
+loss 1.074467 -> 0.513184 over 5000 steps in 1529.3s
+wrote /tmp/claude-1000/-x-Code-ommatidia/813ead43-6521-47d9-ace1-e3dae7f29a44/scratchpad/runs/pareto-b24-l3.safetensors and /tmp/claude-1000/-x-Code-ommatidia/813ead43-6521-47d9-ace1-e3dae7f29a44/scratchpad/runs/pareto-b24-l3.ron
+  held-out over 64 crops in 2.7s: nearest 0.004057, network 0.001578, +4.10 dB
+==================================================================
+== pareto base 16, 2 levels, 1 blocks  17:38:53
+residual gain 15.26 (standard deviation 0.0656), measured over 16 samples
+2040 samples for training, 360 held out for scoring
+2400 samples, 128x128 -> 256x256, 14 conditioning channels, 12 output channels
+conditioning on Color, Depth, Normal, DiffuseAlbedo, SpecularF0, Roughness
+Direct objective, 2 levels, 72416 parameters
+convolution cost: 32.9 GFLOP per 1080p frame
+compiling... 0.0s, 144 dispatches on AMD Radeon RX 7900 XT (RADV NAVI31)
+building the evaluation session... done
+step     500: loss 1.111780  (3.7 steps/s, 2m elapsed)
+step    1000: loss 0.864729  (3.7 steps/s, 5m elapsed)
+  held-out over 64 crops in 2.7s: nearest 0.004057, network 0.002447, +2.20 dB
+step    1500: loss 0.741162  (3.6 steps/s, 7m elapsed)
+step    2000: loss 0.674663  (3.6 steps/s, 9m elapsed)
+  held-out over 64 crops in 2.7s: nearest 0.004057, network 0.002173, +2.71 dB
+step    2500: loss 0.648226  (3.6 steps/s, 12m elapsed)
+step    3000: loss 0.617237  (3.6 steps/s, 14m elapsed)
+  held-out over 64 crops in 2.8s: nearest 0.004057, network 0.002097, +2.87 dB
+step    3500: loss 0.604496  (3.7 steps/s, 16m elapsed)
+step    4000: loss 0.619748  (4.1 steps/s, 16m elapsed)
+  held-out over 64 crops in 0.4s: nearest 0.004057, network 0.002070, +2.92 dB
+step    4500: loss 0.596413  (4.6 steps/s, 16m elapsed)
+step    5000: loss 0.593403  (5.1 steps/s, 16m elapsed)
+loss 1.111780 -> 0.593403 over 5000 steps in 988.7s
+wrote /tmp/claude-1000/-x-Code-ommatidia/813ead43-6521-47d9-ace1-e3dae7f29a44/scratchpad/runs/pareto-b16-l2.safetensors and /tmp/claude-1000/-x-Code-ommatidia/813ead43-6521-47d9-ace1-e3dae7f29a44/scratchpad/runs/pareto-b16-l2.ron
+  held-out over 64 crops in 0.5s: nearest 0.004057, network 0.002070, +2.92 dB
+==================================================================
+== pareto base 8, 2 levels, 1 blocks  17:55:22
+residual gain 15.26 (standard deviation 0.0656), measured over 16 samples
+2040 samples for training, 360 held out for scoring
+2400 samples, 128x128 -> 256x256, 14 conditioning channels, 12 output channels
+conditioning on Color, Depth, Normal, DiffuseAlbedo, SpecularF0, Roughness
+Direct objective, 2 levels, 19184 parameters
+convolution cost: 9.2 GFLOP per 1080p frame
+compiling... 0.0s, 144 dispatches on AMD Radeon RX 7900 XT (RADV NAVI31)
+building the evaluation session... done
+step     500: loss 1.244881  (55.1 steps/s, 0m elapsed)
+step    1000: loss 1.171050  (55.0 steps/s, 0m elapsed)
+  held-out over 64 crops in 0.2s: nearest 0.004057, network 0.003568, +0.56 dB
+step    1500: loss 1.108066  (54.4 steps/s, 0m elapsed)
+step    2000: loss 1.055242  (54.5 steps/s, 1m elapsed)
+  held-out over 64 crops in 0.2s: nearest 0.004057, network 0.003212, +1.01 dB
+step    2500: loss 1.021985  (30.9 steps/s, 1m elapsed)
+step    3000: loss 0.964062  (15.7 steps/s, 3m elapsed)
+  held-out over 64 crops in 1.4s: nearest 0.004057, network 0.002997, +1.32 dB
+step    3500: loss 0.942282  (11.5 steps/s, 5m elapsed)
+step    4000: loss 0.952357  (9.6 steps/s, 7m elapsed)
+  held-out over 64 crops in 1.3s: nearest 0.004057, network 0.002906, +1.45 dB
+step    4500: loss 0.909954  (8.5 steps/s, 9m elapsed)
+step    5000: loss 0.911566  (7.7 steps/s, 11m elapsed)
+loss 1.244881 -> 0.911566 over 5000 steps in 645.8s
+wrote /tmp/claude-1000/-x-Code-ommatidia/813ead43-6521-47d9-ace1-e3dae7f29a44/scratchpad/runs/pareto-b8-l2.safetensors and /tmp/claude-1000/-x-Code-ommatidia/813ead43-6521-47d9-ace1-e3dae7f29a44/scratchpad/runs/pareto-b8-l2.ron
+  held-out over 64 crops in 1.3s: nearest 0.004057, network 0.002906, +1.45 dB
