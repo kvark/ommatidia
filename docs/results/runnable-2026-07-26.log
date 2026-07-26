@@ -1,0 +1,60 @@
+==================================================================
+== runnable base 16, 2 levels, 1 blocks  19:57:33
+residual gain 15.26 (standard deviation 0.0656), measured over 16 samples
+2040 samples for training, 360 held out for scoring
+2400 samples, 128x128 -> 256x256, 14 conditioning channels, 12 output channels
+conditioning on Color, Depth, Normal, DiffuseAlbedo, SpecularF0, Roughness
+Direct objective, 2 levels, 72416 parameters
+convolution cost: 32.9 GFLOP per 1080p frame
+compiling... 0.0s, 155 dispatches on AMD Radeon RX 7900 XT (RADV NAVI31)
+building the evaluation session... done
+step    2000: loss 0.839721  (17.7 steps/s, 2m elapsed)
+  held-out over 64 crops in 0.4s: nearest 0.004057, network 0.002078, +2.91 dB
+step    4000: loss 0.592341  (17.5 steps/s, 4m elapsed)
+  held-out over 64 crops in 0.5s: nearest 0.004057, network 0.001836, +3.44 dB
+step    6000: loss 0.542328  (17.3 steps/s, 6m elapsed)
+  held-out over 64 crops in 0.5s: nearest 0.004057, network 0.001674, +3.85 dB
+step    8000: loss 0.522553  (17.3 steps/s, 8m elapsed)
+step   10000: loss 0.506750  (17.4 steps/s, 10m elapsed)
+  held-out over 64 crops in 0.5s: nearest 0.004057, network 0.001578, +4.10 dB
+step   12000: loss 0.492302  (17.4 steps/s, 11m elapsed)
+  held-out over 64 crops in 0.5s: nearest 0.004057, network 0.001518, +4.27 dB
+step   14000: loss 0.491918  (17.4 steps/s, 13m elapsed)
+  held-out over 64 crops in 0.5s: nearest 0.004057, network 0.001494, +4.34 dB
+step   16000: loss 0.491027  (17.4 steps/s, 15m elapsed)
+  held-out over 64 crops in 0.5s: nearest 0.004057, network 0.001480, +4.38 dB
+step   18000: loss 0.479347  (17.4 steps/s, 17m elapsed)
+step   20000: loss 0.480627  (18.3 steps/s, 18m elapsed)
+loss 0.839721 -> 0.480627 over 20000 steps in 1093.0s
+wrote /tmp/claude-1000/-x-Code-ommatidia/813ead43-6521-47d9-ace1-e3dae7f29a44/scratchpad/runs/runnable-b16.safetensors and /tmp/claude-1000/-x-Code-ommatidia/813ead43-6521-47d9-ace1-e3dae7f29a44/scratchpad/runs/runnable-b16.ron
+  held-out over 64 crops in 0.4s: nearest 0.004057, network 0.001480, +4.38 dB
+==================================================================
+== runnable base 24, 3 levels, 1 blocks  20:15:47
+residual gain 15.26 (standard deviation 0.0656), measured over 16 samples
+2040 samples for training, 360 held out for scoring
+2400 samples, 128x128 -> 256x256, 14 conditioning channels, 12 output channels
+conditioning on Color, Depth, Normal, DiffuseAlbedo, SpecularF0, Roughness
+Direct objective, 3 levels, 649200 parameters
+convolution cost: 104.1 GFLOP per 1080p frame
+compiling... 0.0s, 218 dispatches on AMD Radeon RX 7900 XT (RADV NAVI31)
+building the evaluation session... done
+step    2000: loss 0.756934  (39.3 steps/s, 1m elapsed)
+  held-out over 64 crops in 2.3s: nearest 0.004057, network 0.001589, +4.07 dB
+step    4000: loss 0.511332  (5.8 steps/s, 11m elapsed)
+  held-out over 64 crops in 2.7s: nearest 0.004057, network 0.001351, +4.77 dB
+step    6000: loss 0.470321  (4.3 steps/s, 23m elapsed)
+  held-out over 64 crops in 2.8s: nearest 0.004057, network 0.001285, +4.99 dB
+step    8000: loss 0.458106  (3.8 steps/s, 35m elapsed)
+step   10000: loss 0.448303  (4.2 steps/s, 39m elapsed)
+  held-out over 64 crops in 0.5s: nearest 0.004057, network 0.001253, +5.10 dB
+step   12000: loss 0.437981  (5.0 steps/s, 40m elapsed)
+  held-out over 64 crops in 0.5s: nearest 0.004057, network 0.001232, +5.18 dB
+step   14000: loss 0.439499  (4.9 steps/s, 48m elapsed)
+  held-out over 64 crops in 2.6s: nearest 0.004057, network 0.001225, +5.20 dB
+step   16000: loss 0.439495  (4.5 steps/s, 60m elapsed)
+  held-out over 64 crops in 2.8s: nearest 0.004057, network 0.001220, +5.22 dB
+step   18000: loss 0.430884  (4.2 steps/s, 72m elapsed)
+step   20000: loss 0.430809  (4.2 steps/s, 79m elapsed)
+loss 0.756934 -> 0.430809 over 20000 steps in 4716.8s
+wrote /tmp/claude-1000/-x-Code-ommatidia/813ead43-6521-47d9-ace1-e3dae7f29a44/scratchpad/runs/runnable-b24.safetensors and /tmp/claude-1000/-x-Code-ommatidia/813ead43-6521-47d9-ace1-e3dae7f29a44/scratchpad/runs/runnable-b24.ron
+  held-out over 64 crops in 0.5s: nearest 0.004057, network 0.001220, +5.22 dB

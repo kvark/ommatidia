@@ -347,25 +347,34 @@ The premise is a real-time budget, and the network is nowhere near one. All
 figures below are measured at 720x720 input, which is 1440x1440 out — the same
 2.07 million pixels as a 1080p frame — on an otherwise idle 7900 XT.
 
-| shape | params | GFLOP | before | after | % of peak | held-out dB |
-|---|---|---|---|---|---|---|
-| base 64, 3 levels, 2 blocks | 6.50M | 1096 | 656 | **122** | 15% | +5.07 |
-| base 32, 3 levels, 1 block | 1.15M | 182 | 131 | **35** | 8.6% | +3.91 |
-| base 24, 3 levels, 1 block | 649k | 104 | 89 | **28** | 6.1% | +4.10 |
-| base 16, 2 levels, 1 block | 72k | 33 | 42 | **15** | 3.5% | +2.92 |
-| base 8, 2 levels, 1 block | 19k | 9 | 21 | **8.8** | 1.7% | +1.45 |
+| shape | params | GFLOP | ms @1080p, start | ms now | held-out dB |
+|---|---|---|---|---|---|
+| base 64, 3 levels, 2 blocks | 6.50M | 1096 | 656 | 122 | +5.08 |
+| base 32, 3 levels, 1 block | 1.15M | 182 | 131 | 35 | — |
+| **base 24, 3 levels, 1 block** | **649k** | **104** | **89** | **28** | **+5.04** |
+| base 16, 2 levels, 1 block | 72k | 33 | 42 | **15** | +4.30 |
+| base 8, 2 levels, 1 block | 19k | 9 | 21 | 8.8 | — |
 
-The "after" column is the same networks and the same weights, following two
-kernel fixes in meganeura described below — 5.4x on the reference shape, 2.3x
-at the small end. Quality is untouched: a checkpoint trained before the changes
-scores 0.001247 where it scored 0.001248, which is float reassociation.
+Quality is on 128 held-out crops, every shape trained to 20000 steps except the
+reference, which had 8000 and had plateaued. **base 24 matches the reference
+within noise on a tenth of the arithmetic and a quarter of the frame time**, so
+the whole middle of this table was a measurement artefact of the earlier sweep,
+which gave every shape 5000 steps and so compared undertrained large networks
+against nearly-converged small ones. It read +4.10 for base 24 and +2.92 for
+base 16; trained out they are +5.04 and +4.30.
 
-Shrinking the network still works better than its arithmetic suggests — 119x
-fewer flops for 14x less time — and still runs out: the smallest shape costs
-8.8 ms against a 2 ms budget and buys only +1.45 dB. But the headroom argument
-has changed shape. The best quality point is now within 14x of the budget
-rather than 45x, and utilisation runs from 1.7% to 15%, so there is still a lot
-left on the table.
+Taken together with the kernel work, the frame went from 656 ms to 28 at equal
+quality — 23x — of which 5.4x was the kernels and the rest was not needing the
+larger network in the first place.
+
+The two kernel fixes below account for 5.4x of that on the reference shape and
+2.3x at the small end, with the weights untouched: a checkpoint trained before
+the changes scores 0.001247 where it scored 0.001248, which is float
+reassociation.
+
+28 ms is still 14x a two millisecond budget, and utilisation runs from 1.7% to
+15%, so there is a lot left. But the shape of the problem has changed: it is no
+longer obvious that quality has to be traded for it.
 
 Where the time goes, from `gpu_profile`'s per-pass timings:
 
