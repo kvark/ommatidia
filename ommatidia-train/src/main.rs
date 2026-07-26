@@ -62,6 +62,7 @@ struct Args {
     tile: u32,
     learning_rate: f32,
     learning_rate_final: Option<f32>,
+    grad_clip: f32,
     base_channels: u32,
     levels: usize,
     blocks_per_level: usize,
@@ -88,6 +89,7 @@ impl Default for Args {
             tile: 64,
             learning_rate: 2e-4,
             learning_rate_final: None,
+            grad_clip: 1.0,
             base_channels: 64,
             levels: 3,
             blocks_per_level: 2,
@@ -120,6 +122,7 @@ usage: ommatidia-train [options]
   --lr-final F         decay the rate to this by the last step, on a cosine.
                        Worth setting on a long run: a rate that was right for
                        the first hour is too coarse to settle in the last one
+  --grad-clip F        clip the gradient norm to this, 0 to disable  [1.0]
   --base-channels N    channel width of the first level  [64]
   --levels N           U-Net levels  [3]
   --blocks N           residual blocks per level  [2]
@@ -164,6 +167,9 @@ fn parse_from(argv: impl Iterator<Item = String>) -> Result<Args, String> {
             "--lr-final" => {
                 args.learning_rate_final =
                     Some(value()?.parse().map_err(|e| format!("--lr-final: {e}"))?)
+            }
+            "--grad-clip" => {
+                args.grad_clip = value()?.parse().map_err(|e| format!("--grad-clip: {e}"))?
             }
             "--base-channels" => {
                 args.base_channels = value()?
@@ -348,6 +354,15 @@ fn main() {
     );
     model.initialize(&mut session, args.seed);
     session.set_adam(args.learning_rate, 0.9, 0.999, 1e-8);
+    // On by default. A run measured in hours has many more chances to meet the
+    // one batch that blows the gradient up, and the cost of that is the whole
+    // run rather than one step. Clipping every fifth step amortises the extra
+    // readback while still catching the collapse, which builds over thousands
+    // of steps rather than one.
+    if args.grad_clip > 0.0 {
+        session.set_grad_clip_norm(args.grad_clip);
+        session.set_grad_clip_every(5);
+    }
 
     let mut batcher = batcher::Batcher::new(
         reader,
