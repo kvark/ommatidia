@@ -74,19 +74,22 @@ def main():
             best = max(run["held"], key=lambda h: h[4])
             print(f"    best {best[4]:+.2f} dB at step {best[0]}")
 
-    # Line the runs up wherever they were both scored, so the comparison is at
-    # matched steps rather than at whatever step each one ended on.
+    # Line the runs up by step, so a comparison is at matched compute rather
+    # than at whatever step each one happened to end on. Runs scored on
+    # different cadences simply leave gaps — requiring a step common to *every*
+    # run would drop the table entirely as soon as one run used a different
+    # --eval-every.
     if len(runs) > 1:
         names = list(runs)
-        common = set.intersection(*({h[0] for h in runs[n]["held"]} for n in names))
-        if common:
-            print("\n=== matched steps")
-            print("    step  " + "  ".join(f"{n:>18}" for n in names))
-            for step in sorted(common):
+        steps = sorted({h[0] for n in names for h in runs[n]["held"]})
+        if steps:
+            print("\n=== by step")
+            print("      step  " + "  ".join(f"{n:>18}" for n in names))
+            for step in steps:
                 cells = []
                 for n in names:
-                    db = next(h[4] for h in runs[n]["held"] if h[0] == step)
-                    cells.append(f"{db:+18.2f}")
+                    db = next((h[4] for h in runs[n]["held"] if h[0] == step), None)
+                    cells.append(f"{db:+18.2f}" if db is not None else " " * 18)
                 print(f"    {step:>6}  " + "  ".join(cells))
     return 0
 

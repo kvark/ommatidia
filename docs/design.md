@@ -47,6 +47,9 @@ scenes with 360 held out:
 | diffusion, 20 sampler steps | 12000 | +1.54 dB |
 | diffusion, 1 sampler step | 12000 | +3.31 dB |
 
+The raw logs are in `docs/results/`, and `scripts/curve.py` lines any two runs
+up by step.
+
 Diffusion was given half again as much training and lost by a wide margin. And
 the sampler, the thing the whole formulation is built around, makes the result
 *worse* the more it is used — monotonically, on the same checkpoint:
@@ -175,17 +178,30 @@ to reach, and it is reached in colour.
 
 ### It measurably helps
 
-Two runs over the same 192-sample set, same seed, same crops, same batch order,
+Two runs over the same 2400-scene set, same seed, same crops, same batch order,
 differing only in which channels reach the network — `--color-only` is the
-other arm, so no dataset is regenerated and nothing else can drift:
+other arm, so no dataset is regenerated and nothing else can drift. Scored on
+360 held-out scenes at every thousand steps:
 
-| conditioning | training loss | held-out MSE | vs nearest |
+| step | colour + G-buffer | colour alone | difference |
 |---|---|---|---|
-| colour + G-buffer | 0.163 | 0.000718 | 6.64 dB |
-| colour alone | 0.199 | 0.000836 | 5.98 dB |
+| 938 | +3.43 dB | +3.19 dB | +0.24 |
+| 1876 | +4.41 | +4.00 | +0.41 |
+| 2948 | +4.79 | +4.29 | +0.50 |
+| 3886 | +4.99 | +4.48 | +0.51 |
+| 4958 | +5.07 | +4.56 | +0.51 |
+| 8000 | **+5.12** | **+4.61** | **+0.51** |
 
-0.66 dB, a 14% reduction in reconstruction error, for channels the renderer
-had already produced.
+Half a decibel, holding steady across the whole run, for channels the renderer
+had already produced. An earlier version of this comparison on a 192-scene set
+measured 0.66 dB; the gap narrowing slightly as the data grows is what one
+would expect, since more scenes give the colour-only arm more chance to learn
+what the G-buffer would otherwise have told it.
+
+Absolute numbers are not comparable between the two sets — the nearest baseline
+itself moved from 0.0033 to 0.0041 when boxes entered the scene distribution,
+because straight silhouettes carry high frequency content that spheres do not.
+Only the within-set difference means anything.
 
 The first attempt at this comparison scored one crop of one *training* sample
 and reported the two arms as indistinguishable. Both halves of that were wrong:

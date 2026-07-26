@@ -1,0 +1,12 @@
+# Sampler step sweep, diffusion-2400 checkpoint, 12 crops
+sampler-steps 1   : nearest 0.004101, network 0.001793, +3.59 dB
+sampler-steps 2   : nearest 0.004101, network 0.001793, +3.59 dB
+sampler-steps 4   : nearest 0.004101, network 0.002310, +2.49 dB
+sampler-steps 8   : nearest 0.004101, network 0.002193, +2.72 dB
+sampler-steps 16  : nearest 0.004101, network 0.002591, +1.99 dB
+sampler-steps 32  : nearest 0.004101, network 0.002687, +1.84 dB
+
+# Sampler step sweep, diffusion-2400 checkpoint, 64 crops
+sampler-steps 1   (64 crops): nearest 0.004057, network 0.001895, +3.31 dB
+sampler-steps 2   (64 crops): nearest 0.004057, network 0.001895, +3.31 dB
+sampler-steps 20  (64 crops): nearest 0.004057, network 0.002840, +1.55 dB
