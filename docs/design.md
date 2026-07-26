@@ -192,6 +192,21 @@ sharper version of the same estimator, it is being taught what the estimator is
 converging to, which means it can learn to remove the estimator's bias and not
 just its aliasing.
 
+The corollary is that a change to the canonical renderer invalidates the
+dataset. Blade's `732d0ef` fixed next event estimation losing the share of the
+contribution it had held back for a BSDF sample that a terminating path never
+takes, which made every reference frame slightly dark. A set generated before
+it teaches the network to reproduce that bias. Regenerate rather than reuse.
+
+Scenes carry spheres and boxes over a ground plane, lit by an ambient
+environment and a few emissive spheres, with material, layout, and viewpoint
+randomised per sample. The boxes matter more than the count suggests: spheres
+never present a straight silhouette at an arbitrary angle, which is exactly
+where a spatial upscaler staircases, nor a hard normal discontinuity. The
+ground's tone and roughness vary per scene too, since a floor of one fixed
+brightness in every sample is something the network can learn instead of the
+geometry.
+
 ## File format
 
 `.omd`, described in `ommatidia::dataset`. A fixed 64 byte header followed by
@@ -242,6 +257,27 @@ Per frame:
 
 Pack and unpack are ommatidia's own WGSL, dispatched onto the caller's command
 encoder, so the whole thing is one recorded sequence with no CPU roundtrip.
+
+## Training
+
+`scripts/curriculum.sh` drives a long run. Two things it does are worth
+repeating anywhere else this gets run.
+
+It **serialises** the runs. Two trainings on one GPU contend for the same cores
+and the same memory, so running them one after another costs nothing in
+throughput and keeps the footprint to one model — which matters, because this
+device is often shared with something else entirely.
+
+It **calibrates before sizing**. Step rate here is set by contention, not by
+model size: the same network measured 8.3 steps/s on an idle device and 1.1
+steps/s beside another training process. Sizing a run from a figure measured in
+the other regime is wrong by an order of magnitude, and the cosine learning rate
+schedule needs the total step count up front, so it cannot be corrected
+halfway.
+
+The trainer scores a held-out split periodically rather than only at the end,
+which is what makes a multi-hour run steerable, and checkpoints on the same
+cadence so a crash costs one interval rather than everything.
 
 ## Roadmap
 
