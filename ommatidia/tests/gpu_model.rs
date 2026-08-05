@@ -36,7 +36,8 @@ fn filled(rng: &mut Rng, len: usize, scale: f32) -> Vec<f32> {
 fn inference_session_runs() {
     let config = config();
     let model = build(&config, false).expect("build");
-    let mut session = meganeura::build_inference_session(&model.graph);
+    let mut session =
+        ommatidia::gpu::inference_session(&model.graph, ommatidia::gpu::context(false));
     model.initialize(&mut session, 1);
 
     let mut rng = Rng::new(7);
@@ -67,7 +68,8 @@ fn inference_session_runs() {
 fn training_overfits_one_batch() {
     let config = config();
     let model = build(&config, true).expect("build");
-    let mut session = meganeura::build_session(&model.graph);
+    let mut session =
+        ommatidia::gpu::training_session(&model.graph, ommatidia::gpu::context(false));
     model.initialize(&mut session, 1);
 
     let mut rng = Rng::new(3);
@@ -111,7 +113,8 @@ fn direct_objective_runs_without_a_timestep() {
     let mut config = config();
     config.objective = Objective::Direct;
     let model = build(&config, true).expect("build");
-    let mut session = meganeura::build_session(&model.graph);
+    let mut session =
+        ommatidia::gpu::training_session(&model.graph, ommatidia::gpu::context(false));
     model.initialize(&mut session, 1);
 
     let mut rng = Rng::new(5);
@@ -150,6 +153,7 @@ fn direct_objective_runs_without_a_timestep() {
 #[test]
 #[ignore = "requires a GPU"]
 fn frame_cost_at_realistic_extents() {
+    ommatidia::gpu::warn_if_busy();
     // Square, because ModelConfig carries one extent for both axes. 720^2 in
     // is 1440^2 out, which has the same 2.07M pixels as 1080p, so that row is
     // the 1080p cost measured rather than extrapolated.
@@ -181,7 +185,8 @@ fn frame_cost_at_realistic_extents() {
             println!("{tile}^2: rejected by validate()");
             continue;
         };
-        let mut session = meganeura::build_inference_session(&model.graph);
+        let mut session =
+            ommatidia::gpu::inference_session(&model.graph, ommatidia::gpu::context(false));
         model.initialize(&mut session, 1);
 
         let mut rng = Rng::new(1);
@@ -224,6 +229,7 @@ fn frame_cost_at_realistic_extents() {
 #[test]
 #[ignore = "requires a GPU"]
 fn frame_cost_by_model_size() {
+    ommatidia::gpu::warn_if_busy();
     // 720^2 in is 1440^2 out: the same 2.07M pixels as a 1080p frame, so these
     // are measured at the extent that matters rather than scaled to it.
     const TILE: u32 = 720;
@@ -259,7 +265,8 @@ fn frame_cost_by_model_size() {
             continue;
         };
         let params: usize = model.params.iter().map(|p| p.len).sum();
-        let mut session = meganeura::build_inference_session(&model.graph);
+        let mut session =
+            ommatidia::gpu::inference_session(&model.graph, ommatidia::gpu::context(false));
         model.initialize(&mut session, 1);
         let mut rng = Rng::new(1);
         session.set_input("cond", &filled(&mut rng, config.cond_len(), 0.5));
@@ -284,4 +291,22 @@ fn frame_cost_by_model_size() {
             per_frame * 1e3,
         );
     }
+}
+
+/// Which adapter a session actually lands on.
+///
+/// Meganeura's core stopped reading the environment, so `MEGANEURA_DEVICE_ID`
+/// no longer reaches a session built through `build_inference_session`. On a
+/// machine with an integrated and a discrete GPU that is the difference
+/// between a benchmark and a fiction, so it is worth asserting rather than
+/// assuming.
+#[test]
+#[ignore = "requires a GPU"]
+fn reports_the_selected_adapter() {
+    let model = build(&config(), false).expect("build");
+    let session = ommatidia::gpu::inference_session(&model.graph, ommatidia::gpu::context(false));
+    println!(
+        "session landed on: {}",
+        session.device_information().device_name
+    );
 }

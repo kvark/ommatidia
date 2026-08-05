@@ -343,7 +343,7 @@ fn main() {
                 std::process::exit(1);
             }
         };
-        let mut evaluator = Evaluator::new(&stored);
+        let mut evaluator = Evaluator::new(&stored, ommatidia::gpu::context(false));
         if let Err(e) = evaluator.session.load_checkpoint(&paths.weights) {
             eprintln!("cannot load {}: {e}", paths.weights.display());
             std::process::exit(1);
@@ -407,7 +407,11 @@ fn main() {
     use std::io::Write as _;
     let _ = std::io::stdout().flush();
     let started = std::time::Instant::now();
-    let mut session = meganeura::build_session(&model.graph);
+    // One context, shared by the training session and the evaluator. Two
+    // would contend for the same queue, and neither would land on the right
+    // adapter without being told which one.
+    let context = ommatidia::gpu::context(false);
+    let mut session = ommatidia::gpu::training_session(&model.graph, context.clone());
     println!(
         "{:.1}s, {} dispatches on {}",
         started.elapsed().as_secs_f32(),
@@ -439,7 +443,7 @@ fn main() {
     // compile and a checkpoint round trip.
     print!("building the evaluation session... ");
     let _ = std::io::stdout().flush();
-    let mut evaluator = Evaluator::new(&config);
+    let mut evaluator = Evaluator::new(&config, context.clone());
     println!("done");
 
     let mut recent = Vec::new();
@@ -554,12 +558,12 @@ impl Evaluator {
     /// training one, because they are the same: only the batch differs between
     /// the two graphs, and no parameter's shape depends on it. That is also
     /// what lets a checkpoint be scored with no training session in sight.
-    fn new(config: &ModelConfig) -> Self {
+    fn new(config: &ModelConfig, context: std::sync::Arc<blade_graphics::Context>) -> Self {
         let mut eval_config = config.clone();
         eval_config.batch = 1;
         let eval_model =
             model::build(&eval_config, false).expect("the caller validated this config");
-        let session = meganeura::build_inference_session(&eval_model.graph);
+        let session = ommatidia::gpu::inference_session(&eval_model.graph, context);
         let names = eval_model.params.iter().map(|p| p.name.clone()).collect();
         let widest = eval_model.params.iter().map(|p| p.len).max().unwrap_or(0);
         Self {

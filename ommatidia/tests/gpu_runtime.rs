@@ -62,7 +62,8 @@ fn config() -> ModelConfig {
 /// agree, not whether the weights are any good.
 fn write_checkpoint(config: &ModelConfig, stem: &std::path::Path) {
     let model = ommatidia::model::build(config, false).expect("build");
-    let mut session = meganeura::build_inference_session(&model.graph);
+    let mut session =
+        ommatidia::gpu::inference_session(&model.graph, ommatidia::gpu::context(false));
     model.initialize(&mut session, 3);
     ommatidia::checkpoint::save(&mut session, config, stem).expect("save");
 }

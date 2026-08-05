@@ -11,12 +11,13 @@
 //! are slow. If they do not, the gap is submission and synchronisation.
 //!
 //! ```sh
-//! MEGANEURA_GPU_TIMING=1 MEGANEURA_DEVICE_ID=0x744c \
+//! OMMATIDIA_DEVICE_ID=0x744c \
 //!   cargo test -p ommatidia --release --test gpu_profile -- --ignored --nocapture
 //! ```
 //!
-//! Needs `MEGANEURA_GPU_TIMING` set, or the context is built without timestamp
-//! queries and there is nothing to report.
+//! Timestamps and the rewrite policy are typed options here, not environment
+//! variables — meganeura's core stopped reading the environment, so a client
+//! that wants either has to ask.
 
 use ommatidia::model::{ModelConfig, Objective, build};
 use ommatidia::rng::Rng;
@@ -43,6 +44,34 @@ fn config(tile: u32) -> ModelConfig {
     }
 }
 
+/// Build an inference session with timestamps enabled and an explicit
+/// rewrite policy.
+///
+/// Meganeura's core no longer reads the environment, so both of the things
+/// this test needs — timestamp query pools, and whether the Winograd rewrite
+/// fires — arrive as typed options. That also makes the Winograd comparison a
+/// single self-contained run instead of two invocations with a variable
+/// flipped between them.
+fn profiling_session(
+    graph: &meganeura::Graph,
+    context: std::sync::Arc<blade_graphics::Context>,
+    winograd: bool,
+) -> meganeura::Session {
+    meganeura::train::build(
+        graph,
+        meganeura::SessionConfig {
+            mode: meganeura::Mode::Inference,
+            gpu: Some(context),
+            optimize: meganeura::OptimizeConfig {
+                no_winograd: !winograd,
+                ..Default::default()
+            },
+            ..Default::default()
+        },
+    )
+    .0
+}
+
 /// GroupNorm launches `batch * num_groups` workgroups regardless of how big
 /// the image is, so at batch 1 it runs on a handful of the device's compute
 /// units whatever the resolution. Raising the group count is a direct test of
@@ -53,15 +82,13 @@ fn config(tile: u32) -> ModelConfig {
 #[test]
 #[ignore = "requires a GPU"]
 fn group_norm_parallelism_is_independent_of_image_size() {
-    if std::env::var("MEGANEURA_GPU_TIMING").is_err() {
-        println!("set MEGANEURA_GPU_TIMING=1 for per-pass timings; skipping");
-        return;
-    }
+    ommatidia::gpu::warn_if_busy();
+    let context = ommatidia::gpu::context(true);
     for groups in [8u32, 32, 64] {
         let mut config = config(512);
         config.num_groups = groups;
         let model = build(&config, false).expect("build");
-        let mut session = meganeura::build_inference_session(&model.graph);
+        let mut session = profiling_session(&model.graph, context.clone(), true);
         model.initialize(&mut session, 1);
         let mut rng = Rng::new(1);
         let cond: Vec<f32> = (0..config.cond_len()).map(|_| rng.normal() * 0.5).collect();
@@ -89,15 +116,13 @@ fn group_norm_parallelism_is_independent_of_image_size() {
 #[test]
 #[ignore = "requires a GPU"]
 fn where_the_frame_time_goes() {
-    if std::env::var("MEGANEURA_GPU_TIMING").is_err() {
-        println!("set MEGANEURA_GPU_TIMING=1 for per-pass timings; skipping");
-        return;
-    }
+    ommatidia::gpu::warn_if_busy();
+    let context = ommatidia::gpu::context(true);
 
     const TILE: u32 = 512;
     let config = config(TILE);
     let model = build(&config, false).expect("build");
-    let mut session = meganeura::build_inference_session(&model.graph);
+    let mut session = profiling_session(&model.graph, context.clone(), true);
     model.initialize(&mut session, 1);
 
     let dispatches = session.plan().dispatches.len();
@@ -149,4 +174,68 @@ fn where_the_frame_time_goes() {
         println!("after profiled step {round}:");
         session.dump_gpu_timings();
     }
+}
+
+/// Winograd against the direct convolution path, in one run.
+///
+/// The rewrite fires only above `in_channels * out_channels >= 4096`, a
+/// heuristic with no term for the image size, so a workload with modest
+/// channels over a large frame sits right at its boundary. This measures
+/// which side it belongs on rather than arguing about it.
+///
+/// The two arms are **interleaved**, not run one after the other. Anything
+/// else sharing the GPU drifts over the seconds a sequential comparison takes,
+/// and a drift between the arms lands entirely on whichever ran second — which
+/// is enough to reverse the verdict. Alternating rounds spreads it across both.
+#[test]
+#[ignore = "requires a GPU"]
+fn winograd_earns_its_place() {
+    ommatidia::gpu::warn_if_busy();
+    let context = ommatidia::gpu::context(false);
+    let config = config(512);
+    let model = build(&config, false).expect("build");
+
+    let mut sessions: Vec<meganeura::Session> = [true, false]
+        .into_iter()
+        .map(|winograd| {
+            let mut session = profiling_session(&model.graph, context.clone(), winograd);
+            model.initialize(&mut session, 1);
+            let mut rng = Rng::new(1);
+            let cond: Vec<f32> = (0..config.cond_len()).map(|_| rng.normal() * 0.5).collect();
+            session.set_input("cond", &cond);
+            for _ in 0..3 {
+                session.step();
+                session.wait();
+            }
+            session
+        })
+        .collect();
+
+    const ROUNDS: usize = 8;
+    let mut totals = [0.0f64; 2];
+    for _ in 0..ROUNDS {
+        for (arm, session) in sessions.iter_mut().enumerate() {
+            let started = std::time::Instant::now();
+            session.step();
+            session.wait();
+            totals[arm] += started.elapsed().as_secs_f64();
+        }
+    }
+
+    let on = totals[0] / ROUNDS as f64 * 1e3;
+    let off = totals[1] / ROUNDS as f64 * 1e3;
+    println!(
+        "winograd on : {on:>8.1} ms/frame, {} dispatches",
+        sessions[0].plan().dispatches.len()
+    );
+    println!(
+        "winograd off: {off:>8.1} ms/frame, {} dispatches",
+        sessions[1].plan().dispatches.len()
+    );
+    println!("winograd is {:.2}x the direct path", off / on);
+
+    // Not asserted as a ratio: the margin depends on the device, and a busy
+    // one compresses every ratio toward one. Printed so a regression in
+    // either path shows up in the log.
+    assert!(on.is_finite() && off.is_finite());
 }
