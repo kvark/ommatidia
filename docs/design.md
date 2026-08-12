@@ -86,13 +86,13 @@ schedule. The diffusion path stays because the backbone is shared and the
 comparison is worth being able to re-run, and because the caveats above are
 real. It is no longer the thing to beat.
 
-## Formulation: sub-pixel residual diffusion
+## Formulation: sub-pixel residual reconstruction
 
 The naive setup runs the U-Net at output resolution. For a 4K target that is
 four times the work of running it at 1080p, which is the wrong place to spend
 the budget: the conditioning signal only exists at low resolution anyway.
 
-Instead, ommatidia diffuses in a **sub-pixel space** at input resolution.
+Instead, Ommatidium predicts in a **sub-pixel space** at input resolution.
 
 Let `S` be the scale factor, `(W, H)` the low resolution extent. The target
 high resolution image `Y` of shape `[3, S*H, S*W]` is rearranged into
@@ -113,14 +113,15 @@ convention to get wrong.
 Three things fall out of this:
 
 - The entire network runs at low resolution. Input, every level, and output.
-- Diffusion is well posed: `x_t` and the predicted noise have the same shape.
+- Direct residuals—and the optional diffusion experiment's `x_t`—have the
+  same low-resolution spatial shape.
 - The output head is a free reindex. The unpack shader writes sub-pixel
   channel `c*S^2 + dy*S + dx` to high resolution texel `(S*x + dx, S*y + dy)`,
   adding the low resolution pixel back as it goes.
 
-It also puts the diffusion where the uncertainty actually is. The low frequency
-content is already determined by the input; only the sub-pixel detail is being
-invented, so that is the only thing the noise schedule has to cover.
+It also puts the learned correction where the uncertainty actually is. The low
+frequency content is already determined by the input; only denoising and
+sub-pixel detail need to be reconstructed.
 
 ### Two things this formulation gets wrong if you are not careful
 
@@ -359,7 +360,7 @@ idle RX 7900 XT: **20.13 ms** for the model, excluding pack/unpack.
 |---|---|---|---|---|---|
 | base 64, 3 levels, 2 blocks | 6.50M | 1096 | 656 | 122 | +5.08 |
 | base 32, 3 levels, 1 block | 1.15M | 182 | 131 | 35 | — |
-| **base 24, 3 levels, 1 block** | **649k** | **104** | **89** | **28** | **+5.04** |
+| **base 24, 3 levels, 1 block** | **649k** | **104** | **89** | **20.13** | **+5.04** |
 | base 16, 2 levels, 1 block | 72k | 33 | 42 | **15** | +4.30 |
 | base 8, 2 levels, 1 block | 19k | 9 | 21 | 8.8 | — |
 
@@ -371,26 +372,38 @@ which gave every shape 5000 steps and so compared undertrained large networks
 against nearly-converged small ones. It read +4.10 for base 24 and +2.92 for
 base 16; trained out they are +5.04 and +4.30.
 
-Taken together with the kernel work, the frame went from 656 ms to 28 at equal
-quality — 23x — of which 5.4x was the kernels and the rest was not needing the
-larger network in the first place.
+Taken together with the kernel work, the deployment shape went from 656 ms to
+20.13 ms at equal historical quality. The most recent figure is an actual
+rectangular 960×540 input rather than the equal-pixel square proxy used during
+the earlier optimization work.
 
 The two kernel fixes below account for 5.4x of that on the reference shape and
 2.3x at the small end, with the weights untouched: a checkpoint trained before
 the changes scores 0.001247 where it scored 0.001248, which is float
 reassociation.
 
-28 ms is still 14x a two millisecond budget, and utilisation runs from 1.7% to
-15%, so there is a lot left. But the shape of the problem has changed: it is no
-longer obvious that quality has to be traded for it.
+20.13 ms for the model alone is about 50 fps, so it still misses a 60 fps frame
+budget before texture packing, unpacking, and the renderer are counted. It is
+promising, but it is not yet a 1080p real-time claim for the complete product.
 
 Where the time goes, from `gpu_profile`'s per-pass timings:
 
-| | share |
-|---|---|
-| convolution (Winograd transforms, batched matmuls, GEMM) | ~62% |
-| GroupNorm + SiLU | ~34% |
-| everything else | ~4% |
+| family | dispatches | time | share |
+|---|---:|---:|---:|
+| spatial convolution | 45 | 17.14 ms | 86.8% |
+| normalization and reduction | 30 | 1.53 ms | 7.7% |
+| pointwise | 7 | 0.57 ms | 2.9% |
+| data movement | 2 | 0.50 ms | 2.6% |
+
+The trace covers 96.2% of the instrumented wall time. Instrumentation measured
+2.4% over the separate uninstrumented median; it is used to explain that median,
+not replace it. The largest individual dispatch is the convolution after the
+full-resolution decoder concatenation, at roughly 4 ms and one fifth of the
+frame.
+
+The kernel discussion below records the optimization history at the old square
+proxy. Its relative findings led to the current kernels, but its absolute
+milliseconds are not deployment measurements.
 
 ### Two kernels were leaving the device idle
 

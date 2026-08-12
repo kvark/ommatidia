@@ -31,6 +31,15 @@ stable model. The initial gate will therefore report compressed-space PSNR,
 SSIM, and a temporal error measured after ground-truth reprojection, with
 disoccluded pixels excluded.
 
+NVIDIA's public material does not disclose a single DLSS training or acceptance
+metric to copy. Its [DLSS 2.0 overview](https://developer.nvidia.com/blog/dlss-2-0-ai-rendering)
+does emphasize temporal feedback and frame-to-frame stability, while NVIDIA's
+[temporal denoising research](https://research.nvidia.com/publication/2020-05_neural-temporal-adaptive-sampling-and-denoising)
+co-trains on consecutive frames and calls out disocclusions and moving specular
+highlights. PSNR therefore remains the radiometric anchor, SSIM catches lost
+local structure, and sequence tests must add motion-compensated temporal error
+plus visual regression clips. No one scalar should be a release gate.
+
 NVIDIA's public [Streamline DLSS integration contract](https://github.com/NVIDIAGameWorks/Streamline/blob/main/docs/ProgrammingGuideDLSS.md)
 is a useful minimum bar: input
 color, output color, depth, motion vectors, exposure, jitter, reset state, and

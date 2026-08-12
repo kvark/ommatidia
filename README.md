@@ -1,5 +1,7 @@
 # ommatidia
 
+[![check](https://github.com/kvark/ommatidia/actions/workflows/check.yml/badge.svg)](https://github.com/kvark/ommatidia/actions/workflows/check.yml)
+
 Neural frame reconstruction from sparse samples — a portable DLSS replacement.
 
 The network runs through [meganeura](https://github.com/kvark/meganeura) on
@@ -130,9 +132,10 @@ not because it wins — see the status note above. A checkpoint of either loads
 into the same runtime, and `--eval-only` re-scores a finished one without
 retraining it, which is how the sampler-step sweep above was measured.
 
-The generator defaults to one sparse path per input pixel and 4,096 paths per
-reference pixel. `--restir-input` and `--svgf-input` exist only for matched
-Blade baselines; SVGF datasets are tagged and need the trainer's explicit
+The generator defaults to one three-bounce sparse path per input pixel and
+4,096 eight-bounce paths per reference pixel (with Russian roulette after the
+fourth bounce). `--restir-input` and `--svgf-input` exist only for matched Blade
+baselines; SVGF datasets are tagged and need the trainer's explicit
 `--allow-filtered-input` override.
 
 Passing `--checkpoint runs/first --preview runs/live` to the generator also
