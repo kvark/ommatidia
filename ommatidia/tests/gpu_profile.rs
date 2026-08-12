@@ -11,7 +11,7 @@
 //! are slow. If they do not, the gap is submission and synchronisation.
 //!
 //! ```sh
-//! OMMATIDIA_DEVICE_ID=0x744c \
+//! OMMATIDIA_TEST_DEVICE_ID=0x744c \
 //!   cargo test -p ommatidia --release --test gpu_profile -- --ignored --nocapture
 //! ```
 //!
@@ -22,6 +22,15 @@
 use ommatidia::model::{ModelConfig, Objective, build};
 use ommatidia::rng::Rng;
 use ommatidia::{Plane, PlaneSet};
+
+fn context(timing: bool) -> std::sync::Arc<blade_graphics::Context> {
+    let value = std::env::var("OMMATIDIA_TEST_DEVICE_ID").expect(
+        "profiling requires OMMATIDIA_TEST_DEVICE_ID; silently profiling the default adapter is not trustworthy",
+    );
+    let device_id =
+        ommatidia::gpu::parse_device_id(&value).expect("invalid OMMATIDIA_TEST_DEVICE_ID");
+    ommatidia::gpu::create_context(Some(device_id), timing)
+}
 
 fn config(tile: u32) -> ModelConfig {
     ModelConfig {
@@ -94,7 +103,7 @@ fn profiling_session(
 #[ignore = "requires a GPU"]
 fn group_norm_parallelism_is_independent_of_image_size() {
     ommatidia::gpu::warn_if_busy();
-    let context = ommatidia::gpu::context(true);
+    let context = context(true);
     for groups in [8u32, 32, 64] {
         let mut config = config(512);
         config.num_groups = groups;
@@ -128,7 +137,7 @@ fn group_norm_parallelism_is_independent_of_image_size() {
 #[ignore = "requires a GPU"]
 fn where_the_frame_time_goes() {
     ommatidia::gpu::warn_if_busy();
-    let context = ommatidia::gpu::context(true);
+    let context = context(true);
 
     // 720^2 input -> 1440^2 output has the same output pixel count as 1080p.
     const TILE: u32 = 720;
@@ -151,13 +160,17 @@ fn where_the_frame_time_goes() {
         session.step();
         session.wait();
     }
-    const RUNS: u32 = 10;
-    let started = std::time::Instant::now();
-    for _ in 0..RUNS {
-        session.step();
-        session.wait();
-    }
-    let wall = started.elapsed().as_secs_f64() / RUNS as f64;
+    const RUNS: usize = 20;
+    let mut wall_samples_ms: Vec<f64> = (0..RUNS)
+        .map(|_| {
+            let started = std::time::Instant::now();
+            session.step();
+            session.wait();
+            started.elapsed().as_secs_f64() * 1e3
+        })
+        .collect();
+    wall_samples_ms.sort_by(f64::total_cmp);
+    let wall_ms = (wall_samples_ms[RUNS / 2 - 1] + wall_samples_ms[RUNS / 2]) * 0.5;
 
     println!(
         "\n{TILE}^2 -> {}^2, {} parameters, {dispatches} dispatches in {groups} barrier groups \
@@ -166,10 +179,10 @@ fn where_the_frame_time_goes() {
         model.params.iter().map(|p| p.len).sum::<usize>(),
         dispatches as f64 / groups as f64,
     );
-    println!("unprofiled wall clock: {:.2} ms/frame", wall * 1e3);
+    println!("unprofiled wall median: {wall_ms:.2} ms/frame");
     println!(
         "if launch bound, that is {:.1} us per dispatch\n",
-        wall * 1e6 / dispatches as f64
+        wall_ms * 1e3 / dispatches as f64
     );
 
     // Meganeura's structured profiler retains repeated per-dispatch samples,
@@ -181,11 +194,19 @@ fn where_the_frame_time_goes() {
         |_| {},
         meganeura::profiler::CaptureOptions {
             samples: 5,
-            unprofiled_median_ms: Some(wall * 1e3),
+            unprofiled_median_ms: Some(wall_ms),
             include_pipeline_statistics: true,
         },
     )
     .expect("capture deployment profile");
+
+    println!(
+        "profile instrumentation: {:.1}% of normal wall time; timestamps cover {:.1}% of profiled wall time",
+        profile.measurement.instrumentation_wall_ratio.unwrap() * 100.0,
+        profile
+            .measurement
+            .timestamped_gpu_share_of_profiled_wall_pct,
+    );
 
     println!("profiled GPU total by kernel family:");
     for family in &profile.families {
@@ -220,7 +241,7 @@ fn where_the_frame_time_goes() {
 #[ignore = "requires a GPU"]
 fn winograd_earns_its_place() {
     ommatidia::gpu::warn_if_busy();
-    let context = ommatidia::gpu::context(false);
+    let context = context(false);
     let config = config(512);
     let model = build(&config, false).expect("build");
 

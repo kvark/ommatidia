@@ -23,11 +23,14 @@ const TILE: u32 = 16;
 const SCALE: u32 = 2;
 
 fn context() -> Option<Arc<gpu::Context>> {
+    let device_id = std::env::var("OMMATIDIA_TEST_DEVICE_ID")
+        .ok()
+        .map(|value| ommatidia::gpu::parse_device_id(&value))
+        .transpose()
+        .expect("invalid OMMATIDIA_TEST_DEVICE_ID");
     let desc = gpu::ContextDesc {
         validation: true,
-        device_id: std::env::var("OMMATIDIA_DEVICE_ID")
-            .ok()
-            .and_then(|s| u32::from_str_radix(s.trim_start_matches("0x"), 16).ok()),
+        device_id,
         ..Default::default()
     };
     match unsafe { gpu::Context::init(desc) } {
@@ -60,10 +63,9 @@ fn config() -> ModelConfig {
 
 /// An untrained checkpoint is enough: the question is whether the two paths
 /// agree, not whether the weights are any good.
-fn write_checkpoint(config: &ModelConfig, stem: &std::path::Path) {
+fn write_checkpoint(config: &ModelConfig, stem: &std::path::Path, context: Arc<gpu::Context>) {
     let model = ommatidia::model::build(config, false).expect("build");
-    let mut session =
-        ommatidia::gpu::inference_session(&model.graph, ommatidia::gpu::context(false));
+    let mut session = ommatidia::gpu::inference_session(&model.graph, context);
     model.initialize(&mut session, 3);
     ommatidia::checkpoint::save(&mut session, config, stem).expect("save");
 }
@@ -133,7 +135,7 @@ fn pack_matches_the_cpu_path() {
     let dir = std::env::temp_dir().join("ommatidia-gpu-runtime-pack");
     std::fs::create_dir_all(&dir).unwrap();
     let stem = dir.join("model");
-    write_checkpoint(&config, &stem);
+    write_checkpoint(&config, &stem, Arc::clone(&context));
 
     let mut upscaler =
         Upscaler::from_checkpoint(Arc::clone(&context), &stem, 4, 100).expect("upscaler");
@@ -233,7 +235,7 @@ fn upscale_matches_the_cpu_path() {
     let dir = std::env::temp_dir().join("ommatidia-gpu-runtime-upscale");
     std::fs::create_dir_all(&dir).unwrap();
     let stem = dir.join("model");
-    write_checkpoint(&config, &stem);
+    write_checkpoint(&config, &stem, Arc::clone(&context));
 
     let mut upscaler =
         Upscaler::from_checkpoint(Arc::clone(&context), &stem, 4, 100).expect("upscaler");

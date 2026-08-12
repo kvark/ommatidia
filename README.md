@@ -86,13 +86,14 @@ the `Context` a host renderer owns is not the type meganeura's session accepts.
 ## Try it
 
 ```sh
-# Render a training set. Pick the GPU with OMMATIDIA_DEVICE_ID if there are several.
+# Render a training set. Pick the adapter explicitly if there are several.
 cargo run --release -p ommatidia-data -- \
-    --out data/train.omd --samples 2400 --lr 128x128 --scale 2
+    --device-id 0x744c --out data/train.omd \
+    --samples 2400 --lr 128x128 --scale 2
 
 # Train, then reconstruct a crop and write input/nearest/predicted/reference PNGs.
 cargo run --release -p ommatidia-train -- \
-    --data data/train.omd --steps 8000 \
+    --device-id 0x744c --data data/train.omd --steps 8000 \
     --lr 3e-4 --lr-final 1e-5 --eval-every 1000 --checkpoint-every 1000 \
     --out runs/first --eval-out runs/first-eval
 ```

@@ -1,60 +1,35 @@
-//! Choosing the device, in one place.
+//! Context helpers for standalone tools and tests.
 //!
-//! Meganeura's core is environment-free: it takes typed options and never
-//! reads `MEGANEURA_*` itself, so a client that wants a specific adapter has
-//! to say so. Ommatidia says so here, through its own `OMMATIDIA_DEVICE_ID`,
-//! which also covers the generator — that builds a Blade context directly and
-//! never goes through meganeura at all.
-//!
-//! This matters more than a convenience wrapper usually would. A session built
-//! with no options lands on whichever adapter the driver enumerates first,
-//! which on a machine with an integrated and a discrete GPU is the integrated
-//! one. Nothing fails; the numbers are just quietly wrong.
+//! Host integrations do not use these to choose a device: [`crate::Upscaler`]
+//! takes the host's existing `Arc<blade_graphics::Context>`. The trainer and
+//! GPU tests have no host, so they create a context from explicit typed
+//! arguments at their CLI/test boundary.
 
 use std::sync::Arc;
-
-/// Environment variable naming the adapter to run on.
-pub const DEVICE_ID_VAR: &str = "OMMATIDIA_DEVICE_ID";
 
 /// Adapter selection, by the backend-reported numeric device ID.
 ///
 /// On Vulkan that is the PCI device ID rather than an adapter ordinal, so it
-/// is conventionally written in hex; decimal is accepted too. `None` leaves
-/// the choice to the driver.
-pub fn device_id() -> Option<u32> {
-    let value = std::env::var(DEVICE_ID_VAR).ok()?;
+/// is conventionally written in hex; decimal is accepted too.
+pub fn parse_device_id(value: &str) -> Result<u32, String> {
     let value = value.trim();
-    let parsed = match value
+    match value
         .strip_prefix("0x")
         .or_else(|| value.strip_prefix("0X"))
     {
-        Some(hex) => u32::from_str_radix(hex, 16).ok(),
-        None => value.parse().ok(),
-    };
-    if parsed.is_none() {
-        log::warn!("ignoring invalid {DEVICE_ID_VAR}={value:?}");
+        Some(hex) => u32::from_str_radix(hex, 16),
+        None => value.parse(),
     }
-    parsed
+    .map_err(|error| format!("invalid device id {value:?}: {error}"))
 }
 
-/// GPU options for a meganeura session: the selected adapter, and whether to
-/// allocate timestamp query pools.
+/// Create a Meganeura GPU context for a standalone caller.
 ///
-/// Timing has to be decided before the context exists, which is why it is
-/// here rather than on the session.
-pub fn options(timing: bool) -> meganeura::GpuOptions {
-    meganeura::GpuOptions {
-        device_id: device_id(),
-        timing,
-    }
-}
-
-/// A meganeura GPU context on the selected adapter.
-///
-/// Share one of these across every session in a process: a context is not
-/// cheap, and two of them on one device contend for the same queue.
-pub fn context(timing: bool) -> Arc<blade_graphics::Context> {
-    let context = meganeura::init_gpu_context_with(options(timing))
+/// Integrated runtimes should pass their existing Blade context to
+/// [`crate::Upscaler`] instead. Timing has to be decided before context
+/// creation because Blade allocates its timestamp query pools up front.
+pub fn create_context(device_id: Option<u32>, timing: bool) -> Arc<blade_graphics::Context> {
+    let context = meganeura::init_gpu_context_with(meganeura::GpuOptions { device_id, timing })
         .expect("failed to initialise a GPU context");
     log::info!("using {}", context.device_information().device_name);
     Arc::new(context)
@@ -171,29 +146,11 @@ pub fn training_session(
 mod tests {
     use super::*;
 
-    /// Guarded so a developer's own setting cannot make this pass or fail.
     #[test]
     fn device_id_accepts_hex_and_decimal() {
-        // Safety: single-threaded within this test, and restored before it
-        // returns. `--test-threads=1` is not required because no other test
-        // in this crate reads the variable.
-        let restore = std::env::var(DEVICE_ID_VAR).ok();
-        unsafe {
-            std::env::set_var(DEVICE_ID_VAR, "0x744c");
-            assert_eq!(device_id(), Some(0x744c));
-            std::env::set_var(DEVICE_ID_VAR, "  0X744C  ");
-            assert_eq!(device_id(), Some(0x744c));
-            std::env::set_var(DEVICE_ID_VAR, "29772");
-            assert_eq!(device_id(), Some(29772));
-            // Unparsable warns and falls back rather than panicking.
-            std::env::set_var(DEVICE_ID_VAR, "not-a-device");
-            assert_eq!(device_id(), None);
-            std::env::remove_var(DEVICE_ID_VAR);
-            assert_eq!(device_id(), None);
-            match restore {
-                Some(v) => std::env::set_var(DEVICE_ID_VAR, v),
-                None => std::env::remove_var(DEVICE_ID_VAR),
-            }
-        }
+        assert_eq!(parse_device_id("0x744c"), Ok(0x744c));
+        assert_eq!(parse_device_id("  0X744C  "), Ok(0x744c));
+        assert_eq!(parse_device_id("29772"), Ok(29772));
+        assert!(parse_device_id("not-a-device").is_err());
     }
 }

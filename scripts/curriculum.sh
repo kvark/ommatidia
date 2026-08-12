@@ -11,7 +11,7 @@ ROOT=/x/Code/ommatidia
 OUT=${OUT:-$ROOT/runs}
 BIN=$ROOT/target/release/ommatidia-train
 DATA=${DATA:-$ROOT/data/raw-restir-2400.omd}
-export OMMATIDIA_DEVICE_ID=${OMMATIDIA_DEVICE_ID:-0x744c}
+DEVICE_ID=${DEVICE_ID:-0x744c}
 
 # Deployment baseline: 649k parameters, one forward pass, and the same held-out
 # quality as the old 6.5M-parameter model once both are trained to convergence.
@@ -44,6 +44,7 @@ run() {
   echo "=================================================================="
   guard_vram
   "$BIN" --data "$DATA" \
+    --device-id "$DEVICE_ID" \
     --objective "$objective" --steps "$steps" \
     --batch $BATCH --tile $TILE --base-channels $BASE --levels $LEVELS --blocks $BLOCKS \
     --lr 3e-4 --lr-final 1e-5 \

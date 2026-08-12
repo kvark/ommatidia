@@ -31,6 +31,8 @@ struct Args {
     gbuffer: bool,
     svgf_input: bool,
     checkpoint: Option<PathBuf>,
+    device_id: Option<u32>,
+    shader_dir: Option<PathBuf>,
 }
 
 impl Default for Args {
@@ -47,6 +49,8 @@ impl Default for Args {
             gbuffer: true,
             svgf_input: false,
             checkpoint: None,
+            device_id: None,
+            shader_dir: None,
         }
     }
 }
@@ -62,6 +66,8 @@ usage: ommatidia-data [options]
   --scale S                 high resolution is low times this  [2]
   --canonical-frames N      path tracer samples per reference frame  [256]
   --seed N                  base seed for scenes and cameras  [0]
+  --device-id ID            adapter ID for this standalone process (hex or decimal)
+  --shader-dir PATH         blade-render shader directory [../blade/blade-render/code]
   --preview DIR             also write PNGs of the first few pairs
   --no-gbuffer              store only colour, leaving out the G-buffer planes
   --svgf-input              capture Blade's built-in variance-guided filter
@@ -100,6 +106,8 @@ fn parse_args() -> Result<Args, String> {
                     .map_err(|e| format!("--canonical-frames: {e}"))?
             }
             "--seed" => args.seed = value()?.parse().map_err(|e| format!("--seed: {e}"))?,
+            "--device-id" => args.device_id = Some(ommatidia::gpu::parse_device_id(&value()?)?),
+            "--shader-dir" => args.shader_dir = Some(PathBuf::from(value()?)),
             "--preview" => args.preview = Some(PathBuf::from(value()?)),
             "--no-gbuffer" => args.gbuffer = false,
             "--svgf-input" => args.svgf_input = true,
@@ -120,16 +128,14 @@ fn parse_args() -> Result<Args, String> {
 ///
 /// The renderer loads WGSL from disk at runtime, so the generator has to be
 /// told where the checkout is. It sits beside ommatidia by default.
-fn shader_dir() -> PathBuf {
-    if let Ok(dir) = std::env::var("BLADE_SHADER_DIR") {
-        return PathBuf::from(dir);
+fn shader_dir(override_dir: Option<&std::path::Path>) -> PathBuf {
+    if let Some(dir) = override_dir {
+        return dir.to_owned();
     }
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../../blade/blade-render/code")
         .canonicalize()
-        .unwrap_or_else(|e| {
-            panic!("cannot find blade's shader directory, set BLADE_SHADER_DIR: {e}")
-        })
+        .unwrap_or_else(|e| panic!("cannot find blade's shader directory; pass --shader-dir: {e}"))
 }
 
 /// Brings up the context, worker pool, asset hub, and cooked shaders.
@@ -142,7 +148,7 @@ struct Harness {
 }
 
 impl Harness {
-    fn new() -> Self {
+    fn new(device_id: Option<u32>, shader_dir_override: Option<&std::path::Path>) -> Self {
         let context = std::sync::Arc::new(
             unsafe {
                 gpu::Context::init(gpu::ContextDesc {
@@ -153,7 +159,7 @@ impl Harness {
                     timing: false,
                     capture: false,
                     overlay: false,
-                    device_id: device_id(),
+                    device_id,
                     ..Default::default()
                 })
             }
@@ -174,7 +180,8 @@ impl Harness {
             .collect();
         let cache = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../target/data-assets");
         let asset_hub = blade_render::AssetHub::new(&cache, &choir, &context);
-        let (shaders, task) = blade_render::Shaders::load(&shader_dir(), &asset_hub, true);
+        let (shaders, task) =
+            blade_render::Shaders::load(&shader_dir(shader_dir_override), &asset_hub, true);
         task.join();
 
         Self {
@@ -191,27 +198,6 @@ impl Harness {
         self.workers.clear();
         drop(self.choir);
     }
-}
-
-/// Adapter selection, by the backend-reported numeric device ID.
-///
-/// On Vulkan that is the PCI device ID rather than an adapter ordinal, so it
-/// is conventionally written in hex. Matches meganeura's `MEGANEURA_DEVICE_ID`
-/// so a machine with several GPUs can pin both to the same one.
-fn device_id() -> Option<u32> {
-    let value = std::env::var("OMMATIDIA_DEVICE_ID").ok()?;
-    let value = value.trim();
-    let parsed = match value
-        .strip_prefix("0x")
-        .or_else(|| value.strip_prefix("0X"))
-    {
-        Some(hex) => u32::from_str_radix(hex, 16).ok(),
-        None => value.parse().ok(),
-    };
-    if parsed.is_none() {
-        log::warn!("ignoring invalid OMMATIDIA_DEVICE_ID={value:?}");
-    }
-    parsed
 }
 
 fn num_workers() -> usize {
@@ -380,7 +366,7 @@ fn main() {
     }
     let mut writer = dataset::Writer::create(&args.out, layout).expect("cannot create the dataset");
 
-    let harness = Harness::new();
+    let harness = Harness::new(args.device_id, args.shader_dir.as_deref());
     let context = std::sync::Arc::clone(&harness.context);
     let mut encoder = context.create_command_encoder(gpu::CommandEncoderDesc {
         name: "ommatidia-data",

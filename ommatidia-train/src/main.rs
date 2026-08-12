@@ -80,6 +80,7 @@ struct Args {
     checkpoint_every: usize,
     eval_only: bool,
     allow_filtered_input: bool,
+    device_id: Option<u32>,
 }
 
 impl Default for Args {
@@ -110,6 +111,7 @@ impl Default for Args {
             checkpoint_every: 0,
             eval_only: false,
             allow_filtered_input: false,
+            device_id: None,
         }
     }
 }
@@ -137,6 +139,7 @@ usage: ommatidia-train [options]
   --sampler-steps N    DDIM steps used when evaluating  [20]
   --objective KIND     direct or diffusion  [direct]
   --seed N             seed for init and batching  [0]
+  --device-id ID       adapter ID for this standalone process (hex or decimal)
   --log-every N        steps between loss lines  [50]
   --eval-out DIR       write comparison PNGs of the first held-out crop
   --val-fraction F     share of the set held out for scoring  [0.15]
@@ -213,6 +216,7 @@ fn parse_from(argv: impl Iterator<Item = String>) -> Result<Args, String> {
                 }
             }
             "--seed" => args.seed = value()?.parse().map_err(|e| format!("--seed: {e}"))?,
+            "--device-id" => args.device_id = Some(ommatidia::gpu::parse_device_id(&value()?)?),
             "--log-every" => {
                 args.log_every = value()?.parse().map_err(|e| format!("--log-every: {e}"))?
             }
@@ -365,7 +369,10 @@ fn main() {
                 std::process::exit(1);
             }
         };
-        let mut evaluator = Evaluator::new(&stored, ommatidia::gpu::context(false));
+        let mut evaluator = Evaluator::new(
+            &stored,
+            ommatidia::gpu::create_context(args.device_id, false),
+        );
         if let Err(e) = evaluator.session.load_checkpoint(&paths.weights) {
             eprintln!("cannot load {}: {e}", paths.weights.display());
             std::process::exit(1);
@@ -432,7 +439,7 @@ fn main() {
     // One context, shared by the training session and the evaluator. Two
     // would contend for the same queue, and neither would land on the right
     // adapter without being told which one.
-    let context = ommatidia::gpu::context(false);
+    let context = ommatidia::gpu::create_context(args.device_id, false);
     let mut session = ommatidia::gpu::training_session(&model.graph, context.clone());
     println!(
         "{:.1}s, {} dispatches on {}",

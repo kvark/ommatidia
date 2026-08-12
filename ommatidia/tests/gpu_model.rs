@@ -3,12 +3,25 @@
 //! These need a GPU, so they are ignored by default:
 //!
 //! ```sh
-//! cargo test -p ommatidia --test gpu_model -- --ignored --nocapture
+//! OMMATIDIA_TEST_DEVICE_ID=0x744c \
+//!   cargo test -p ommatidia --test gpu_model -- --ignored --nocapture
 //! ```
 
 use ommatidia::model::{ModelConfig, Objective, build};
 use ommatidia::rng::Rng;
 use ommatidia::{Plane, PlaneSet};
+
+/// Tests have no host context to inherit. Adapter choice is therefore a test
+/// runner input, parsed here at the executable boundary rather than by the
+/// Ommatidium library.
+fn context(timing: bool) -> std::sync::Arc<blade_graphics::Context> {
+    let value = std::env::var("OMMATIDIA_TEST_DEVICE_ID").expect(
+        "GPU measurements require OMMATIDIA_TEST_DEVICE_ID; the default adapter may not be the one intended",
+    );
+    let device_id =
+        ommatidia::gpu::parse_device_id(&value).expect("invalid OMMATIDIA_TEST_DEVICE_ID");
+    ommatidia::gpu::create_context(Some(device_id), timing)
+}
 
 /// Small enough to compile quickly, structurally the full network.
 fn config() -> ModelConfig {
@@ -36,8 +49,7 @@ fn filled(rng: &mut Rng, len: usize, scale: f32) -> Vec<f32> {
 fn inference_session_runs() {
     let config = config();
     let model = build(&config, false).expect("build");
-    let mut session =
-        ommatidia::gpu::inference_session(&model.graph, ommatidia::gpu::context(false));
+    let mut session = ommatidia::gpu::inference_session(&model.graph, context(false));
     model.initialize(&mut session, 1);
 
     let mut rng = Rng::new(7);
@@ -68,8 +80,7 @@ fn inference_session_runs() {
 fn training_overfits_one_batch() {
     let config = config();
     let model = build(&config, true).expect("build");
-    let mut session =
-        ommatidia::gpu::training_session(&model.graph, ommatidia::gpu::context(false));
+    let mut session = ommatidia::gpu::training_session(&model.graph, context(false));
     model.initialize(&mut session, 1);
 
     let mut rng = Rng::new(3);
@@ -113,8 +124,7 @@ fn direct_objective_runs_without_a_timestep() {
     let mut config = config();
     config.objective = Objective::Direct;
     let model = build(&config, true).expect("build");
-    let mut session =
-        ommatidia::gpu::training_session(&model.graph, ommatidia::gpu::context(false));
+    let mut session = ommatidia::gpu::training_session(&model.graph, context(false));
     model.initialize(&mut session, 1);
 
     let mut rng = Rng::new(5);
@@ -178,8 +188,7 @@ fn frame_cost_at_realistic_extents() {
             println!("{tile}^2: rejected by validate()");
             continue;
         };
-        let mut session =
-            ommatidia::gpu::inference_session(&model.graph, ommatidia::gpu::context(false));
+        let mut session = ommatidia::gpu::inference_session(&model.graph, context(false));
         model.initialize(&mut session, 1);
 
         let mut rng = Rng::new(1);
@@ -258,8 +267,7 @@ fn frame_cost_by_model_size() {
             continue;
         };
         let params: usize = model.params.iter().map(|p| p.len).sum();
-        let mut session =
-            ommatidia::gpu::inference_session(&model.graph, ommatidia::gpu::context(false));
+        let mut session = ommatidia::gpu::inference_session(&model.graph, context(false));
         model.initialize(&mut session, 1);
         let mut rng = Rng::new(1);
         session.set_input("cond", &filled(&mut rng, config.cond_len(), 0.5));
@@ -288,16 +296,15 @@ fn frame_cost_by_model_size() {
 
 /// Which adapter a session actually lands on.
 ///
-/// Meganeura's core stopped reading the environment, so `MEGANEURA_DEVICE_ID`
-/// no longer reaches a session built through `build_inference_session`. On a
-/// machine with an integrated and a discrete GPU that is the difference
-/// between a benchmark and a fiction, so it is worth asserting rather than
-/// assuming.
+/// The test runner supplies the adapter explicitly and the session reports its
+/// chosen device. On a machine with an integrated and a discrete GPU that is
+/// the difference between a benchmark and a fiction, so it is worth printing
+/// rather than assuming.
 #[test]
 #[ignore = "requires a GPU"]
 fn reports_the_selected_adapter() {
     let model = build(&config(), false).expect("build");
-    let session = ommatidia::gpu::inference_session(&model.graph, ommatidia::gpu::context(false));
+    let session = ommatidia::gpu::inference_session(&model.graph, context(false));
     println!(
         "session landed on: {}",
         session.device_information().device_name
