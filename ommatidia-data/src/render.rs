@@ -11,6 +11,13 @@ use blade_graphics as gpu;
 /// Temporal reuse means the first frame after a camera cut is not what the
 /// renderer actually shows, so the input has to be a settled one.
 pub const RESTIR_FRAMES: usize = 8;
+/// Practical path depth presented to the reconstruction network.
+const INPUT_MAX_BOUNCES: u32 = 3;
+/// Reference depth: long enough for the procedural scenes to settle, with
+/// Blade's path tracer applying Russian roulette after the fourth bounce.
+/// Keeping this separate from the input avoids training against a clean but
+/// systematically truncated target.
+const REFERENCE_MAX_BOUNCES: u32 = 8;
 /// Limit one command submission's retained scene resources. Reference captures
 /// can run for thousands of frames; keeping every transient BLAS/TLAS alive
 /// until the final readback otherwise turns convergence into an OOM.
@@ -261,7 +268,10 @@ impl Pass {
             },
             // The dummy environment map carries no importance sampling data.
             environment_importance_sampling: false,
-            max_bounces: 3,
+            max_bounces: match self {
+                Self::Canonical { .. } => REFERENCE_MAX_BOUNCES,
+                Self::RealTime | Self::PathTrace { .. } => INPUT_MAX_BOUNCES,
+            },
             max_accumulated_samples: 0,
             tap_count: 2,
             tap_radius: 16,
@@ -398,4 +408,21 @@ pub fn capture(
         context.destroy_acceleration_structure(structure);
     }
     Frame { color, gbuffer }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn reference_paths_are_deeper_than_realtime_inputs() {
+        let input = Pass::PathTrace { frames: 1 }.ray_config();
+        let reference = Pass::Canonical { frames: 1 }.ray_config();
+
+        assert_eq!(input.num_brdf_samples, 1);
+        assert_eq!(input.max_bounces, INPUT_MAX_BOUNCES);
+        assert_eq!(reference.num_brdf_samples, 4);
+        assert_eq!(reference.max_bounces, REFERENCE_MAX_BOUNCES);
+        assert!(reference.max_bounces > input.max_bounces);
+    }
 }

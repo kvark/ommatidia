@@ -28,6 +28,13 @@ blade-graphics can create a device but cannot wrap externally owned Vulkan
 handles. Those are the two prerequisites before a truthful C example can be
 shipped.
 
+This should begin as an ordinary exported API over core Vulkan handles. A
+private Vulkan extension would require a layer or driver implementation and
+still would not solve model discovery, versioning, history ownership, or
+application synchronization. Standard interop extensions such as external
+memory and timeline semaphores remain useful implementation tools when direct
+command-buffer recording is unavailable; they are not the product surface.
+
 The ABI will use opaque handles, fixed-width integers, explicit structure
 sizes/version fields, status returns, and caller-provided logging callbacks.
 No Rust types, exceptions, allocator ownership, environment variables, or
@@ -55,3 +62,14 @@ semantic version.
 The first release workflow should be added only with the ABI crate: publishing
 an `rlib` or a Rust `cdylib` with no stable C surface would look deployable but
 would not be safely consumable.
+
+## Groundwork sequence
+
+1. Teach blade-graphics to borrow an externally owned Vulkan device and queue
+   without enumerating adapters or destroying host handles.
+2. Let Meganeura record a prepared session into a caller-provided encoder or
+   command buffer, with no implicit submission.
+3. Freeze the resource, synchronization, and error contract in a small C ABI
+   crate and land the C example as its conformance test.
+4. Add release archives and provenance only after that example builds and runs
+   against an installed archive rather than the Rust workspace.

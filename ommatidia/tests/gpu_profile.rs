@@ -21,7 +21,7 @@
 
 use ommatidia::model::{ModelConfig, Objective, build};
 use ommatidia::rng::Rng;
-use ommatidia::{Plane, PlaneSet};
+use ommatidia::{FrameInputs, Plane, PlaneSet, Upscaler};
 
 fn context(timing: bool) -> std::sync::Arc<blade_graphics::Context> {
     let value = std::env::var("OMMATIDIA_TEST_DEVICE_ID").expect(
@@ -244,6 +244,130 @@ fn where_the_frame_time_goes() {
     meganeura::profiler::save_session_profile_json(&output, &profile)
         .expect("save deployment profile");
     println!("structured trace: {}", output.display());
+}
+
+/// Measure the host-visible cost of the real integration path: pack the host
+/// textures, submit Meganeura's model, unpack to the 1080p output, and wait for
+/// completion. The structured trace above intentionally measures the model in
+/// isolation; this number prevents that useful diagnostic from being mistaken
+/// for the complete post-process latency.
+#[test]
+#[ignore = "requires a GPU and a trained checkpoint"]
+fn end_to_end_1080p_runtime_cost() {
+    ommatidia::gpu::warn_if_busy();
+    let context = context(false);
+    let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let requested = std::env::var_os("OMMATIDIA_PROFILE_CHECKPOINT")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| manifest.join("../runs/raw-restir-b24"));
+    let checkpoint = if requested.is_absolute() || requested.with_extension("safetensors").is_file()
+    {
+        requested
+    } else {
+        manifest.join("..").join(requested)
+    };
+    assert!(
+        checkpoint.with_extension("safetensors").is_file(),
+        "set OMMATIDIA_PROFILE_CHECKPOINT to a trained checkpoint stem"
+    );
+
+    const INPUT: [u32; 2] = [960, 540];
+    let mut upscaler =
+        Upscaler::from_checkpoint_for_extent(context.clone(), &checkpoint, INPUT, 1, 1000)
+            .expect("build runtime");
+    let input_size = blade_graphics::Extent {
+        width: INPUT[0],
+        height: INPUT[1],
+        depth: 1,
+    };
+    let (output_width, output_height) = upscaler.output_extent();
+    let output_size = blade_graphics::Extent {
+        width: output_width,
+        height: output_height,
+        depth: 1,
+    };
+
+    let input_texture = context.create_texture(blade_graphics::TextureDesc {
+        name: "profile-input",
+        format: blade_graphics::TextureFormat::Rgba32Float,
+        size: input_size,
+        dimension: blade_graphics::TextureDimension::D2,
+        array_layer_count: 1,
+        mip_level_count: 1,
+        usage: blade_graphics::TextureUsage::RESOURCE | blade_graphics::TextureUsage::COPY,
+        sample_count: 1,
+        external: None,
+    });
+    let input_view = context.create_texture_view(
+        input_texture,
+        blade_graphics::TextureViewDesc {
+            name: "profile-input",
+            format: blade_graphics::TextureFormat::Rgba32Float,
+            dimension: blade_graphics::ViewDimension::D2,
+            subresources: &blade_graphics::TextureSubresources::default(),
+        },
+    );
+    let output_texture = context.create_texture(blade_graphics::TextureDesc {
+        name: "profile-output",
+        format: Upscaler::OUTPUT_FORMAT,
+        size: output_size,
+        dimension: blade_graphics::TextureDimension::D2,
+        array_layer_count: 1,
+        mip_level_count: 1,
+        usage: blade_graphics::TextureUsage::STORAGE | blade_graphics::TextureUsage::COPY,
+        sample_count: 1,
+        external: None,
+    });
+    let output_view = context.create_texture_view(
+        output_texture,
+        blade_graphics::TextureViewDesc {
+            name: "profile-output",
+            format: Upscaler::OUTPUT_FORMAT,
+            dimension: blade_graphics::ViewDimension::D2,
+            subresources: &blade_graphics::TextureSubresources::default(),
+        },
+    );
+    let inputs = FrameInputs::color_only(input_view, input_view);
+    let mut encoder = context.create_command_encoder(blade_graphics::CommandEncoderDesc {
+        name: "ommatidia-end-to-end-profile",
+        buffer_count: 2,
+        manual_barriers: false,
+    });
+    encoder.start();
+    encoder.init_texture(input_texture);
+    encoder.init_texture(output_texture);
+    let initialized = context.submit(&mut encoder);
+    assert!(context.wait_for(&initialized, 30_000).unwrap());
+
+    let run = |upscaler: &mut Upscaler, encoder: &mut blade_graphics::CommandEncoder| {
+        encoder.start();
+        let started = std::time::Instant::now();
+        upscaler.upscale(encoder, &inputs, output_view);
+        let completed = context.submit(encoder);
+        assert!(context.wait_for(&completed, 30_000).unwrap());
+        started.elapsed().as_secs_f64() * 1e3
+    };
+    for _ in 0..3 {
+        run(&mut upscaler, &mut encoder);
+    }
+    const RUNS: usize = 20;
+    let mut samples: Vec<f64> = (0..RUNS)
+        .map(|_| run(&mut upscaler, &mut encoder))
+        .collect();
+    samples.sort_by(f64::total_cmp);
+    let median = (samples[RUNS / 2 - 1] + samples[RUNS / 2]) * 0.5;
+    println!(
+        "end to end: {}x{} -> {}x{} in {median:.2} ms (pack + model + unpack + submissions)",
+        INPUT[0], INPUT[1], output_width, output_height,
+    );
+
+    upscaler.destroy();
+    drop(upscaler);
+    context.destroy_texture_view(output_view);
+    context.destroy_texture(output_texture);
+    context.destroy_texture_view(input_view);
+    context.destroy_texture(input_texture);
+    context.destroy_command_encoder(&mut encoder);
 }
 
 /// Winograd against the direct convolution path, in one run.
