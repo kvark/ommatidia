@@ -28,6 +28,58 @@
       "input_source": "svgf",
       "bytes": 109051968,
       "sha256": "b6bed69c3fc01d8825088e52050153d7e2a62c77b4d15d2a7a22ba87d35ba29f"
+    },
+    "blade-path-trace-1spp": {
+      "path": "data/blade-path-trace/1spp-train.omd",
+      "samples": 2400,
+      "train_samples": 2040,
+      "held_out_samples": 360,
+      "input_extent": [128, 128],
+      "reference_extent": [256, 256],
+      "input_source": "path-trace",
+      "input_spp": 1,
+      "reference_spp": 4096,
+      "bytes": 2044723264,
+      "sha256": "96cd635e671353e00bb15842332df3df14e54b796df3e053ed9046bb1d8f9299"
+    },
+    "path-trace-1spp-validation": {
+      "path": "benchmarks/path-trace-1spp-validation.omd",
+      "samples": 128,
+      "input_source": "path-trace",
+      "input_spp": 1,
+      "reference_spp": 4096,
+      "bytes": 109051968,
+      "sha256": "1b500cd78d9cb232d85523500c4ac75c549fff561c60fd8b70cf0893b1b8e0f4"
+    },
+    "path-trace-4spp-static": {
+      "path": "ablations/path-trace-4spp-static-train.omd",
+      "samples": 2400,
+      "train_samples": 2040,
+      "held_out_samples": 360,
+      "input_extent": [128, 128],
+      "reference_extent": [256, 256],
+      "input_source": "path-trace",
+      "input_spp": 4,
+      "reference_spp": 4096,
+      "bytes": 2044723264,
+      "sha256": "aac92a39f1e79cbcd5868dc3cf1aa4e02219d72cf6c81fa59dc20bf2d67f155b"
+    },
+    "path-trace-4spp-static-validation": {
+      "path": "benchmarks/path-trace-4spp-static-validation.omd",
+      "samples": 128,
+      "input_source": "path-trace",
+      "input_spp": 4,
+      "reference_spp": 4096,
+      "bytes": 109051968,
+      "sha256": "ad2082e47c5f8c233106cc7ae8d42cff9096b0fbac243fe5b9a06fed02eb03bf"
+    },
+    "path-reference-svgf-validation": {
+      "path": "benchmarks/path-reference-svgf-validation.omd",
+      "samples": 128,
+      "input_source": "svgf",
+      "reference_spp": 4096,
+      "bytes": 109051968,
+      "sha256": "4c3df04f0dacfb91f7c837237ea85f66ae5e6abe6dce1f25f1ec7a6b818f8010"
     }
   },
   "model_repository": "mad-bot/ommatidia",
@@ -36,5 +88,13 @@
     "revision": "7f08f025a3150c355643af513bc2825d88441520",
     "blade_revision": "3a8895a",
     "meganeura_revision": "256b906"
+  },
+  "path_trace_source": {
+    "repository": "https://github.com/kvark/ommatidia",
+    "revision": "caaa31e110207fc32529b36b8d4d81cd7e6ad0c0",
+    "blade_revision": "70d135ed2ceea4f3f175311a63fe818b17985acd",
+    "meganeura_revision": "19a1f001dff4663a41e6002b8f1e3950810fcad3",
+    "train_seed": 0,
+    "validation_seed": 10000
   }
 }

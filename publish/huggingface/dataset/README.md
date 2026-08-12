@@ -30,6 +30,11 @@ Synthetic renderer-native training and validation data for
 | `data/blade-restir/train.omd` | raw Blade ReSTIR | 2,400 | 2,040 train / 360 held out |
 | `benchmarks/matched-raw.omd` | raw Blade ReSTIR | 128 | matched replacement evaluation |
 | `benchmarks/matched-svgf.omd` | Blade variance-guided SVGF | 128 | matched Blade baseline |
+| `data/blade-path-trace/1spp-train.omd` | sparse path trace, 1 spp | 2,400 | path-first spatial training |
+| `benchmarks/path-trace-1spp-validation.omd` | sparse path trace, 1 spp | 128 | independent path validation |
+| `ablations/path-trace-4spp-static-train.omd` | sparse path trace, 4 static spp | 2,400 | favorable history-evidence proxy |
+| `benchmarks/path-trace-4spp-static-validation.omd` | sparse path trace, 4 static spp | 128 | independent proxy validation |
+| `benchmarks/path-reference-svgf-validation.omd` | Blade ReSTIR+SVGF | 128 | same new canonical references |
 
 Every sample contains low-resolution radiance, depth, world-space normals,
 diffuse albedo, specular F0, and roughness, plus a high-resolution canonical
@@ -37,10 +42,12 @@ path-traced reference. The primary set uses 128×128 inputs and 256×256
 references. Dataset-format version 2 records whether the low-resolution source
 is raw ReSTIR or SVGF-filtered.
 
-The two benchmark captures use the same 128 procedural scenes and seed 10000;
-their canonical record payloads are byte-identical. They differ only in whether
-Blade's three-pass variance-guided filter was enabled for the low-resolution
-input.
+Each benchmark family uses the same 128 procedural scenes and seed 10000; its
+canonical record payloads are byte-identical. The path-first references use
+4,096 spp, eight-bounce targets. The 1/4-spp and SVGF files differ only in the
+low-resolution evidence paired with those records. The 4-spp files accumulate
+four samples at a static camera; they are an ablation, not motion-aware temporal
+training data.
 
 ## Loading
 
@@ -73,9 +80,17 @@ Future render estimators belong in this repository as separately identified
 sources rather than changing the dataset's identity. Training recipes should
 pin a Hub revision and enumerate the source names they consume.
 
+The first spatial path experiment is intentionally retained even though it is
+a negative result. On the independent set, the 1-spp model gains only 0.22 dB
+and the 4-spp model only 0.08 dB. See the
+[full result](https://github.com/kvark/ommatidia/blob/agent/path-tracing-ci/docs/results/path-trace-spatial-b24-2026-08-12.md);
+these files are the reproducible baseline for the temporal model, not a claim
+that the current spatial checkpoint solves sparse-path reconstruction.
+
 ## Limitations
 
-The first release contains small procedural scenes from one renderer and a
-narrow resolution distribution. It should not be treated as representative of
+The repository contains small procedural scenes from one renderer and a narrow
+resolution distribution. It should not be treated as representative of
 production game content. The canonical targets reduce Monte Carlo noise but
-are finite-sample path traces rather than analytic ground truth.
+are finite-sample path traces rather than analytic ground truth. No uploaded
+path dataset contains motion vectors, animation, or disocclusions yet.
