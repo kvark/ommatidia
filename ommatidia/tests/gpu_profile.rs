@@ -44,6 +44,17 @@ fn config(tile: u32) -> ModelConfig {
     }
 }
 
+/// The shape of the checkpoint published for Blade integration. Keep the
+/// detailed pass trace on the model users actually run; the larger reference
+/// shape remains useful for the focused kernel comparisons below.
+fn deployment_config(tile: u32) -> ModelConfig {
+    ModelConfig {
+        base_channels: 24,
+        blocks_per_level: 1,
+        ..config(tile)
+    }
+}
+
 /// Build an inference session with timestamps enabled and an explicit
 /// rewrite policy.
 ///
@@ -119,8 +130,9 @@ fn where_the_frame_time_goes() {
     ommatidia::gpu::warn_if_busy();
     let context = ommatidia::gpu::context(true);
 
-    const TILE: u32 = 512;
-    let config = config(TILE);
+    // 720^2 input -> 1440^2 output has the same output pixel count as 1080p.
+    const TILE: u32 = 720;
+    let config = deployment_config(TILE);
     let model = build(&config, false).expect("build");
     let mut session = profiling_session(&model.graph, context.clone(), true);
     model.initialize(&mut session, 1);
@@ -160,20 +172,37 @@ fn where_the_frame_time_goes() {
         wall * 1e6 / dispatches as f64
     );
 
-    // Profiled: one pass per dispatch, with timestamps. The extra passes cost
-    // something themselves, so this total runs above the wall clock above —
-    // what matters is the breakdown and the share the kernels account for.
-    // Blade exposes a submission's timestamps only once the encoder is
-    // restarted, so the timings trail the step that produced them. Stepping a
-    // few times and dumping after each makes the lag visible rather than
-    // guessed at.
-    session.set_profiling(true);
-    for round in 0..4 {
-        session.step();
-        session.wait();
-        println!("after profiled step {round}:");
-        session.dump_gpu_timings();
+    // Meganeura's structured profiler retains repeated per-dispatch samples,
+    // plan metadata, allocation totals, and any driver pipeline statistics it
+    // can query. Its one-pass-per-dispatch instrumentation is deliberately
+    // separate from the normal wall-clock measurement above.
+    let profile = meganeura::profiler::capture_session_profile(
+        &mut session,
+        |_| {},
+        meganeura::profiler::CaptureOptions {
+            samples: 5,
+            unprofiled_median_ms: Some(wall * 1e3),
+            include_pipeline_statistics: true,
+        },
+    )
+    .expect("capture deployment profile");
+
+    println!("profiled GPU total by kernel family:");
+    for family in &profile.families {
+        println!(
+            "  {:>24}: {:>2} dispatches, {:>6.2} ms ({:>5.1}%)",
+            family.family,
+            family.dispatch_count,
+            family.dispatch_median_sum_ms,
+            family.share_of_dispatch_median_sum_pct,
+        );
     }
+
+    let output = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../target/ommatidia-deployment-profile.json");
+    meganeura::profiler::save_session_profile_json(&output, &profile)
+        .expect("save deployment profile");
+    println!("structured trace: {}", output.display());
 }
 
 /// Winograd against the direct convolution path, in one run.

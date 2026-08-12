@@ -14,14 +14,35 @@ its output.
 > no temporal context. See [`docs/design.md`](docs/design.md) for the
 > formulation and the roadmap.
 
+[Download the checkpoint](https://huggingface.co/mad-bot/ommatidia) ·
+[Training and validation data](https://huggingface.co/datasets/mad-bot/ommatidia)
+
 The first replacement checkpoint is trained on 2,400 raw-ReSTIR/canonical
 pairs, with 360 scenes held out. It improves over raw nearest upsampling by
 **2.93 dB**. On a separate matched validation set whose canonical references
 are byte-identical between both captures, it scores **0.002876** error against
 Blade SVGF's **0.004284** after nearest upscale: a **1.73 dB improvement over
-the variance-guided denoiser it replaces**. The 649k-parameter network measures
-**34.1 ms at the actual 1080p pixel count** on a Radeon RX 7900 XT, about 29
-frames per second before display post-processing.
+the variance-guided denoiser it replaces**. On an idle Radeon RX 7900 XT, the
+649k-parameter network backbone measures **19.4 ms at the actual 1080p pixel
+count**, about 52 frames per second before texture packing, unpacking, and
+display post-processing.
+
+## Results
+
+The live shared-context path, from Blade's raw ReSTIR output to the canonical
+reference:
+
+| Raw ReSTIR input | Ommatidium | Canonical path trace |
+|---|---|---|
+| ![A noisy low-resolution Blade ReSTIR render](runs/live-check/000-lr.png) | ![The Ommatidium reconstruction](runs/live-check/000-predicted.png) | ![The canonical path-traced reference](runs/live-check/000-hr.png) |
+
+The matched validation capture below uses the same scene and byte-identical
+canonical reference for both Blade inputs. Images are nearest-upscaled for a
+like-for-like 256×256 comparison.
+
+| Raw ReSTIR | Blade SVGF | Ommatidium | Canonical reference |
+|---|---|---|---|
+| ![Raw ReSTIR validation crop](runs/eval-validation-raw/nearest.png) | ![Blade SVGF validation crop](runs/eval-validation-svgf/nearest.png) | ![Ommatidium validation crop](runs/eval-validation-raw/predicted.png) | ![Canonical validation crop](runs/eval-validation-raw/reference.png) |
 
 The checked-in July experiments below used SVGF-filtered inputs. They found the
 architecture and kernel optimizations, but their quality figures describe an
@@ -43,7 +64,7 @@ further:
   Winograd transforms read contiguously — were worth 5.4x with the weights
   untouched. The rest was not needing the large network at all: a 649k
   parameter model matches the 6.5M one once it is trained out. It now reaches
-  roughly 29 fps at 1080p; see the latency section of the design doc for the
+  roughly 52 fps at 1080p; see the latency section of the design doc for the
   work required to reach a dedicated-upscaler budget.
 - **Compare shapes at convergence, not at a fixed step count.** A sweep that
   gave every shape 5000 steps ranked them almost exactly wrong, because the

@@ -1,0 +1,44 @@
+{
+  "schema_version": 1,
+  "project": "ommatidia",
+  "variant": "b24-2x-spatial-v0",
+  "objective": "direct",
+  "scale_factor": 2,
+  "parameters": 649200,
+  "input_contract": {
+    "name": "ommatidia-render-planes-v1",
+    "planes": [
+      "color",
+      "depth",
+      "normal",
+      "diffuse_albedo",
+      "specular_f0",
+      "roughness"
+    ]
+  },
+  "files": {
+    "weights": {
+      "path": "model.safetensors",
+      "bytes": 7804448,
+      "sha256": "5272c28bd13e15cfcf67d0aed6b366362161522c880ea6ed62c09dba19379e9d"
+    },
+    "config": {
+      "path": "config.ron",
+      "bytes": 323,
+      "sha256": "247a0d40a72ca14d83d57bcb31332c2639e370080d328242c9b0e6918c09fef6"
+    }
+  },
+  "dataset": {
+    "repository": "mad-bot/ommatidia",
+    "revision": "v0.1.0",
+    "source": "blade-restir"
+  },
+  "source": {
+    "repository": "https://github.com/kvark/ommatidia",
+    "revision": "7f08f025a3150c355643af513bc2825d88441520"
+  },
+  "compatibility": {
+    "meganeura_revision": "256b906",
+    "blade_revision": "3a8895a"
+  }
+}

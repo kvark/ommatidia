@@ -1,0 +1,19 @@
+(
+    scale: 2,
+    tile: 64,
+    batch: 8,
+    cond_planes: (63),
+    base_channels: 24,
+    level_multipliers: [
+        1,
+        2,
+        4,
+    ],
+    blocks_per_level: 1,
+    num_groups: 8,
+    gn_eps: 0.00001,
+    time_input_dim: 64,
+    time_embed_dim: 256,
+    residual_gain: 12.969844,
+    objective: Direct,
+)

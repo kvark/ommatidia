@@ -1,0 +1,40 @@
+{
+  "schema_version": 1,
+  "project": "ommatidia",
+  "format": "omd",
+  "format_version": 2,
+  "sources": {
+    "blade-restir": {
+      "path": "data/blade-restir/train.omd",
+      "samples": 2400,
+      "train_samples": 2040,
+      "held_out_samples": 360,
+      "input_extent": [128, 128],
+      "reference_extent": [256, 256],
+      "input_source": "raw-restir",
+      "bytes": 2044723264,
+      "sha256": "c830e4d49b2f92f200f9853b26f7339e5e038ce53f42510c9880bec604bf8d57"
+    },
+    "matched-raw": {
+      "path": "benchmarks/matched-raw.omd",
+      "samples": 128,
+      "input_source": "raw-restir",
+      "bytes": 109051968,
+      "sha256": "0d94c4c622b2b358fb29ad4076dd6e4a6d638a2ea9a19ae9d52f6faa18f7fe77"
+    },
+    "matched-svgf": {
+      "path": "benchmarks/matched-svgf.omd",
+      "samples": 128,
+      "input_source": "svgf",
+      "bytes": 109051968,
+      "sha256": "b6bed69c3fc01d8825088e52050153d7e2a62c77b4d15d2a7a22ba87d35ba29f"
+    }
+  },
+  "model_repository": "mad-bot/ommatidia",
+  "source": {
+    "repository": "https://github.com/kvark/ommatidia",
+    "revision": "7f08f025a3150c355643af513bc2825d88441520",
+    "blade_revision": "3a8895a",
+    "meganeura_revision": "256b906"
+  }
+}
