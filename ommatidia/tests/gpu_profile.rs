@@ -207,6 +207,19 @@ fn where_the_frame_time_goes() {
             .measurement
             .timestamped_gpu_share_of_profiled_wall_pct,
     );
+    let overhead = profile.measurement.instrumentation_wall_ratio.unwrap();
+    assert!(
+        overhead <= 1.20,
+        "per-dispatch instrumentation changed wall time by {:.1}%; this trace is too perturbative for attribution",
+        (overhead - 1.0) * 100.0,
+    );
+    assert!(
+        profile
+            .measurement
+            .timestamped_gpu_share_of_profiled_wall_pct
+            >= 90.0,
+        "GPU timestamps explain less than 90% of profiled wall time; do not attribute the missing time to kernels",
+    );
 
     println!("profiled GPU total by kernel family:");
     for family in &profile.families {
