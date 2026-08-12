@@ -139,10 +139,12 @@ fn where_the_frame_time_goes() {
     ommatidia::gpu::warn_if_busy();
     let context = context(true);
 
-    // 720^2 input -> 1440^2 output has the same output pixel count as 1080p.
-    const TILE: u32 = 720;
-    let config = deployment_config(TILE);
-    let model = build(&config, false).expect("build");
+    // Measure the shape users mean by 1080p: 960x540 input reconstructed 2x
+    // to 1920x1080 output. The old 720^2 proxy had the same pixel count but
+    // made the public result needlessly ambiguous.
+    const INPUT: [u32; 2] = [960, 540];
+    let config = deployment_config(64);
+    let model = ommatidia::model::build_for_extent(&config, false, INPUT).expect("build");
     let mut session = profiling_session(&model.graph, context.clone(), true);
     model.initialize(&mut session, 1);
 
@@ -152,7 +154,9 @@ fn where_the_frame_time_goes() {
     // network puts one dispatch in most groups.
     let groups = session.num_groups();
     let mut rng = Rng::new(1);
-    let cond: Vec<f32> = (0..config.cond_len()).map(|_| rng.normal() * 0.5).collect();
+    let cond: Vec<f32> = (0..config.cond_len_for_extent(INPUT))
+        .map(|_| rng.normal() * 0.5)
+        .collect();
     session.set_input("cond", &cond);
 
     // Unprofiled wall clock, which is what a caller actually pays.
@@ -173,9 +177,12 @@ fn where_the_frame_time_goes() {
     let wall_ms = (wall_samples_ms[RUNS / 2 - 1] + wall_samples_ms[RUNS / 2]) * 0.5;
 
     println!(
-        "\n{TILE}^2 -> {}^2, {} parameters, {dispatches} dispatches in {groups} barrier groups \
+        "\n{}x{} -> {}x{}, {} parameters, {dispatches} dispatches in {groups} barrier groups \
          ({:.2} dispatches per group)",
-        TILE * config.scale,
+        INPUT[0],
+        INPUT[1],
+        INPUT[0] * config.scale,
+        INPUT[1] * config.scale,
         model.params.iter().map(|p| p.len).sum::<usize>(),
         dispatches as f64 / groups as f64,
     );

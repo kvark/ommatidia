@@ -28,8 +28,8 @@ pub const HEADER_SIZE: usize = 64;
 
 /// Renderer path that produced the low-resolution colour.
 ///
-/// This is part of the training contract: a network intended to replace
-/// Blade's denoiser has to see raw ReSTIR, not the denoiser's own output.
+/// This is part of the training contract: an integration-neutral
+/// reconstruction model should see sparse rays, not another denoiser's output.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[repr(u32)]
 pub enum InputSource {
@@ -38,6 +38,8 @@ pub enum InputSource {
     Svgf = 1,
     /// Raw real-time ReSTIR radiance, before Blade's built-in denoiser.
     RawRestir = 2,
+    /// Sparse unbiased path tracing, before any temporal or spatial filter.
+    PathTrace = 3,
 }
 
 impl InputSource {
@@ -45,6 +47,7 @@ impl InputSource {
         match value {
             1 => Ok(Self::Svgf),
             2 => Ok(Self::RawRestir),
+            3 => Ok(Self::PathTrace),
             other => Err(Error::UnknownInputSource(other)),
         }
     }
@@ -619,5 +622,15 @@ mod tests {
         write_u32(&mut header, 36, 0);
         let (decoded, _) = decode_header(&header).unwrap();
         assert_eq!(decoded.lr_source, InputSource::Svgf);
+    }
+
+    #[test]
+    fn sparse_path_provenance_survives_a_round_trip() {
+        let mut layout = layout();
+        layout.lr_source = InputSource::PathTrace;
+        let encoded = encode_header(&layout, 4);
+        let (decoded, count) = decode_header(&encoded).unwrap();
+        assert_eq!(count, 4);
+        assert_eq!(decoded.lr_source, InputSource::PathTrace);
     }
 }

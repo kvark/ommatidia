@@ -5,9 +5,9 @@ resolution one. It is a portable DLSS replacement: the network runs through
 [meganeura](https://github.com/kvark/meganeura) on Vulkan and Metal, so it has
 no dependency on CUDA, on a vendor SDK, or on a specific GPU generation.
 
-The first milestone is deliberately narrow: **spatial upscaling of a single
-frame, no temporal context**. Everything below is written so that adding
-history is an extension rather than a rewrite.
+The shipped v0.1 milestone is deliberately narrow: **spatial upscaling of a
+single frame, no temporal context**. The concrete history/reprojection design
+is now in [`temporal.md`](temporal.md).
 
 ## Why diffusion, and what it costs
 
@@ -225,20 +225,21 @@ is shown to earn its keep.
 ## Data generation
 
 Training data comes from [blade](https://github.com/kvark/blade), which has
-both halves of the pair already:
+both halves of the primary pair already:
 
-- `RenderMode::RealTime` is the raw ReSTIR estimator, one sample per pixel,
-  with Blade's SVGF pass disabled. This is the input: Ommatidium replaces the
-  built-in denoiser rather than learning to upscale its output.
+- `RenderMode::Canonical` at low resolution and one path per pixel is the
+  primary input. It matches the target application contract: an arbitrary
+  sparse ray/path tracer followed by Ommatidium, without assuming ReSTIR.
 - `RenderMode::Canonical` is `RayTracer::path_trace`: full paths, BSDF sampling
   with next event estimation, MIS, accumulated over many frames with no reuse
   and no denoising. This is the ground truth.
+- `RenderMode::RealTime`, with and without Blade's SVGF pass, remains available
+  for the explicit ReSTIR+SVGF versus sparse-path+Ommatidium comparison.
 
-The `.omd` header records which of those renderer paths produced the input.
-Version-1 files are identified as SVGF because they predate raw capture, and
-the trainer rejects them by default. This turns the most expensive possible
-configuration mistake — fitting a supposed replacement to the filter it is
-meant to replace — into an immediate error.
+The `.omd` header records which renderer path produced the input. Version-1
+files are identified as SVGF because they predate provenance tracking, and the
+trainer rejects pre-denoised input by default. Sparse path and raw ReSTIR are
+both valid sources; they are never silently mixed.
 
 Both are driven headless. For each sample the generator builds a fresh
 procedural scene, picks a camera pose, renders the low resolution input, then
@@ -349,9 +350,10 @@ cadence so a crash costs one interval rather than everything.
 
 ## The latency problem
 
-The premise is a real-time budget, and the network is nowhere near one. All
-figures below are measured at 720x720 input, which is 1440x1440 out — the same
-2.07 million pixels as a 1080p frame — on an otherwise idle 7900 XT.
+The premise is a real-time budget, and the network is nowhere near one. The
+historical shape sweep below used a 720×720 input proxy. The deployment trace
+is now measured at an actual 960×540 input and 1920×1080 output on an otherwise
+idle RX 7900 XT: **20.13 ms** for the model, excluding pack/unpack.
 
 | shape | params | GFLOP | ms @1080p, start | ms now | held-out dB |
 |---|---|---|---|---|---|

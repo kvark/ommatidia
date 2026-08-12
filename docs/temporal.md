@@ -1,0 +1,43 @@
+# Temporal reconstruction plan
+
+The current checkpoint is spatial: every output is a function of the current
+frame only. That is a useful bring-up target, but it leaves both quality and
+performance on the table. A renderer already paid for motion vectors, and a
+previous reconstructed frame contains roughly three quarters of the output
+samples that a 2× spatial model is otherwise asked to invent again.
+
+The first temporal model should keep reprojection outside the learned network.
+The GPU pack stage will sample the previous high-resolution output at
+`current_pixel + motion`, reject history using depth and normal disagreement,
+and space-to-depth the accepted RGB plus one confidence channel. The U-Net then
+receives current sparse color/G-buffer and reprojected history, all at input
+resolution. This preserves the current low-resolution execution shape and adds
+cost mainly to the stem convolution rather than every layer.
+
+The runtime contract needs four additions:
+
+1. current-to-previous motion vectors with an explicit pixel/normalized scale
+   and direction convention;
+2. camera jitter and a reset flag for cuts, resolution changes, and invalid
+   history;
+3. two library-owned output textures, so frame N can read N-1 while writing N;
+4. depth/normal history validation and an observable confidence/debug target.
+
+Training must move from independent scenes to short sequences. Each sequence
+needs object and camera motion, disocclusions, exposure changes, animation, and
+sub-pixel jitter. Losses should cover individual-frame radiometry and
+reprojected temporal stability; static PSNR/SSIM alone can reward a blurry but
+stable model. The initial gate will therefore report compressed-space PSNR,
+SSIM, and a temporal error measured after ground-truth reprojection, with
+disoccluded pixels excluded.
+
+NVIDIA's public [Streamline DLSS integration contract](https://github.com/NVIDIAGameWorks/Streamline/blob/main/docs/ProgrammingGuideDLSS.md)
+is a useful minimum bar: input
+color, output color, depth, motion vectors, exposure, jitter, reset state, and
+camera constants are all explicit per-frame data. Ommatidium should use a
+similar typed contract without copying Streamline's plugin architecture or
+vendor-specific resource wrappers.
+
+This is a checkpoint-format change. Spatial v0.1 weights stay loadable by the
+spatial runtime; a temporal checkpoint must declare its history inputs and
+motion convention in its sidecar rather than having the loader guess.

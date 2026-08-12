@@ -7,7 +7,7 @@
 //!   cargo test -p ommatidia --test gpu_model -- --ignored --nocapture
 //! ```
 
-use ommatidia::model::{ModelConfig, Objective, build};
+use ommatidia::model::{ModelConfig, Objective, build, build_for_extent};
 use ommatidia::rng::Rng;
 use ommatidia::{Plane, PlaneSet};
 
@@ -164,16 +164,12 @@ fn direct_objective_runs_without_a_timestep() {
 #[ignore = "requires a GPU"]
 fn frame_cost_at_realistic_extents() {
     ommatidia::gpu::warn_if_busy();
-    // Square, because ModelConfig carries one extent for both axes. 720^2 in
-    // is 1440^2 out, which has the same 2.07M pixels as 1080p, so that row is
-    // the 1080p cost measured rather than extrapolated.
-    //
-    // Use the deployment default explicitly. `frame_cost_by_model_size` below
-    // retains the larger reference model and the ablation shapes.
-    for tile in [256u32, 512, 720, 1024] {
+    // Use real display aspect ratios. The runtime graph supports rectangular
+    // extents even though training crops are square.
+    for extent in [[640u32, 360], [960, 540], [1280, 720]] {
         let config = ModelConfig {
             scale: 2,
-            tile,
+            tile: 64,
             batch: 1,
             cond_planes: PlaneSet::new()
                 .with(Plane::Color)
@@ -184,15 +180,18 @@ fn frame_cost_at_realistic_extents() {
                 .with(Plane::Roughness),
             ..ModelConfig::default()
         };
-        let Ok(model) = build(&config, false) else {
-            println!("{tile}^2: rejected by validate()");
+        let Ok(model) = build_for_extent(&config, false, extent) else {
+            println!("{}x{}: rejected by validate()", extent[0], extent[1]);
             continue;
         };
         let mut session = ommatidia::gpu::inference_session(&model.graph, context(false));
         model.initialize(&mut session, 1);
 
         let mut rng = Rng::new(1);
-        session.set_input("cond", &filled(&mut rng, config.cond_len(), 0.5));
+        session.set_input(
+            "cond",
+            &filled(&mut rng, config.cond_len_for_extent(extent), 0.5),
+        );
 
         // Warm up, then time a run of steps.
         for _ in 0..3 {
@@ -207,15 +206,18 @@ fn frame_cost_at_realistic_extents() {
         }
         let per_frame = started.elapsed().as_secs_f64() / RUNS as f64;
 
-        let out_pixels = (tile * config.scale) as f64 * (tile * config.scale) as f64;
+        let out_width = extent[0] * config.scale;
+        let out_height = extent[1] * config.scale;
+        let out_pixels = out_width as f64 * out_height as f64;
         let ns_per_pixel = per_frame * 1e9 / out_pixels;
         // What that rate implies for the two extents anyone would ask about.
         let at_1080p = ns_per_pixel * 1920.0 * 1080.0 / 1e6;
         let at_4k = ns_per_pixel * 3840.0 * 2160.0 / 1e6;
         println!(
-            "{tile}^2 -> {}^2: {:.1} ms/frame, {:.1} GFLOP, {ns_per_pixel:.3} ns/output pixel \
+            "{}x{} -> {out_width}x{out_height}: {:.1} ms/frame, {:.1} GFLOP, {ns_per_pixel:.3} ns/output pixel \
              => {at_1080p:.0} ms at 1080p, {at_4k:.0} ms at 4K",
-            tile * config.scale,
+            extent[0],
+            extent[1],
             per_frame * 1e3,
             config.flops(out_pixels as usize),
         );
@@ -232,9 +234,7 @@ fn frame_cost_at_realistic_extents() {
 #[ignore = "requires a GPU"]
 fn frame_cost_by_model_size() {
     ommatidia::gpu::warn_if_busy();
-    // 720^2 in is 1440^2 out: the same 2.07M pixels as a 1080p frame, so these
-    // are measured at the extent that matters rather than scaled to it.
-    const TILE: u32 = 720;
+    const INPUT: [u32; 2] = [960, 540];
     // The same shapes the quality sweep trains, so the two tables line up.
     let shapes: [(u32, usize, usize, &str); 5] = [
         (64, 3, 2, "reference"),
@@ -246,7 +246,7 @@ fn frame_cost_by_model_size() {
     for (base, levels, blocks, label) in shapes {
         let config = ModelConfig {
             scale: 2,
-            tile: TILE,
+            tile: 64,
             batch: 1,
             base_channels: base,
             level_multipliers: (0..levels).map(|i| 1 << i).collect(),
@@ -262,7 +262,7 @@ fn frame_cost_by_model_size() {
             objective: Objective::Direct,
             ..ModelConfig::default()
         };
-        let Ok(model) = build(&config, false) else {
+        let Ok(model) = build_for_extent(&config, false, INPUT) else {
             println!("{label}: rejected by validate()");
             continue;
         };
@@ -270,7 +270,10 @@ fn frame_cost_by_model_size() {
         let mut session = ommatidia::gpu::inference_session(&model.graph, context(false));
         model.initialize(&mut session, 1);
         let mut rng = Rng::new(1);
-        session.set_input("cond", &filled(&mut rng, config.cond_len(), 0.5));
+        session.set_input(
+            "cond",
+            &filled(&mut rng, config.cond_len_for_extent(INPUT), 0.5),
+        );
 
         for _ in 0..3 {
             session.step();
@@ -283,11 +286,9 @@ fn frame_cost_by_model_size() {
             session.wait();
         }
         let per_frame = started.elapsed().as_secs_f64() / RUNS as f64;
-        let out_pixels = (TILE * config.scale) as f64 * (TILE * config.scale) as f64;
-        let at_1080p = per_frame * 1e9 / out_pixels * 1920.0 * 1080.0 / 1e6;
         println!(
             "{label:<20} {params:>8} params, {:>7.1} GFLOP/1080p, \
-             {:>7.1} ms/frame => {at_1080p:>7.1} ms at 1080p",
+             {:>7.1} ms at 960x540 -> 1920x1080",
             config.flops(1920 * 1080),
             per_frame * 1e3,
         );

@@ -142,6 +142,26 @@ impl FrameInputs {
         Self::from_blade_views(renderer.view_radiance(), renderer.view_gbuffer())
     }
 
+    /// Read composed colour from a path tracer while taking auxiliary planes
+    /// from Blade's G-buffer.
+    pub fn from_color_and_blade_gbuffer(
+        color: gpu::TextureView,
+        gbuffer: blade_render::GBufferViews,
+    ) -> Self {
+        Self {
+            color,
+            diffuse_radiance: color,
+            specular_radiance: color,
+            emissive: gbuffer.emissive,
+            depth: gbuffer.depth,
+            normal: gbuffer.basis,
+            albedo: gbuffer.diffuse_albedo,
+            specular: gbuffer.specular_f0,
+            compose_blade_radiance: false,
+            decode_blade_gbuffer: true,
+        }
+    }
+
     /// Build inputs from views previously borrowed from a Blade ray tracer.
     pub fn from_blade_views(
         radiance: blade_render::RadianceViews,
