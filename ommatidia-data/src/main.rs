@@ -33,6 +33,7 @@ struct Args {
     svgf_input: bool,
     restir_input: bool,
     checkpoint: Option<PathBuf>,
+    reference_from: Option<PathBuf>,
     device_id: Option<u32>,
     shader_dir: Option<PathBuf>,
 }
@@ -53,6 +54,7 @@ impl Default for Args {
             svgf_input: false,
             restir_input: false,
             checkpoint: None,
+            reference_from: None,
             device_id: None,
             shader_dir: None,
         }
@@ -81,6 +83,8 @@ usage: ommatidia-data [options]
                             baseline comparisons only
   --checkpoint STEM         also run this Ommatidium checkpoint directly on
                             the live Blade views and write predicted previews
+  --reference-from PATH     copy high-resolution records from a matched .omd
+                            instead of rendering them again
   -h, --help                this message
 ";
 
@@ -125,6 +129,7 @@ fn parse_args() -> Result<Args, String> {
             "--svgf-input" => args.svgf_input = true,
             "--restir-input" => args.restir_input = true,
             "--checkpoint" => args.checkpoint = Some(PathBuf::from(value()?)),
+            "--reference-from" => args.reference_from = Some(PathBuf::from(value()?)),
             other => return Err(format!("unknown option {other:?}\n\n{USAGE}")),
         }
     }
@@ -139,6 +144,9 @@ fn parse_args() -> Result<Args, String> {
     }
     if args.svgf_input && args.restir_input {
         return Err("--svgf-input and --restir-input are mutually exclusive".into());
+    }
+    if args.reference_from.is_some() && !args.gbuffer {
+        return Err("--reference-from needs the G-buffer to verify scene alignment".into());
     }
     Ok(args)
 }
@@ -258,6 +266,19 @@ fn to_planes(rgb: &[f32], texels: usize) -> Vec<f16> {
         for channel in 0..3 {
             let value = rgb[texel * 3 + channel].clamp(0.0, dataset::F16_MAX);
             out[channel * texels + texel] = f16::from_f32(value);
+        }
+    }
+    out
+}
+
+/// Planar dataset RGB back to the interleaved representation used for
+/// previews, peak accounting, and live frame records.
+fn from_planes(rgb: &[f16], texels: usize) -> Vec<f32> {
+    assert_eq!(rgb.len(), texels * 3);
+    let mut out = vec![0.0; texels * 3];
+    for texel in 0..texels {
+        for channel in 0..3 {
+            out[texel * 3 + channel] = rgb[channel * texels + texel].to_f32();
         }
     }
     out
@@ -386,6 +407,32 @@ fn main() {
         std::fs::create_dir_all(parent).expect("cannot create the output directory");
     }
     let mut writer = dataset::Writer::create(&args.out, layout).expect("cannot create the dataset");
+    let mut reference_reader = args.reference_from.as_ref().map(|path| {
+        let reader = dataset::Reader::open(path)
+            .unwrap_or_else(|e| panic!("cannot open reference dataset {}: {e}", path.display()));
+        let source = reader.layout();
+        assert_eq!(source.scale, layout.scale, "reference scale differs");
+        assert_eq!(source.lr_width, layout.lr_width, "reference width differs");
+        assert_eq!(
+            source.lr_height, layout.lr_height,
+            "reference height differs"
+        );
+        assert_eq!(
+            source.lr_planes, layout.lr_planes,
+            "reference input planes differ"
+        );
+        assert_eq!(
+            source.hr_planes, layout.hr_planes,
+            "reference planes differ"
+        );
+        assert!(
+            reader.len() >= args.samples,
+            "reference dataset has {} samples, need {}",
+            reader.len(),
+            args.samples,
+        );
+        reader
+    });
 
     let harness = Harness::new(args.device_id, args.shader_dir.as_deref());
     let context = std::sync::Arc::clone(&harness.context);
@@ -400,9 +447,15 @@ fn main() {
     // acceleration structures all depend on the extent, and the pair alternates
     // between them on every sample.
     let mut lr_renderer = make_renderer(&harness, &mut encoder, lr_size);
-    let mut hr_renderer = make_renderer(&harness, &mut encoder, hr_size);
+    let mut hr_renderer = args
+        .reference_from
+        .is_none()
+        .then(|| make_renderer(&harness, &mut encoder, hr_size));
     let lr_target = render::Target::new(&context, lr_size);
-    let hr_target = render::Target::new(&context, hr_size);
+    let hr_target = args
+        .reference_from
+        .is_none()
+        .then(|| render::Target::new(&context, hr_size));
     let neural_target = args
         .checkpoint
         .as_ref()
@@ -478,20 +531,36 @@ fn main() {
             args.svgf_input,
             lr_probe.as_ref(),
         );
-        let hr = render::capture(
-            &mut hr_renderer,
-            &hr_target,
-            &context,
-            &mut encoder,
-            &harness.asset_hub,
-            &objects,
-            &camera,
-            render::Pass::Canonical {
-                frames: args.canonical_frames,
-            },
-            false,
-            None,
-        );
+        let (hr, reference_lr) = if let Some(reader) = &mut reference_reader {
+            let sample = reader
+                .sample(index)
+                .unwrap_or_else(|e| panic!("cannot read reference sample {index}: {e}"));
+            (
+                render::Frame {
+                    color: from_planes(&sample.hr, layout.hr_texels()),
+                    gbuffer: None,
+                },
+                Some(sample.lr),
+            )
+        } else {
+            (
+                render::capture(
+                    hr_renderer.as_mut().expect("reference renderer exists"),
+                    hr_target.as_ref().expect("reference target exists"),
+                    &context,
+                    &mut encoder,
+                    &harness.asset_hub,
+                    &objects,
+                    &camera,
+                    render::Pass::Canonical {
+                        frames: args.canonical_frames,
+                    },
+                    false,
+                    None,
+                ),
+                None,
+            )
+        };
 
         let predicted = match (&mut upscaler, &neural_target) {
             (Some(upscaler), Some(target)) => {
@@ -537,6 +606,14 @@ fn main() {
         }
 
         let record = to_record(&lr, layout.lr_texels());
+        if let Some(reference_lr) = reference_lr {
+            let gbuffer_start = Plane::Color.channels() * layout.lr_texels();
+            assert_eq!(
+                record[gbuffer_start..],
+                reference_lr[gbuffer_start..],
+                "reference sample {index} describes a different scene or camera"
+            );
+        }
         if index == 0 {
             report_planes(&record, &layout);
         }
@@ -579,9 +656,13 @@ fn main() {
         target.destroy(&context);
     }
     lr_target.destroy(&context);
-    hr_target.destroy(&context);
+    if let Some(target) = hr_target {
+        target.destroy(&context);
+    }
     lr_renderer.destroy(&context);
-    hr_renderer.destroy(&context);
+    if let Some(mut renderer) = hr_renderer {
+        renderer.destroy(&context);
+    }
     context.destroy_command_encoder(&mut encoder);
     harness.destroy();
 }

@@ -351,10 +351,15 @@ cadence so a crash costs one interval rather than everything.
 
 ## The latency problem
 
-The premise is a real-time budget, and the network is nowhere near one. The
-historical shape sweep below used a 720×720 input proxy. The deployment trace
-is now measured at an actual 960×540 input and 1920×1080 output on an otherwise
-idle RX 7900 XT: **20.13 ms** for the model, excluding pack/unpack.
+The historical shape sweep below used a 720×720 input proxy. The deployment
+path is now measured at an actual 960×540 input and 1920×1080 output on an
+otherwise idle RX 7900 XT: **about 20 ms** sustained end to end, including
+pack, the model, unpack, and queue submissions. Repeated sustained medians are
+19.54 to 20.91 ms; isolated pack and unpack medians stay below 0.12 ms, with
+the model accounting for effectively all of the rest. A separate detailed
+timestamp trace measured the model at 20.13 ms. The 19.5–20.9 ms range is a
+better statement of precision than selecting the best run or printing extra
+decimal places.
 
 | shape | params | GFLOP | ms @1080p, start | ms now | held-out dB |
 |---|---|---|---|---|---|
@@ -382,9 +387,9 @@ The two kernel fixes below account for 5.4x of that on the reference shape and
 the changes scores 0.001247 where it scored 0.001248, which is float
 reassociation.
 
-20.13 ms for the model alone is about 50 fps, so it still misses a 60 fps frame
-budget before texture packing, unpacking, and the renderer are counted. It is
-promising, but it is not yet a 1080p real-time claim for the complete product.
+Roughly 20 ms for the complete upscaler is about 50 fps, so it still misses a
+60 fps frame budget before the renderer is counted. It is promising, but it is
+not yet a 1080p real-time claim for the complete product.
 
 Where the time goes, from `gpu_profile`'s per-pass timings:
 
@@ -400,6 +405,19 @@ The trace covers 96.2% of the instrumented wall time. Instrumentation measured
 not replace it. The largest individual dispatch is the convolution after the
 full-resolution decoder concatenation, at roughly 4 ms and one fifth of the
 frame.
+
+The end-to-end test warms up twenty frames. Three looked adequate but left the
+discrete GPU on its clock ramp and produced plausible medians between 31 and
+43 ms; after sustained warm-up, pack/model/unpack timing and the integrated
+final wait agree in the 19.5–20.9 ms range. Profiling infrastructure has to
+control that power-state variable before attributing the difference to
+synchronization.
+
+The test now reports p90 and min/max as well as the median. Two consecutive
+40-frame runs measured 20.82/20.91 ms medians but 29.24/29.95 ms p90s, with no
+other GPU process active. That tail is host-visible and must not be hidden by a
+throughput median; correlating it with device-clock telemetry and GPU
+timestamps is a frame-pacing task still open for the next profiling pass.
 
 The kernel discussion below records the optimization history at the old square
 proxy. Its relative findings led to the current kernels, but its absolute

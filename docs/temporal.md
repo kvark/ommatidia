@@ -6,6 +6,14 @@ performance on the table. A renderer already paid for motion vectors, and a
 previous reconstructed frame contains roughly three quarters of the output
 samples that a 2× spatial model is otherwise asked to invent again.
 
+The first path-tracing experiment makes this a measured requirement rather
+than a roadmap guess. On a separate held-out set, the current spatial model
+improves a 1-spp path input by only 0.22 dB and slightly reduces SSIM; even a
+favorable four-static-sample input gains only 0.08 dB. Doubling independent
+samples buys roughly two dB, but multiplies tracing cost. Full numbers and the
+ReSTIR+SVGF control are in
+[`results/path-trace-spatial-b24-2026-08-12.md`](results/path-trace-spatial-b24-2026-08-12.md).
+
 The first temporal model should keep reprojection outside the learned network.
 The GPU pack stage will sample the previous high-resolution output at
 `current_pixel + motion`, reject history using depth and normal disagreement,
