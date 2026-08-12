@@ -10,6 +10,7 @@
 //! ```
 
 use std::sync::Arc;
+use std::{fs::File, io::BufReader, path::Path};
 
 use blade_graphics as gpu;
 use half::f16;
@@ -21,6 +22,7 @@ use ommatidia::runtime::{FrameInputs, Upscaler};
 
 const TILE: u32 = 16;
 const SCALE: u32 = 2;
+const SNAPSHOT_SSIM_THRESHOLD: f64 = 0.995;
 
 fn context() -> Option<Arc<gpu::Context>> {
     let device_id = std::env::var("OMMATIDIA_TEST_DEVICE_ID")
@@ -36,6 +38,10 @@ fn context() -> Option<Arc<gpu::Context>> {
     match unsafe { gpu::Context::init(desc) } {
         Ok(context) => Some(Arc::new(context)),
         Err(e) => {
+            assert!(
+                std::env::var_os("OMMATIDIA_REQUIRE_GPU").is_none(),
+                "required GPU context could not be created: {e:?}"
+            );
             println!("skipping: no GPU context ({e:?})");
             None
         }
@@ -67,7 +73,107 @@ fn write_checkpoint(config: &ModelConfig, stem: &std::path::Path, context: Arc<g
     let model = ommatidia::model::build(config, false).expect("build");
     let mut session = ommatidia::gpu::inference_session(&model.graph, context);
     model.initialize(&mut session, 3);
+    // Exercise the network itself, not only the texture plumbing. Production
+    // models train this zero-initialised head; the reference test gives it a
+    // small deterministic projection so changes anywhere in the backbone are
+    // observable in the output image.
+    let head = model
+        .params
+        .iter()
+        .find(|parameter| parameter.name == "head.conv.weight")
+        .expect("head parameter");
+    let weights: Vec<f32> = (0..head.len)
+        .map(|index| ((index as f32 * 0.173).sin()) * 0.002)
+        .collect();
+    session.set_parameter(&head.name, &weights);
     ommatidia::checkpoint::save(&mut session, config, stem).expect("save");
+}
+
+fn srgb8(value: f32) -> u8 {
+    let mapped = ommatidia::transform::compress(value.max(0.0));
+    let encoded = if mapped <= 0.0031308 {
+        12.92 * mapped
+    } else {
+        1.055 * mapped.powf(1.0 / 2.4) - 0.055
+    };
+    (encoded.clamp(0.0, 1.0) * 255.0 + 0.5) as u8
+}
+
+fn save_png(path: &Path, rgba: &[u8], width: u32, height: u32) {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).unwrap();
+    }
+    let mut encoder = png::Encoder::new(File::create(path).unwrap(), width, height);
+    encoder.set_color(png::ColorType::Rgba);
+    encoder.set_depth(png::BitDepth::Eight);
+    encoder
+        .write_header()
+        .unwrap()
+        .write_image_data(rgba)
+        .unwrap();
+}
+
+fn load_png(path: &Path) -> (Vec<u8>, u32, u32) {
+    let mut reader = png::Decoder::new(BufReader::new(File::open(path).unwrap()))
+        .read_info()
+        .unwrap();
+    let mut bytes = vec![0; reader.output_buffer_size().unwrap()];
+    let info = reader.next_frame(&mut bytes).unwrap();
+    bytes.truncate(info.buffer_size());
+    (bytes, info.width, info.height)
+}
+
+/// Global luminance SSIM. The image is deliberately small and strongly
+/// patterned; a global window is less forgiving than averaging many blocks.
+fn ssim(a: &[u8], b: &[u8]) -> f64 {
+    assert_eq!(a.len(), b.len());
+    let luminance = |pixel: &[u8]| {
+        0.2126 * pixel[0] as f64 + 0.7152 * pixel[1] as f64 + 0.0722 * pixel[2] as f64
+    };
+    let count = (a.len() / 4) as f64;
+    let (mut sum_a, mut sum_b) = (0.0, 0.0);
+    for (pa, pb) in a.chunks_exact(4).zip(b.chunks_exact(4)) {
+        sum_a += luminance(pa);
+        sum_b += luminance(pb);
+    }
+    let (mean_a, mean_b) = (sum_a / count, sum_b / count);
+    let (mut var_a, mut var_b, mut covariance) = (0.0, 0.0, 0.0);
+    for (pa, pb) in a.chunks_exact(4).zip(b.chunks_exact(4)) {
+        let da = luminance(pa) - mean_a;
+        let db = luminance(pb) - mean_b;
+        var_a += da * da;
+        var_b += db * db;
+        covariance += da * db;
+    }
+    var_a /= count;
+    var_b /= count;
+    covariance /= count;
+    const C1: f64 = 6.5025;
+    const C2: f64 = 58.5225;
+    ((2.0 * mean_a * mean_b + C1) * (2.0 * covariance + C2))
+        / ((mean_a * mean_a + mean_b * mean_b + C1) * (var_a + var_b + C2))
+}
+
+fn check_snapshot(rgba: &[u8], width: u32, height: u32) {
+    let reference =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/reference/upscale-runtime.png");
+    if std::env::var_os("OMMATIDIA_UPDATE_SNAPSHOTS").is_some() {
+        save_png(&reference, rgba, width, height);
+        println!("updated {}", reference.display());
+        return;
+    }
+    let (expected, expected_width, expected_height) = load_png(&reference);
+    assert_eq!((expected_width, expected_height), (width, height));
+    let score = ssim(rgba, &expected);
+    println!("upscale-runtime: SSIM = {score:.6}");
+    if score < SNAPSHOT_SSIM_THRESHOLD {
+        let actual = reference.with_file_name("upscale-runtime_actual.png");
+        save_png(&actual, rgba, width, height);
+        panic!(
+            "GPU image SSIM {score:.6} is below {SNAPSHOT_SSIM_THRESHOLD}; wrote {}",
+            actual.display()
+        );
+    }
 }
 
 /// A colour texture holding `values` as interleaved RGB.
@@ -334,28 +440,15 @@ fn upscale_matches_the_cpu_path() {
     }
     println!("upscale: worst relative difference from the CPU path = {worst:e}");
 
-    // With a zero-initialised head the residual is zero, so the result has to
-    // be exactly nearest-neighbour upsampling — a property that pins the
-    // sub-pixel indexing independently of the network.
-    for y in 0..TILE as usize {
-        for x in 0..TILE as usize {
-            for c in 0..3 {
-                let source = colors[(y * TILE as usize + x) * 3 + c];
-                for (dy, dx) in [(0, 0), (0, 1), (1, 0), (1, 1)] {
-                    let oy = y * SCALE as usize + dy;
-                    let ox = x * SCALE as usize + dx;
-                    let got = halves[(oy * out_width as usize + ox) * 4 + c].to_f32();
-                    let difference = (got - source).abs() / source.abs().max(1.0);
-                    assert!(
-                        difference < 2e-2,
-                        "sub-pixel ({dx},{dy}) of ({x},{y}) channel {c}: \
-                         {got} should replicate {source}"
-                    );
-                }
-            }
-        }
+    // Pin the complete GPU image as well as comparing it numerically to the
+    // CPU assembly path. This catches coherent visual changes that can hide
+    // inside a per-element tolerance and leaves an artifact on CI failure.
+    let mut rgba = Vec::with_capacity((out_width * out_height * 4) as usize);
+    for texel in halves.chunks_exact(4) {
+        rgba.extend(texel[..3].iter().map(|value| srgb8(value.to_f32())));
+        rgba.push(255);
     }
-    println!("upscale: a zero residual reproduces nearest-neighbour exactly");
+    check_snapshot(&rgba, out_width, out_height);
 
     upscaler.destroy();
     drop(upscaler);

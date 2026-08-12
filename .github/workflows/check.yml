@@ -1,0 +1,121 @@
+name: check
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  platform:
+    name: Build (${{ matrix.name }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Linux/Vulkan
+            os: ubuntu-latest
+          - name: Windows/Vulkan
+            os: windows-latest
+          - name: macOS/Metal
+            os: macos-latest
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Check out Ommatidium
+        uses: actions/checkout@v4
+        with:
+          path: ommatidia
+      - name: Check out Blade
+        uses: actions/checkout@v4
+        with:
+          repository: kvark/blade
+          # Remove this ref once kvark/blade#366 lands on main.
+          ref: fix/restir-dark-surfaces
+          path: blade
+      - name: Check out Meganeura
+        uses: actions/checkout@v4
+        with:
+          repository: kvark/meganeura
+          path: meganeura
+      - name: Install Rust
+        run: rustup toolchain install 1.92.0 --profile minimal
+      - name: Check workspace
+        working-directory: ommatidia
+        run: cargo +1.92.0 check --workspace --all-targets
+
+  check:
+    name: Rust checks
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out Ommatidium
+        uses: actions/checkout@v4
+        with:
+          path: ommatidia
+      - name: Check out Blade
+        uses: actions/checkout@v4
+        with:
+          repository: kvark/blade
+          # Remove this ref once kvark/blade#366 lands on main.
+          ref: fix/restir-dark-surfaces
+          path: blade
+      - name: Check out Meganeura
+        uses: actions/checkout@v4
+        with:
+          repository: kvark/meganeura
+          path: meganeura
+      - name: Install Rust
+        run: rustup toolchain install 1.92.0 --profile minimal --component rustfmt,clippy
+      - name: Format
+        working-directory: ommatidia
+        run: cargo +1.92.0 fmt --all -- --check
+      - name: Clippy
+        working-directory: ommatidia
+        run: cargo +1.92.0 clippy --workspace --all-targets -- -D warnings
+      - name: Unit tests
+        working-directory: ommatidia
+        run: cargo +1.92.0 test --workspace
+
+  lavapipe:
+    name: GPU image reference (LavaPipe)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out Ommatidium
+        uses: actions/checkout@v4
+        with:
+          path: ommatidia
+      - name: Check out Blade
+        uses: actions/checkout@v4
+        with:
+          repository: kvark/blade
+          # Remove this ref once kvark/blade#366 lands on main.
+          ref: fix/restir-dark-surfaces
+          path: blade
+      - name: Check out Meganeura
+        uses: actions/checkout@v4
+        with:
+          repository: kvark/meganeura
+          path: meganeura
+      - name: Install Rust and LavaPipe
+        run: |
+          rustup toolchain install 1.92.0 --profile minimal
+          sudo apt-get update
+          sudo apt-get install -y libvulkan1 mesa-vulkan-drivers
+      - name: Run GPU contract and image tests
+        working-directory: ommatidia
+        env:
+          VK_ICD_FILENAMES: /usr/share/vulkan/icd.d/lvp_icd.json
+          OMMATIDIA_REQUIRE_GPU: 1
+        run: cargo +1.92.0 test -p ommatidia --test gpu_runtime -- --ignored --nocapture --test-threads=1
+      - name: Upload changed image
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: lavapipe-image-reference
+          path: ommatidia/ommatidia/tests/reference/*_actual.png

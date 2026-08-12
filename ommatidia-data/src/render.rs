@@ -1,12 +1,8 @@
 //! Headless rendering of one low/high resolution pair.
 //!
-//! The pair is the whole point of the generator: the low resolution side is
-//! the raw ReSTIR estimator that the neural pass replaces, and the high
-//! resolution side is the canonical path tracer, which is what that estimator
-//! is converging to. Training against an
-//! unbiased reference rather than a supersampled version of the same estimator
-//! is what lets the network learn to remove the estimator's bias, not just its
-//! aliasing.
+//! The low-resolution side is a sparse path trace and the high-resolution side
+//! is the same path tracer accumulated toward convergence. Raw ReSTIR and SVGF
+//! inputs remain available as comparison baselines.
 
 use blade_graphics as gpu;
 
@@ -15,6 +11,10 @@ use blade_graphics as gpu;
 /// Temporal reuse means the first frame after a camera cut is not what the
 /// renderer actually shows, so the input has to be a settled one.
 pub const RESTIR_FRAMES: usize = 8;
+/// Limit one command submission's retained scene resources. Reference captures
+/// can run for thousands of frames; keeping every transient BLAS/TLAS alive
+/// until the final readback otherwise turns convergence into an OOM.
+const FRAMES_PER_SUBMISSION: usize = 32;
 
 /// An offscreen colour target plus its readback buffer.
 ///
@@ -39,7 +39,9 @@ impl Target {
             dimension: gpu::TextureDimension::D2,
             array_layer_count: 1,
             mip_level_count: 1,
-            usage: gpu::TextureUsage::TARGET | gpu::TextureUsage::COPY,
+            usage: gpu::TextureUsage::TARGET
+                | gpu::TextureUsage::RESOURCE
+                | gpu::TextureUsage::COPY,
             sample_count: 1,
             external: None,
         });
@@ -219,8 +221,10 @@ impl NeuralTarget {
 /// Which estimator to run.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Pass {
-    /// Raw ReSTIR, without Blade's built-in SVGF pass: the network's input.
+    /// Raw ReSTIR, without Blade's built-in SVGF pass: a comparison input.
     RealTime,
+    /// Sparse unbiased paths: the primary network input.
+    PathTrace { frames: usize },
     /// Accumulated path tracing: the reference.
     Canonical { frames: usize },
 }
@@ -229,13 +233,14 @@ impl Pass {
     fn mode(self) -> blade_render::RenderMode {
         match self {
             Self::RealTime => blade_render::RenderMode::RealTime,
-            Self::Canonical { .. } => blade_render::RenderMode::Canonical,
+            Self::PathTrace { .. } | Self::Canonical { .. } => blade_render::RenderMode::Canonical,
         }
     }
 
     fn frames(self) -> usize {
         match self {
             Self::RealTime => RESTIR_FRAMES,
+            Self::PathTrace { frames } => frames,
             Self::Canonical { frames } => frames,
         }
     }
@@ -246,9 +251,14 @@ impl Pass {
             // every path, so it needs far fewer per frame to stay affordable.
             num_environment_samples: match self {
                 Self::RealTime => 4,
-                Self::Canonical { .. } => 1,
+                Self::PathTrace { .. } | Self::Canonical { .. } => 1,
             },
-            num_brdf_samples: 4,
+            // One path per pixel for sparse input; four per accumulated frame
+            // makes offline reference generation converge faster.
+            num_brdf_samples: match self {
+                Self::PathTrace { .. } => 1,
+                Self::RealTime | Self::Canonical { .. } => 4,
+            },
             // The dummy environment map carries no importance sampling data.
             environment_importance_sampling: false,
             max_bounces: 3,
@@ -321,6 +331,25 @@ pub fn capture(
                 temporal_weight: 0.1,
             }),
         );
+
+        if (frame + 1).is_multiple_of(FRAMES_PER_SUBMISSION) && frame + 1 < pass.frames() {
+            let sync_point = context.submit(encoder);
+            assert!(
+                context.wait_for(&sync_point, 30_000).unwrap(),
+                "GPU timed out during accumulated reference capture"
+            );
+            for buffer in temp.buffers.drain(..) {
+                context.destroy_buffer(buffer);
+            }
+            for structure in temp.acceleration_structures.drain(..) {
+                context.destroy_acceleration_structure(structure);
+            }
+            encoder.start();
+        }
+    }
+
+    if pass != Pass::RealTime {
+        renderer.fill_gbuffer(encoder, debug_config);
     }
 
     // Read the G-buffer before the post processing, while it still describes

@@ -26,10 +26,12 @@ struct Args {
     lr_height: u32,
     scale: u32,
     canonical_frames: usize,
+    input_frames: usize,
     seed: u64,
     preview: Option<PathBuf>,
     gbuffer: bool,
     svgf_input: bool,
+    restir_input: bool,
     checkpoint: Option<PathBuf>,
     device_id: Option<u32>,
     shader_dir: Option<PathBuf>,
@@ -43,11 +45,13 @@ impl Default for Args {
             lr_width: 128,
             lr_height: 128,
             scale: 2,
-            canonical_frames: 256,
+            canonical_frames: 1024,
+            input_frames: 1,
             seed: 0,
             preview: None,
             gbuffer: true,
             svgf_input: false,
+            restir_input: false,
             checkpoint: None,
             device_id: None,
             shader_dir: None,
@@ -64,7 +68,8 @@ usage: ommatidia-data [options]
   --samples N               number of scene/camera pairs  [64]
   --lr WxH                  low resolution extent  [128x128]
   --scale S                 high resolution is low times this  [2]
-  --canonical-frames N      path tracer samples per reference frame  [256]
+  --canonical-frames N      accumulated reference frames, 4 spp each [1024]
+  --input-frames N          sparse path-traced input samples per pixel [1]
   --seed N                  base seed for scenes and cameras  [0]
   --device-id ID            adapter ID for this standalone process (hex or decimal)
   --shader-dir PATH         blade-render shader directory [../blade/blade-render/code]
@@ -72,6 +77,8 @@ usage: ommatidia-data [options]
   --no-gbuffer              store only colour, leaving out the G-buffer planes
   --svgf-input              capture Blade's built-in variance-guided filter
                             instead of raw ReSTIR; baseline comparisons only
+  --restir-input            capture raw ReSTIR instead of sparse path tracing;
+                            baseline comparisons only
   --checkpoint STEM         also run this Ommatidium checkpoint directly on
                             the live Blade views and write predicted previews
   -h, --help                this message
@@ -105,12 +112,18 @@ fn parse_args() -> Result<Args, String> {
                     .parse()
                     .map_err(|e| format!("--canonical-frames: {e}"))?
             }
+            "--input-frames" => {
+                args.input_frames = value()?
+                    .parse()
+                    .map_err(|e| format!("--input-frames: {e}"))?
+            }
             "--seed" => args.seed = value()?.parse().map_err(|e| format!("--seed: {e}"))?,
             "--device-id" => args.device_id = Some(ommatidia::gpu::parse_device_id(&value()?)?),
             "--shader-dir" => args.shader_dir = Some(PathBuf::from(value()?)),
             "--preview" => args.preview = Some(PathBuf::from(value()?)),
             "--no-gbuffer" => args.gbuffer = false,
             "--svgf-input" => args.svgf_input = true,
+            "--restir-input" => args.restir_input = true,
             "--checkpoint" => args.checkpoint = Some(PathBuf::from(value()?)),
             other => return Err(format!("unknown option {other:?}\n\n{USAGE}")),
         }
@@ -120,6 +133,12 @@ fn parse_args() -> Result<Args, String> {
     }
     if args.samples == 0 {
         return Err("--samples must be positive".into());
+    }
+    if args.input_frames == 0 {
+        return Err("--input-frames must be positive".into());
+    }
+    if args.svgf_input && args.restir_input {
+        return Err("--svgf-input and --restir-input are mutually exclusive".into());
     }
     Ok(args)
 }
@@ -354,8 +373,10 @@ fn main() {
         lr_height: args.lr_height,
         lr_source: if args.svgf_input {
             InputSource::Svgf
-        } else {
+        } else if args.restir_input {
             InputSource::RawRestir
+        } else {
+            InputSource::PathTrace
         },
         lr_planes,
         hr_planes: PlaneSet::new().with(Plane::Color),
@@ -438,6 +459,13 @@ fn main() {
         let objects = vec![blade_render::Object::from(handle)];
         let camera = scene::camera(&scene_config, &mut rng);
 
+        let input_pass = if args.svgf_input || args.restir_input {
+            render::Pass::RealTime
+        } else {
+            render::Pass::PathTrace {
+                frames: args.input_frames,
+            }
+        };
         let lr = render::capture(
             &mut lr_renderer,
             &lr_target,
@@ -446,7 +474,7 @@ fn main() {
             &harness.asset_hub,
             &objects,
             &camera,
-            render::Pass::RealTime,
+            input_pass,
             args.svgf_input,
             lr_probe.as_ref(),
         );
@@ -469,11 +497,15 @@ fn main() {
             (Some(upscaler), Some(target)) => {
                 encoder.start();
                 encoder.init_texture(target.texture());
-                upscaler.upscale(
-                    &mut encoder,
-                    &ommatidia::FrameInputs::from_blade(&lr_renderer),
-                    target.view(),
-                );
+                let inputs = if input_pass == render::Pass::RealTime {
+                    ommatidia::FrameInputs::from_blade(&lr_renderer)
+                } else {
+                    ommatidia::FrameInputs::from_color_and_blade_gbuffer(
+                        lr_target.view(),
+                        lr_renderer.view_gbuffer(),
+                    )
+                };
+                upscaler.upscale(&mut encoder, &inputs, target.view());
                 Some(target.read_linear(&context, &mut encoder))
             }
             _ => None,

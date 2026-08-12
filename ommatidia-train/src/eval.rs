@@ -134,6 +134,62 @@ pub fn error(a: &[f32], b: &[f32]) -> f32 {
     sum / a.len() as f32
 }
 
+/// Structural similarity over 8x8 luminance windows in the same compressed
+/// display-linear space as [`error`].
+///
+/// PSNR catches radiometric error well but over-penalises harmless local
+/// shifts; SSIM catches lost edges and contrast. Reporting both prevents one
+/// scalar from quietly defining "quality" for the project.
+pub fn ssim(a: &[f32], b: &[f32], width: usize, height: usize) -> f32 {
+    assert_eq!(a.len(), width * height * 3);
+    assert_eq!(a.len(), b.len());
+    const BLOCK: usize = 8;
+    const C1: f64 = 0.0001; // (0.01 * 1)^2
+    const C2: f64 = 0.0009; // (0.03 * 1)^2
+    let blocks_x = width.div_ceil(BLOCK);
+    let blocks_y = height.div_ceil(BLOCK);
+    let luminance = |rgb: &[f32]| -> f64 {
+        let r = ommatidia::transform::compress(rgb[0]) as f64;
+        let g = ommatidia::transform::compress(rgb[1]) as f64;
+        let b = ommatidia::transform::compress(rgb[2]) as f64;
+        0.2126 * r + 0.7152 * g + 0.0722 * b
+    };
+    let mut total = 0.0;
+    for by in 0..blocks_y {
+        for bx in 0..blocks_x {
+            let x_end = ((bx + 1) * BLOCK).min(width);
+            let y_end = ((by + 1) * BLOCK).min(height);
+            let count = ((x_end - bx * BLOCK) * (y_end - by * BLOCK)) as f64;
+            let (mut sum_a, mut sum_b) = (0.0, 0.0);
+            for y in by * BLOCK..y_end {
+                for x in bx * BLOCK..x_end {
+                    let offset = (y * width + x) * 3;
+                    sum_a += luminance(&a[offset..]);
+                    sum_b += luminance(&b[offset..]);
+                }
+            }
+            let (mean_a, mean_b) = (sum_a / count, sum_b / count);
+            let (mut var_a, mut var_b, mut covariance) = (0.0, 0.0, 0.0);
+            for y in by * BLOCK..y_end {
+                for x in bx * BLOCK..x_end {
+                    let offset = (y * width + x) * 3;
+                    let da = luminance(&a[offset..]) - mean_a;
+                    let db = luminance(&b[offset..]) - mean_b;
+                    var_a += da * da;
+                    var_b += db * db;
+                    covariance += da * db;
+                }
+            }
+            var_a /= count;
+            var_b /= count;
+            covariance /= count;
+            total += ((2.0 * mean_a * mean_b + C1) * (2.0 * covariance + C2))
+                / ((mean_a * mean_a + mean_b * mean_b + C1) * (var_a + var_b + C2));
+        }
+    }
+    (total / (blocks_x * blocks_y) as f64) as f32
+}
+
 /// Nearest-neighbour upsampling of interleaved linear RGB.
 ///
 /// The baseline the network has to beat: it is what a zero residual produces,
@@ -184,5 +240,16 @@ mod tests {
         // Compressed space keeps a huge outlier from dominating.
         let b = vec![0.0, 1.0, 10_000.0, 5.0];
         assert!(error(&a, &b) < 1.0, "one bright pixel swamped the metric");
+    }
+
+    #[test]
+    fn ssim_is_one_for_identical_images_and_falls_for_lost_structure() {
+        let mut image = vec![0.0; 8 * 8 * 3];
+        for (index, value) in image.iter_mut().enumerate() {
+            *value = (index % 11) as f32;
+        }
+        assert!((ssim(&image, &image, 8, 8) - 1.0).abs() < 1e-6);
+        let flat = vec![1.0; image.len()];
+        assert!(ssim(&image, &flat, 8, 8) < 0.5);
     }
 }

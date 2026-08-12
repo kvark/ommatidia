@@ -259,12 +259,12 @@ fn parse_from(argv: impl Iterator<Item = String>) -> Result<Args, String> {
 }
 
 fn validate_input_source(layout: &ommatidia::dataset::Layout, args: &Args) -> Result<(), String> {
-    if layout.lr_source == ommatidia::dataset::InputSource::RawRestir || args.allow_filtered_input {
+    if layout.lr_source != ommatidia::dataset::InputSource::Svgf || args.allow_filtered_input {
         return Ok(());
     }
     Err(format!(
-        "{} contains {:?} low-resolution input, not raw ReSTIR; refusing to train a \
-         denoiser replacement on the denoiser's own output. Regenerate it with the \
+        "{} contains {:?} low-resolution input; refusing to train a \
+         reconstruction model on another denoiser's output. Regenerate it with the \
          current ommatidia-data, or pass --allow-filtered-input for a historical comparison.",
         args.data.display(),
         layout.lr_source,
@@ -639,6 +639,8 @@ impl Evaluator {
 
         let mut baseline_total = 0.0f64;
         let mut network_total = 0.0f64;
+        let mut baseline_ssim_total = 0.0f64;
+        let mut network_ssim_total = 0.0f64;
         let mut counted = 0usize;
         let started = std::time::Instant::now();
 
@@ -677,6 +679,9 @@ impl Evaluator {
 
                 baseline_total += eval::error(&baseline, &reference) as f64;
                 network_total += eval::error(&predicted, &reference) as f64;
+                let extent = (crop.tile * self.config.scale) as usize;
+                baseline_ssim_total += eval::ssim(&baseline, &reference, extent, extent) as f64;
+                network_ssim_total += eval::ssim(&predicted, &reference, extent, extent) as f64;
 
                 // The first crop also goes out as images, for eyeballing.
                 if counted == 0
@@ -705,14 +710,20 @@ impl Evaluator {
         }
         let baseline_error = baseline_total / counted as f64;
         let network_error = network_total / counted as f64;
+        let baseline_psnr = -10.0 * baseline_error.log10();
+        let network_psnr = -10.0 * network_error.log10();
+        let baseline_ssim = baseline_ssim_total / counted as f64;
+        let network_ssim = network_ssim_total / counted as f64;
         let gain = if network_error > 0.0 {
             10.0 * (baseline_error / network_error).log10()
         } else {
             f64::INFINITY
         };
         println!(
-            "  held-out over {counted} crops in {:.1}s: nearest {baseline_error:.6}, \
-             network {network_error:.6}, {gain:+.2} dB",
+            "  held-out over {counted} crops in {:.1}s:\n  \
+             nearest  MSE {baseline_error:.6}, PSNR {baseline_psnr:.2} dB, SSIM {baseline_ssim:.4}\n  \
+             network  MSE {network_error:.6}, PSNR {network_psnr:.2} dB, SSIM {network_ssim:.4} \
+             ({gain:+.2} dB PSNR gain)",
             started.elapsed().as_secs_f32()
         );
         Some(gain as f32)

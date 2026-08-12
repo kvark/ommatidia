@@ -4,41 +4,66 @@ Neural frame reconstruction from sparse samples — a portable DLSS replacement.
 
 The network runs through [meganeura](https://github.com/kvark/meganeura) on
 Vulkan and Metal, so there is no CUDA, no vendor SDK, and no Python anywhere in
-the pipeline. Training data comes from
-[blade](https://github.com/kvark/blade): the real-time ReSTIR estimator
-provides the input and the canonical path tracer provides the ground truth, so
-the network learns to remove the estimator's bias rather than merely to sharpen
-its output.
+the pipeline. Training data comes from [blade](https://github.com/kvark/blade):
+a sparse low-resolution path trace provides the primary input and a converged
+high-resolution path trace provides ground truth. Raw ReSTIR and ReSTIR+SVGF
+remain comparison baselines; the product does not assume either one upstream.
 
-> **Status:** early. The first milestone is single-frame spatial upscaling with
-> no temporal context. See [`docs/design.md`](docs/design.md) for the
-> formulation and the roadmap.
+> **Status:** early. The published v0.1 checkpoint is the first single-frame
+> Blade integration and was trained on raw ReSTIR. The generator on `main` is
+> path-tracing-first for the next checkpoint. Temporal history is designed but
+> not implemented; see [`docs/temporal.md`](docs/temporal.md).
+
+![Ommatidium architecture: sparse path trace and G-buffer through GPU packing, a low-resolution U-Net, and sub-pixel unpacking, with future temporal reprojection](docs/architecture.svg)
 
 [Download the checkpoint](https://huggingface.co/mad-bot/ommatidia) ·
 [Training and validation data](https://huggingface.co/datasets/mad-bot/ommatidia)
 
-The first replacement checkpoint is trained on 2,400 raw-ReSTIR/canonical
+The v0.1 replacement checkpoint is trained on 2,400 raw-ReSTIR/canonical
 pairs, with 360 scenes held out. It improves over raw nearest upsampling by
 **2.93 dB**. On a separate matched validation set whose canonical references
 are byte-identical between both captures, it scores **0.002876** error against
 Blade SVGF's **0.004284** after nearest upscale: a **1.73 dB improvement over
 the variance-guided denoiser it replaces**. On an idle Radeon RX 7900 XT, the
-649k-parameter network backbone measures **19.4 ms at the actual 1080p pixel
-count**, about 52 frames per second before texture packing, unpacking, and
-display post-processing.
+649k-parameter network backbone measures **20.13 ms for an actual
+960×540 → 1920×1080 2× reconstruction**, about 50 frames per second before
+texture packing, unpacking, and display post-processing. This is measured
+model time, not a claim that the full renderer runs at 20 ms.
+
+Upscaling is real today, but narrowly scoped: the published checkpoint and the
+current training recipe are **2×**. Runtime frames may be rectangular (the
+measured path is 960×540 to 1920×1080), while training uses square crops. There
+is no trained 1× denoise-only model, dynamic quality mode, or temporal
+supersampling yet; changing the scale means training a checkpoint whose output
+head has the corresponding `3 × scale²` channels.
 
 ## Results
 
-The live shared-context path, from Blade's raw ReSTIR output to the canonical
-reference:
+The path-tracing-first data path now produces an unbiased one-path input and a
+4,096-spp reference. This pair is the target for the next checkpoint; it does
+not run the v0.1 ReSTIR-trained weights on an out-of-distribution input.
 
-| Raw ReSTIR input | Ommatidium | Canonical path trace |
+| Sparse path trace (1 spp, 128×128) | Converged target (4,096 spp, 256×256) |
+|---|---|
+| ![A one-sample-per-pixel low-resolution Blade path trace](runs/path-trace-smoke/000-lr.png) | ![A clean high-resolution Blade path-traced reference](runs/path-trace-smoke/000-hr.png) |
+
+The v0.1 live shared-context path, from Blade's raw ReSTIR output to the
+canonical reference:
+
+| Raw ReSTIR input (128×128) | Ommatidium (2×, 256×256) | Canonical path trace (256×256) |
 |---|---|---|
 | ![A noisy low-resolution Blade ReSTIR render](runs/live-check/000-lr.png) | ![The Ommatidium reconstruction](runs/live-check/000-predicted.png) | ![The canonical path-traced reference](runs/live-check/000-hr.png) |
 
-The matched validation capture below uses the same scene and byte-identical
+This image also exposes why ReSTIR is not the primary product input: its
+real-time mode estimates direct illumination, so surfaces occluded from the
+environment can be nearly black while multi-bounce canonical paths contain
+indirect light. Blade's stale-target reservoir reuse has been corrected, but
+missing indirect transport is an estimator limitation, not something an
+ambient term should hide.
+
+The matched historical validation capture below uses the same scene and byte-identical
 canonical reference for both Blade inputs. Images are nearest-upscaled for a
-like-for-like 256×256 comparison.
+like-for-like 2×, 256×256 comparison.
 
 | Raw ReSTIR | Blade SVGF | Ommatidium | Canonical reference |
 |---|---|---|---|
@@ -64,7 +89,7 @@ further:
   Winograd transforms read contiguously — were worth 5.4x with the weights
   untouched. The rest was not needing the large network at all: a 649k
   parameter model matches the 6.5M one once it is trained out. It now reaches
-  roughly 52 fps at 1080p; see the latency section of the design doc for the
+  roughly 50 fps at 960×540 → 1920×1080; see the latency section of the design doc for the
   work required to reach a dedicated-upscaler budget.
 - **Compare shapes at convergence, not at a fixed step count.** A sweep that
   gave every shape 5000 steps ranked them almost exactly wrong, because the
@@ -89,7 +114,8 @@ the `Context` a host renderer owns is not the type meganeura's session accepts.
 # Render a training set. Pick the adapter explicitly if there are several.
 cargo run --release -p ommatidia-data -- \
     --device-id 0x744c --out data/train.omd \
-    --samples 2400 --lr 128x128 --scale 2
+    --samples 2400 --lr 128x128 --scale 2 \
+    --input-frames 1 --canonical-frames 1024
 
 # Train, then reconstruct a crop and write input/nearest/predicted/reference PNGs.
 cargo run --release -p ommatidia-train -- \
@@ -104,8 +130,9 @@ not because it wins — see the status note above. A checkpoint of either loads
 into the same runtime, and `--eval-only` re-scores a finished one without
 retraining it, which is how the sampler-step sweep above was measured.
 
-`ommatidia-data --svgf-input` exists only to produce a matched Blade baseline;
-the resulting dataset is tagged `Svgf` and needs the trainer's explicit
+The generator defaults to one sparse path per input pixel and 4,096 paths per
+reference pixel. `--restir-input` and `--svgf-input` exist only for matched
+Blade baselines; SVGF datasets are tagged and need the trainer's explicit
 `--allow-filtered-input` override.
 
 Passing `--checkpoint runs/first --preview runs/live` to the generator also
@@ -122,8 +149,11 @@ the other arm of that ablation without regenerating anything.
 
 ## Using it from Blade
 
-Render Blade at the model's input resolution with its built-in denoiser
-disabled, then hand Ommatidium the renderer and the context you already have.
+Render at the model's input resolution, then hand Ommatidium the input textures
+and the graphics context the application already owns. The v0.1 convenience
+example below uses Blade's raw ReSTIR views because that is what its published
+weights were trained on; new path-traced checkpoints use
+`FrameInputs::from_color_and_blade_gbuffer`.
 The network executes on the same device and queue — no second context, external
 memory import, cross-device copy, or direct-model CPU readback.
 
@@ -163,8 +193,9 @@ renderer.post_proc_external(
 );
 ```
 
-Connecting at raw Vulkan instead, so C++ engines can call in, is on the
-roadmap; the internals do not change, only the surface.
+Raw Vulkan/C integration is planned as a user-space C ABI, not a Vulkan
+extension. The ownership, synchronization, and release contract is in
+[`docs/integration.md`](docs/integration.md).
 
 Note the sampler still walks the chain on the host, one roundtrip per step, so
 a diffusion checkpoint is far from a frame budget. A direct one is a single
@@ -186,7 +217,8 @@ cargo test -- --ignored                     # the GPU tests
 ```
 
 The GPU tests are worth knowing about: `gpu_runtime` checks that the pack and
-unpack shaders reproduce the CPU batching value for value. That is the one
+unpack shaders reproduce the CPU batching value for value and SSIM-checks a
+deterministic non-zero-network PNG on LavaPipe. That is the one
 contract in the system that fails silently — the network trains against the CPU
 path, so if the shaders drift, training keeps looking perfect and the renderer
 produces garbage.

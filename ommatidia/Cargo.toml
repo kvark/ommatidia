@@ -24,3 +24,4 @@ serde.workspace = true
 
 [dev-dependencies]
 naga = { workspace = true }
+png.workspace = true
