@@ -29,6 +29,8 @@ struct Args {
     seed: u64,
     preview: Option<PathBuf>,
     gbuffer: bool,
+    svgf_input: bool,
+    checkpoint: Option<PathBuf>,
 }
 
 impl Default for Args {
@@ -43,6 +45,8 @@ impl Default for Args {
             seed: 0,
             preview: None,
             gbuffer: true,
+            svgf_input: false,
+            checkpoint: None,
         }
     }
 }
@@ -60,6 +64,10 @@ usage: ommatidia-data [options]
   --seed N                  base seed for scenes and cameras  [0]
   --preview DIR             also write PNGs of the first few pairs
   --no-gbuffer              store only colour, leaving out the G-buffer planes
+  --svgf-input              capture Blade's built-in variance-guided filter
+                            instead of raw ReSTIR; baseline comparisons only
+  --checkpoint STEM         also run this Ommatidium checkpoint directly on
+                            the live Blade views and write predicted previews
   -h, --help                this message
 ";
 
@@ -94,6 +102,8 @@ fn parse_args() -> Result<Args, String> {
             "--seed" => args.seed = value()?.parse().map_err(|e| format!("--seed: {e}"))?,
             "--preview" => args.preview = Some(PathBuf::from(value()?)),
             "--no-gbuffer" => args.gbuffer = false,
+            "--svgf-input" => args.svgf_input = true,
+            "--checkpoint" => args.checkpoint = Some(PathBuf::from(value()?)),
             other => return Err(format!("unknown option {other:?}\n\n{USAGE}")),
         }
     }
@@ -356,7 +366,11 @@ fn main() {
         scale: args.scale,
         lr_width: args.lr_width,
         lr_height: args.lr_height,
-        lr_source: InputSource::RawRestir,
+        lr_source: if args.svgf_input {
+            InputSource::Svgf
+        } else {
+            InputSource::RawRestir
+        },
         lr_planes,
         hr_planes: PlaneSet::new().with(Plane::Color),
     };
@@ -382,6 +396,20 @@ fn main() {
     let mut hr_renderer = make_renderer(&harness, &mut encoder, hr_size);
     let lr_target = render::Target::new(&context, lr_size);
     let hr_target = render::Target::new(&context, hr_size);
+    let neural_target = args
+        .checkpoint
+        .as_ref()
+        .map(|_| render::NeuralTarget::new(&context, hr_size));
+    let mut upscaler = args.checkpoint.as_ref().map(|stem| {
+        ommatidia::Upscaler::from_checkpoint_for_extent(
+            context.clone(),
+            stem,
+            [lr_size.width, lr_size.height],
+            1,
+            1000,
+        )
+        .unwrap_or_else(|e| panic!("cannot load {}: {e}", stem.display()))
+    });
     // Only the input side carries a G-buffer: the reference is what the
     // network has to reach, and it is reached in colour.
     let lr_probe = args.gbuffer.then(|| gbuffer::Probe::new(&context, lr_size));
@@ -433,6 +461,7 @@ fn main() {
             &objects,
             &camera,
             render::Pass::RealTime,
+            args.svgf_input,
             lr_probe.as_ref(),
         );
         let hr = render::capture(
@@ -446,8 +475,23 @@ fn main() {
             render::Pass::Canonical {
                 frames: args.canonical_frames,
             },
+            false,
             None,
         );
+
+        let predicted = match (&mut upscaler, &neural_target) {
+            (Some(upscaler), Some(target)) => {
+                encoder.start();
+                encoder.init_texture(target.texture());
+                upscaler.upscale(
+                    &mut encoder,
+                    &ommatidia::FrameInputs::from_blade(&lr_renderer),
+                    target.view(),
+                );
+                Some(target.read_linear(&context, &mut encoder))
+            }
+            _ => None,
+        };
 
         if let Some(ref dir) = args.preview
             && index < 4
@@ -464,6 +508,14 @@ fn main() {
                 hr_size.width,
                 hr_size.height,
             );
+            if let Some(ref predicted) = predicted {
+                write_preview(
+                    &dir.join(format!("{index:03}-predicted.png")),
+                    predicted,
+                    hr_size.width,
+                    hr_size.height,
+                );
+            }
         }
 
         let record = to_record(&lr, layout.lr_texels());
@@ -501,6 +553,12 @@ fn main() {
 
     if let Some(probe) = lr_probe {
         probe.destroy(&context);
+    }
+    if let Some(mut upscaler) = upscaler {
+        upscaler.destroy();
+    }
+    if let Some(target) = neural_target {
+        target.destroy(&context);
     }
     lr_target.destroy(&context);
     hr_target.destroy(&context);

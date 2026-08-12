@@ -14,17 +14,21 @@ its output.
 > no temporal context. See [`docs/design.md`](docs/design.md) for the
 > formulation and the roadmap.
 
-The checked-in July checkpoints and quality numbers were produced from
-SVGF-filtered low-resolution inputs. They demonstrate the model and runtime,
-but they are not valid replacements for SVGF. The generator now captures raw
-ReSTIR and records that provenance in the dataset header. The trainer refuses
-legacy filtered data unless `--allow-filtered-input` is explicitly requested;
-regenerate the dataset and retrain before judging the Blade integration below.
+The first replacement checkpoint is trained on 2,400 raw-ReSTIR/canonical
+pairs, with 360 scenes held out. It improves over raw nearest upsampling by
+**2.93 dB**. On a separate matched validation set whose canonical references
+are byte-identical between both captures, it scores **0.002876** error against
+Blade SVGF's **0.004284** after nearest upscale: a **1.73 dB improvement over
+the variance-guided denoiser it replaces**. The 649k-parameter network measures
+**34.1 ms at the actual 1080p pixel count** on a Radeon RX 7900 XT, about 29
+frames per second before display post-processing.
 
-On 2400 procedural scenes at 128x128 to 256x256, with 360 held out, the network
-beats nearest upsampling by **5.04 dB** at **28 ms** for a 1080p frame — down
-from 656 ms for the same quality at the start of the work. Findings worth
-knowing before reading further:
+The checked-in July experiments below used SVGF-filtered inputs. They found the
+architecture and kernel optimizations, but their quality figures describe an
+upscaler stacked after SVGF, not its replacement. Dataset v2 records that
+provenance and the trainer refuses filtered data unless
+`--allow-filtered-input` is explicit. Findings worth knowing before reading
+further:
 
 - **The direct objective beats the diffusion one**, by 5.12 dB against 1.54,
   with the diffusion arm given half again as much training. Worse for
@@ -34,13 +38,13 @@ knowing before reading further:
   accumulates the model's own error.
 - **The G-buffer is worth half a decibel** over colour alone, steadily, for
   channels the renderer produced anyway.
-- **It is not real-time yet, but 23x of the gap has closed.** Two kernel fixes
+- **The deployment shape is semi-realtime, but not a 2 ms upscaler.** Two kernel fixes
   in meganeura — parallelising GroupNorm over the image, and making the
   Winograd transforms read contiguously — were worth 5.4x with the weights
   untouched. The rest was not needing the large network at all: a 649k
-  parameter model matches the 6.5M one once it is trained out. The budget is
-  2 ms; see the latency section of the design doc for where the remaining 14x
-  might come from.
+  parameter model matches the 6.5M one once it is trained out. It now reaches
+  roughly 29 fps at 1080p; see the latency section of the design doc for the
+  work required to reach a dedicated-upscaler budget.
 - **Compare shapes at convergence, not at a fixed step count.** A sweep that
   gave every shape 5000 steps ranked them almost exactly wrong, because the
   large ones were the undertrained ones.
@@ -77,6 +81,14 @@ Direct regression in one forward pass is the default and the main line;
 not because it wins — see the status note above. A checkpoint of either loads
 into the same runtime, and `--eval-only` re-scores a finished one without
 retraining it, which is how the sampler-step sweep above was measured.
+
+`ommatidia-data --svgf-input` exists only to produce a matched Blade baseline;
+the resulting dataset is tagged `Svgf` and needs the trainer's explicit
+`--allow-filtered-input` override.
+
+Passing `--checkpoint runs/first --preview runs/live` to the generator also
+runs that checkpoint from the live `RayTracer` texture views and writes
+`*-predicted.png`, exercising the same shared-context path as a host renderer.
 
 Each sample stores the colour alongside the renderer's own depth, normals,
 albedo, specular reflectance, and roughness. That is the structural advantage a

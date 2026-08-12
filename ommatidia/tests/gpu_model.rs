@@ -158,10 +158,8 @@ fn frame_cost_at_realistic_extents() {
     // is 1440^2 out, which has the same 2.07M pixels as 1080p, so that row is
     // the 1080p cost measured rather than extrapolated.
     //
-    // Note this deliberately does *not* inherit `config()`: that is a small
-    // shape for the smoke tests, and costing it while calling it the trained
-    // network is how the first version of this benchmark reported a number
-    // four times too low.
+    // Use the deployment default explicitly. `frame_cost_by_model_size` below
+    // retains the larger reference model and the ablation shapes.
     for tile in [256u32, 512, 720, 1024] {
         let config = ModelConfig {
             scale: 2,
@@ -174,11 +172,6 @@ fn frame_cost_at_realistic_extents() {
                 .with(Plane::DiffuseAlbedo)
                 .with(Plane::SpecularF0)
                 .with(Plane::Roughness),
-            base_channels: 64,
-            level_multipliers: vec![1, 2, 4],
-            blocks_per_level: 2,
-            num_groups: 8,
-            objective: Objective::Direct,
             ..ModelConfig::default()
         };
         let Ok(model) = build(&config, false) else {

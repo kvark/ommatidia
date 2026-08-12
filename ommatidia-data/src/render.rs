@@ -121,6 +121,101 @@ impl Target {
     }
 }
 
+/// `Upscaler::OUTPUT_FORMAT` target used to exercise the live Blade path.
+pub struct NeuralTarget {
+    texture: gpu::Texture,
+    view: gpu::TextureView,
+    readback: gpu::Buffer,
+    size: gpu::Extent,
+}
+
+impl NeuralTarget {
+    pub fn new(context: &gpu::Context, size: gpu::Extent) -> Self {
+        let format = ommatidia::Upscaler::OUTPUT_FORMAT;
+        let texture = context.create_texture(gpu::TextureDesc {
+            name: "ommatidia-live-output",
+            format,
+            size,
+            dimension: gpu::TextureDimension::D2,
+            array_layer_count: 1,
+            mip_level_count: 1,
+            usage: gpu::TextureUsage::STORAGE | gpu::TextureUsage::COPY,
+            sample_count: 1,
+            external: None,
+        });
+        let view = context.create_texture_view(
+            texture,
+            gpu::TextureViewDesc {
+                name: "ommatidia-live-output",
+                format,
+                dimension: gpu::ViewDimension::D2,
+                subresources: &gpu::TextureSubresources::default(),
+            },
+        );
+        let readback = context.create_buffer(gpu::BufferDesc {
+            name: "ommatidia-live-readback",
+            size: (size.width * size.height) as u64 * 8,
+            memory: gpu::Memory::Shared,
+        });
+        Self {
+            texture,
+            view,
+            readback,
+            size,
+        }
+    }
+
+    pub fn texture(&self) -> gpu::Texture {
+        self.texture
+    }
+
+    pub fn view(&self) -> gpu::TextureView {
+        self.view
+    }
+
+    pub fn read_linear(
+        &self,
+        context: &gpu::Context,
+        encoder: &mut gpu::CommandEncoder,
+    ) -> Vec<f32> {
+        {
+            let mut transfer = encoder.transfer("ommatidia-live-readback");
+            transfer.copy_texture_to_buffer(
+                self.texture.into(),
+                self.readback.into(),
+                self.size.width * 8,
+                self.size,
+            );
+        }
+        let sync_point = context.submit(encoder);
+        assert!(
+            context.wait_for(&sync_point, 30_000).unwrap(),
+            "GPU timed out reading Ommatidium output"
+        );
+
+        let texels = (self.size.width * self.size.height) as usize;
+        let mut mapped = vec![half::f16::ZERO; texels * 4];
+        unsafe {
+            std::ptr::copy_nonoverlapping(
+                self.readback.data() as *const half::f16,
+                mapped.as_mut_ptr(),
+                mapped.len(),
+            );
+        }
+        let mut out = Vec::with_capacity(texels * 3);
+        for texel in mapped.chunks_exact(4) {
+            out.extend(texel[..3].iter().map(|v| v.to_f32()));
+        }
+        out
+    }
+
+    pub fn destroy(self, context: &gpu::Context) {
+        context.destroy_buffer(self.readback);
+        context.destroy_texture_view(self.view);
+        context.destroy_texture(self.texture);
+    }
+}
+
 /// Which estimator to run.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Pass {
@@ -194,6 +289,7 @@ pub fn capture(
     objects: &[blade_render::Object],
     camera: &blade_render::Camera,
     pass: Pass,
+    svgf_input: bool,
     probe: Option<&crate::gbuffer::Probe>,
 ) -> Frame {
     let debug_config = blade_render::DebugConfig::default();
@@ -220,9 +316,10 @@ pub fn capture(
             pass.mode(),
             debug_config,
             pass.ray_config(),
-            // Ommatidium is the denoiser. Feeding it SVGF's output would make
-            // it an upscaler stacked after the filter it is meant to replace.
-            None,
+            (pass == Pass::RealTime && svgf_input).then_some(blade_render::DenoiserConfig {
+                num_passes: 3,
+                temporal_weight: 0.1,
+            }),
         );
     }
 
