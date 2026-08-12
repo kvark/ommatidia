@@ -82,13 +82,13 @@ pub struct ModelConfig {
 }
 
 impl Default for ModelConfig {
-    /// A configuration small enough to iterate on and large enough to be a
-    /// real U-Net: 3 levels at 64/128/256 channels over a 64x64 tile.
+    /// The measured deployment baseline: a one-pass, 649k-parameter U-Net
+    /// that retained the larger model's reconstruction quality.
     fn default() -> Self {
         Self {
             scale: 2,
             tile: 64,
-            batch: 4,
+            batch: 8,
             cond_planes: PlaneSet::new()
                 .with(Plane::Color)
                 .with(Plane::Depth)
@@ -96,16 +96,16 @@ impl Default for ModelConfig {
                 .with(Plane::DiffuseAlbedo)
                 .with(Plane::SpecularF0)
                 .with(Plane::Roughness),
-            base_channels: 64,
+            base_channels: 24,
             level_multipliers: vec![1, 2, 4],
-            blocks_per_level: 2,
+            blocks_per_level: 1,
             num_groups: 8,
             gn_eps: 1e-5,
             time_input_dim: 64,
             time_embed_dim: 256,
             // Overwritten from the data; 1.0 leaves the residual as it is.
             residual_gain: 1.0,
-            objective: Objective::Diffusion,
+            objective: Objective::Direct,
         }
     }
 }
@@ -705,8 +705,20 @@ mod tests {
             time_input_dim: 16,
             time_embed_dim: 32,
             cond_planes: PlaneSet::new().with(Plane::Color),
+            // Most graph tests predate the deployment default and exercise
+            // the superset path; direct-specific tests override this below.
+            objective: Objective::Diffusion,
             ..ModelConfig::default()
         }
+    }
+
+    #[test]
+    fn default_is_the_measured_deployment_baseline() {
+        let c = ModelConfig::default();
+        assert_eq!(c.objective, Objective::Direct);
+        assert_eq!(c.base_channels, 24);
+        assert_eq!(c.blocks_per_level, 1);
+        assert_eq!(c.batch, 8);
     }
 
     #[test]

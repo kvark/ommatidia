@@ -10,15 +10,15 @@ set -u
 ROOT=/x/Code/ommatidia
 OUT=${OUT:-$ROOT/runs}
 BIN=$ROOT/target/release/ommatidia-train
-DATA=${DATA:-$ROOT/data/train.omd}
-export MEGANEURA_DEVICE_ID=0x744c
+DATA=${DATA:-$ROOT/data/raw-restir-2400.omd}
+export OMMATIDIA_DEVICE_ID=${OMMATIDIA_DEVICE_ID:-0x744c}
 
-# Model size, chosen from a VRAM measurement: ~1.9 GiB, well inside the margin
-# left by the other process.
-BASE=${BASE:-96}
+# Deployment baseline: 649k parameters, one forward pass, and the same held-out
+# quality as the old 6.5M-parameter model once both are trained to convergence.
+BASE=${BASE:-24}
 BATCH=${BATCH:-8}
 LEVELS=${LEVELS:-3}
-BLOCKS=2
+BLOCKS=${BLOCKS:-1}
 TILE=64
 
 # Refuse to start if the device is already close to full — better to report

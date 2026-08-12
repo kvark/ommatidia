@@ -132,9 +132,7 @@ usage: ommatidia-train [options]
   --base-channels N    channel width of the first level  [24]
   --levels N           U-Net levels  [3]
   --blocks N           residual blocks per level  [1]
-  --num-groups N       GroupNorm groups. Also sets how many workgroups the
-                       normalisation launches, which at batch 1 is its entire
-                       parallelism, so raising it is worth real time  [8]
+  --num-groups N       GroupNorm groups; must divide every level width  [8]
   --timesteps N        diffusion schedule length  [1000]
   --sampler-steps N    DDIM steps used when evaluating  [20]
   --objective KIND     direct or diffusion  [direct]
