@@ -26,11 +26,14 @@ pairs, with 360 scenes held out. It improves over raw nearest upsampling by
 **2.93 dB**. On a separate matched validation set whose canonical references
 are byte-identical between both captures, it scores **0.002876** error against
 Blade SVGF's **0.004284** after nearest upscale: a **1.73 dB improvement over
-the variance-guided denoiser it replaces**. On an idle Radeon RX 7900 XT, the
-649k-parameter network backbone measures **20.13 ms for an actual
-960×540 → 1920×1080 2× reconstruction**, about 50 frames per second before
-texture packing, unpacking, and display post-processing. This is measured
-model time, not a claim that the full renderer runs at 20 ms.
+the variance-guided denoiser it replaces**. On an idle Radeon RX 7900 XT, a
+sustained end-to-end upscaler benchmark measures **about 20 ms for an actual
+960×540 → 1920×1080 2× reconstruction**, including texture pack, the 649k
+parameter model, unpack, and queue submissions. It excludes the ray tracer and
+display post-processing. Repeated sustained medians range from 19.54 to 20.91
+ms; the benchmark also reports p90 and range because a recent 40-frame run had
+a 29.95 ms p90. This is not a claim that the full renderer runs at 20 ms—or
+that median throughput alone guarantees frame pacing.
 
 Upscaling is real today, but narrowly scoped: the published checkpoint and the
 current training recipe are **2×**. Runtime frames may be rectangular (the
@@ -49,6 +52,20 @@ not run the v0.1 ReSTIR-trained weights on an out-of-distribution input.
 |---|---|
 | ![A one-sample-per-pixel low-resolution Blade path trace](runs/path-trace-smoke/000-lr.png) | ![A clean high-resolution Blade path-traced reference](runs/path-trace-smoke/000-hr.png) |
 
+The first matched spatial training run is an important negative result: at 1
+spp the network improves a separate held-out set from 19.22 to only 19.44 dB
+and slightly lowers SSIM. A favorable four-static-sample proxy improves from
+23.58 to only 23.66 dB. By contrast, ReSTIR+SVGF reaches a similar 23.61 dB but
+0.8776 SSIM versus 0.4595 for the 4-spp network. PSNR alone hides that large
+structural difference, and more single-frame training does not create missing
+evidence. The next checkpoint therefore needs the temporal contract described
+in [`docs/temporal.md`](docs/temporal.md); the full controlled result is
+[`documented here`](docs/results/path-trace-spatial-b24-2026-08-12.md).
+
+| ReSTIR+SVGF | Sparse path (1 spp) | Spatial Ommatidium | Canonical reference |
+|---|---|---|---|
+| ![Blade ReSTIR plus SVGF](runs/eval-path-reference-svgf/nearest.png) | ![One-sample sparse path input](runs/eval-path-trace-validation/nearest.png) | ![The current spatial path reconstruction](runs/eval-path-trace-validation/predicted.png) | ![The matched canonical reference](runs/eval-path-trace-validation/reference.png) |
+
 The v0.1 live shared-context path, from Blade's raw ReSTIR output to the
 canonical reference:
 
@@ -56,11 +73,12 @@ canonical reference:
 |---|---|---|
 | ![A noisy low-resolution Blade ReSTIR render](runs/live-check/000-lr.png) | ![The Ommatidium reconstruction](runs/live-check/000-predicted.png) | ![The canonical path-traced reference](runs/live-check/000-hr.png) |
 
-This image also exposes why ReSTIR is not the primary product input: its
-real-time mode estimates direct illumination, so surfaces occluded from the
-environment can be nearly black while multi-bounce canonical paths contain
-indirect light. Blade's stale-target reservoir reuse has been corrected, but
-missing indirect transport is an estimator limitation, not something an
+The visually dominant near-black faces from the first capture are gone. The
+audit also fixed a real stale-target defect in Blade's non-pairwise reservoir
+reuse and added a strict image regression for it. ReSTIR is still not the
+primary product input: its real-time mode estimates direct illumination, so
+occluded surfaces legitimately differ from the multi-bounce canonical target.
+Missing indirect transport is an estimator limitation, not something an
 ambient term should hide.
 
 The matched historical validation capture below uses the same scene and byte-identical
@@ -141,6 +159,10 @@ baselines; SVGF datasets are tagged and need the trainer's explicit
 Passing `--checkpoint runs/first --preview runs/live` to the generator also
 runs that checkpoint from the live `RayTracer` texture views and writes
 `*-predicted.png`, exercising the same shared-context path as a host renderer.
+For input-sample-count or estimator ablations, `--reference-from existing.omd`
+copies the already-rendered high-resolution records. It verifies every copied
+sample's G-buffer against the newly rendered scene and camera, so a mismatched
+seed cannot silently pair unrelated input and ground truth.
 
 Each sample stores the colour alongside the renderer's own depth, normals,
 albedo, specular reflectance, and roughness. That is the structural advantage a

@@ -347,18 +347,102 @@ fn end_to_end_1080p_runtime_cost() {
         assert!(context.wait_for(&completed, 30_000).unwrap());
         started.elapsed().as_secs_f64() * 1e3
     };
-    for _ in 0..3 {
+    // The discrete card leaves its low-power state slowly enough that three
+    // frames can still put the median on a clock ramp. A sustained real-time
+    // workload is the quantity this test names, so warm for long enough to
+    // reach the steady clock before collecting samples.
+    const WARMUP_RUNS: usize = 20;
+    for _ in 0..WARMUP_RUNS {
         run(&mut upscaler, &mut encoder);
     }
-    const RUNS: usize = 20;
+    const RUNS: usize = 40;
     let mut samples: Vec<f64> = (0..RUNS)
         .map(|_| run(&mut upscaler, &mut encoder))
         .collect();
     samples.sort_by(f64::total_cmp);
     let median = (samples[RUNS / 2 - 1] + samples[RUNS / 2]) * 0.5;
+    let p90 = samples[(RUNS * 9 / 10).min(RUNS - 1)];
     println!(
-        "end to end: {}x{} -> {}x{} in {median:.2} ms (pack + model + unpack + submissions)",
-        INPUT[0], INPUT[1], output_width, output_height,
+        "end to end: {}x{} -> {}x{} median {median:.2} ms, p90 {p90:.2} ms, range {:.2}..{:.2} ms over {RUNS} samples after {WARMUP_RUNS} warmups (pack + model + unpack + submissions)",
+        INPUT[0],
+        INPUT[1],
+        output_width,
+        output_height,
+        samples[0],
+        samples[RUNS - 1],
+    );
+
+    let median_of = |mut samples: Vec<f64>| {
+        samples.sort_by(f64::total_cmp);
+        (samples[RUNS / 2 - 1] + samples[RUNS / 2]) * 0.5
+    };
+    let pack_ms = median_of(
+        (0..RUNS)
+            .map(|_| {
+                encoder.start();
+                let started = std::time::Instant::now();
+                upscaler.pack(&mut encoder, &inputs);
+                let completed = context.submit(&mut encoder);
+                assert!(context.wait_for(&completed, 30_000).unwrap());
+                started.elapsed().as_secs_f64() * 1e3
+            })
+            .collect(),
+    );
+    let model_ms = median_of(
+        (0..RUNS)
+            .map(|_| {
+                let started = std::time::Instant::now();
+                upscaler.run();
+                upscaler.session().wait();
+                started.elapsed().as_secs_f64() * 1e3
+            })
+            .collect(),
+    );
+    let unpack_ms = median_of(
+        (0..RUNS)
+            .map(|_| {
+                encoder.start();
+                let started = std::time::Instant::now();
+                upscaler.unpack(&mut encoder, &inputs, output_view);
+                let completed = context.submit(&mut encoder);
+                assert!(context.wait_for(&completed, 30_000).unwrap());
+                started.elapsed().as_secs_f64() * 1e3
+            })
+            .collect(),
+    );
+    println!(
+        "isolated stages (each with its own completion wait): pack {pack_ms:.2} ms, model {model_ms:.2} ms, unpack {unpack_ms:.2} ms"
+    );
+
+    let mut host_phases = vec![[0.0f64; 4]; RUNS];
+    for phases in &mut host_phases {
+        encoder.start();
+        let mut started = std::time::Instant::now();
+        upscaler.pack(&mut encoder, &inputs);
+        context.submit(&mut encoder);
+        phases[0] = started.elapsed().as_secs_f64() * 1e3;
+
+        started = std::time::Instant::now();
+        upscaler.run();
+        phases[1] = started.elapsed().as_secs_f64() * 1e3;
+
+        started = std::time::Instant::now();
+        encoder.start();
+        upscaler.unpack(&mut encoder, &inputs, output_view);
+        let completed = context.submit(&mut encoder);
+        phases[2] = started.elapsed().as_secs_f64() * 1e3;
+
+        started = std::time::Instant::now();
+        assert!(context.wait_for(&completed, 30_000).unwrap());
+        phases[3] = started.elapsed().as_secs_f64() * 1e3;
+    }
+    let phase_median = |index| median_of(host_phases.iter().map(|sample| sample[index]).collect());
+    println!(
+        "integrated host phases: pack/submit {:.2} ms, model step call {:.2} ms, unpack/submit {:.2} ms, final wait {:.2} ms",
+        phase_median(0),
+        phase_median(1),
+        phase_median(2),
+        phase_median(3),
     );
 
     upscaler.destroy();

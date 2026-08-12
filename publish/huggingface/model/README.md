@@ -59,10 +59,12 @@ That is 3.01 dB over raw nearest reconstruction and 1.73 dB over the Blade
 filter it replaces. The canonical references are byte-identical between the
 raw and SVGF captures.
 
-The 104.1 GFLOP backbone measures **19.4 ms** for 720×720 input / 1440×1440
-output—the same output pixel count as 1080p—on an idle Radeon RX 7900 XT with
-RADV and Mesa 26.0.3. This is the Meganeura network step; Blade texture packing,
-unpacking, and display post-processing are not included.
+At the actual rectangular deployment shape, repeated sustained benchmarks
+measure **19.54–20.91 ms** for 960×540 input / 1920×1080 output on an idle
+Radeon RX 7900 XT with RADV. This includes Ommatidium's texture pack, the 104.1
+GFLOP Meganeura network, unpack, and queue submissions; the ray tracer and
+display post-processing are not included. The benchmark also reports tail
+latency; a recent 40-frame run measured a 29.95 ms p90.
 
 ## Intended use and limitations
 
