@@ -13,6 +13,7 @@ categories = ["rendering"]
 
 [dependencies]
 blade-graphics.workspace = true
+blade-render.workspace = true
 blade-macros = "0.3"
 bytemuck.workspace = true
 half.workspace = true

@@ -79,6 +79,7 @@ struct Args {
     eval_every: usize,
     checkpoint_every: usize,
     eval_only: bool,
+    allow_filtered_input: bool,
 }
 
 impl Default for Args {
@@ -87,18 +88,18 @@ impl Default for Args {
             data: PathBuf::from("data/train.omd"),
             out: PathBuf::from("runs/ommatidia"),
             steps: 1000,
-            batch: 4,
+            batch: 8,
             tile: 64,
             learning_rate: 2e-4,
             learning_rate_final: None,
             grad_clip: 1.0,
-            base_channels: 64,
+            base_channels: 24,
             levels: 3,
-            blocks_per_level: 2,
+            blocks_per_level: 1,
             num_groups: 8,
             timesteps: 1000,
             sampler_steps: 20,
-            objective: Objective::Diffusion,
+            objective: Objective::Direct,
             seed: 0,
             log_every: 50,
             eval_out: None,
@@ -108,6 +109,7 @@ impl Default for Args {
             eval_every: 0,
             checkpoint_every: 0,
             eval_only: false,
+            allow_filtered_input: false,
         }
     }
 }
@@ -120,22 +122,22 @@ usage: ommatidia-train [options]
   --data PATH          dataset to train on  [data/train.omd]
   --out STEM           checkpoint stem, gets .safetensors and .ron  [runs/ommatidia]
   --steps N            optimizer steps  [1000]
-  --batch N            crops per step  [4]
+  --batch N            crops per step  [8]
   --tile N             square crop size, in input pixels  [64]
   --lr F               Adam learning rate  [2e-4]
   --lr-final F         decay the rate to this by the last step, on a cosine.
                        Worth setting on a long run: a rate that was right for
                        the first hour is too coarse to settle in the last one
   --grad-clip F        clip the gradient norm to this, 0 to disable  [1.0]
-  --base-channels N    channel width of the first level  [64]
+  --base-channels N    channel width of the first level  [24]
   --levels N           U-Net levels  [3]
-  --blocks N           residual blocks per level  [2]
+  --blocks N           residual blocks per level  [1]
   --num-groups N       GroupNorm groups. Also sets how many workgroups the
                        normalisation launches, which at batch 1 is its entire
                        parallelism, so raising it is worth real time  [8]
   --timesteps N        diffusion schedule length  [1000]
   --sampler-steps N    DDIM steps used when evaluating  [20]
-  --objective KIND     diffusion or direct  [diffusion]
+  --objective KIND     direct or diffusion  [direct]
   --seed N             seed for init and batching  [0]
   --log-every N        steps between loss lines  [50]
   --eval-out DIR       write comparison PNGs of the first held-out crop
@@ -151,6 +153,10 @@ usage: ommatidia-train [options]
   --color-only         condition on colour alone, ignoring the dataset's
                        G-buffer planes; the other half of that ablation is
                        simply leaving this off
+  --allow-filtered-input
+                       allow a legacy dataset whose input already passed
+                       through Blade's SVGF denoiser; for historical
+                       comparisons only, not a denoiser-replacement model
   -h, --help           this message
 ";
 
@@ -215,6 +221,7 @@ fn parse_from(argv: impl Iterator<Item = String>) -> Result<Args, String> {
             "--eval-out" => args.eval_out = Some(PathBuf::from(value()?)),
             "--color-only" => args.color_only = true,
             "--eval-only" => args.eval_only = true,
+            "--allow-filtered-input" => args.allow_filtered_input = true,
             "--val-fraction" => {
                 args.val_fraction = value()?
                     .parse()
@@ -249,6 +256,19 @@ fn parse_from(argv: impl Iterator<Item = String>) -> Result<Args, String> {
     Ok(args)
 }
 
+fn validate_input_source(layout: &ommatidia::dataset::Layout, args: &Args) -> Result<(), String> {
+    if layout.lr_source == ommatidia::dataset::InputSource::RawRestir || args.allow_filtered_input {
+        return Ok(());
+    }
+    Err(format!(
+        "{} contains {:?} low-resolution input, not raw ReSTIR; refusing to train a \
+         denoiser replacement on the denoiser's own output. Regenerate it with the \
+         current ommatidia-data, or pass --allow-filtered-input for a historical comparison.",
+        args.data.display(),
+        layout.lr_source,
+    ))
+}
+
 fn main() {
     env_logger::init();
     let args = match parse_args() {
@@ -267,6 +287,10 @@ fn main() {
         }
     };
     let layout = *reader.layout();
+    if let Err(message) = validate_input_source(&layout, &args) {
+        eprintln!("{message}");
+        std::process::exit(1);
+    }
     if reader.is_empty() {
         eprintln!("{} holds no samples", args.data.display());
         std::process::exit(1);
@@ -742,6 +766,37 @@ mod cli_tests {
         let plain = parse(&[]).unwrap();
         assert_eq!(plain.eval_every, 0);
         assert_eq!(plain.checkpoint_every, 0);
+    }
+
+    #[test]
+    fn defaults_select_the_semi_realtime_direct_model() {
+        let args = parse(&[]).unwrap();
+        assert_eq!(args.objective, Objective::Direct);
+        assert_eq!(args.base_channels, 24);
+        assert_eq!(args.levels, 3);
+        assert_eq!(args.blocks_per_level, 1);
+        assert_eq!(args.batch, 8);
+        assert!(!args.allow_filtered_input);
+    }
+
+    #[test]
+    fn filtered_training_data_requires_an_explicit_override() {
+        let mut layout = ommatidia::dataset::Layout {
+            scale: 2,
+            lr_width: 8,
+            lr_height: 8,
+            lr_source: ommatidia::dataset::InputSource::Svgf,
+            lr_planes: ommatidia::PlaneSet::new().with(ommatidia::Plane::Color),
+            hr_planes: ommatidia::PlaneSet::new().with(ommatidia::Plane::Color),
+        };
+        let plain = parse(&[]).unwrap();
+        assert!(validate_input_source(&layout, &plain).is_err());
+
+        let overridden = parse(&["--allow-filtered-input"]).unwrap();
+        assert!(validate_input_source(&layout, &overridden).is_ok());
+
+        layout.lr_source = ommatidia::dataset::InputSource::RawRestir;
+        assert!(validate_input_source(&layout, &plain).is_ok());
     }
 
     #[test]

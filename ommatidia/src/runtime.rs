@@ -6,7 +6,8 @@
 //! require that both sides resolve to the same `blade-graphics` crate, which
 //! the workspace `[patch]` section is there to enforce.
 //!
-//! A frame is three stages, all recorded onto the caller's command encoder:
+//! A frame is three stages on one queue. Pack and unpack use the caller's
+//! command encoder; Meganeura records the network on its own:
 //!
 //! 1. **Pack.** One dispatch reads the colour and G-buffer views and writes the
 //!    conditioning tensor, applying the transforms in [`crate::transform`].
@@ -33,6 +34,9 @@ use crate::model::{self, ModelConfig, Objective};
 struct PackData {
     params: PackParams,
     t_color: gpu::TextureView,
+    t_diffuse_radiance: gpu::TextureView,
+    t_specular_radiance: gpu::TextureView,
+    t_emissive: gpu::TextureView,
     t_depth: gpu::TextureView,
     t_normal: gpu::TextureView,
     t_albedo: gpu::TextureView,
@@ -47,12 +51,20 @@ struct PackParams {
     height: u32,
     channels: u32,
     planes: u32,
+    compose_blade_radiance: u32,
+    decode_blade_gbuffer: u32,
+    _pad0: u32,
+    _pad1: u32,
 }
 
 #[derive(blade_macros::ShaderData)]
 struct UnpackData {
     params: UnpackParams,
     t_color: gpu::TextureView,
+    t_diffuse_radiance: gpu::TextureView,
+    t_specular_radiance: gpu::TextureView,
+    t_emissive: gpu::TextureView,
+    t_albedo: gpu::TextureView,
     residual: gpu::BufferPiece,
     output: gpu::TextureView,
 }
@@ -64,6 +76,10 @@ struct UnpackParams {
     height: u32,
     scale: u32,
     inverse_gain: f32,
+    compose_blade_radiance: u32,
+    _pad0: u32,
+    _pad1: u32,
+    _pad2: u32,
 }
 
 /// The textures a frame is reconstructed from.
@@ -74,8 +90,15 @@ struct UnpackParams {
 /// them, which is what a model conditioned on colour alone wants.
 #[derive(Clone, Copy)]
 pub struct FrameInputs {
-    /// Linear radiance at input resolution. Always required.
+    /// Linear radiance at input resolution, or a readable placeholder when
+    /// Blade's split radiance views are composed instead.
     pub color: gpu::TextureView,
+    /// Blade's demodulated diffuse radiance. Used by [`Self::from_blade`].
+    pub diffuse_radiance: gpu::TextureView,
+    /// Blade's specular radiance. Used by [`Self::from_blade`].
+    pub specular_radiance: gpu::TextureView,
+    /// Blade's emissive radiance. Used by [`Self::from_blade`].
+    pub emissive: gpu::TextureView,
     /// View-space distance.
     pub depth: gpu::TextureView,
     /// World-space shading normal.
@@ -84,6 +107,8 @@ pub struct FrameInputs {
     pub albedo: gpu::TextureView,
     /// Specular reflectance in RGB, roughness in alpha — Blade's own layout.
     pub specular: gpu::TextureView,
+    compose_blade_radiance: bool,
+    decode_blade_gbuffer: bool,
 }
 
 impl FrameInputs {
@@ -94,10 +119,47 @@ impl FrameInputs {
     pub fn color_only(color: gpu::TextureView, placeholder: gpu::TextureView) -> Self {
         Self {
             color,
+            diffuse_radiance: placeholder,
+            specular_radiance: placeholder,
+            emissive: placeholder,
             depth: placeholder,
             normal: placeholder,
             albedo: placeholder,
             specular: placeholder,
+            compose_blade_radiance: false,
+            decode_blade_gbuffer: false,
+        }
+    }
+
+    /// Read the raw real-time estimate and G-buffer from a Blade ray tracer.
+    ///
+    /// Call this after `RayTracer::render`. To use Ommatidium *instead of*
+    /// Blade's SVGF filter, pass `None` as that render call's denoiser config.
+    /// The pack shader composes Blade's demodulated diffuse and specular lobes
+    /// exactly as Blade's own post-process does, decodes the shading-basis
+    /// quaternion, and preserves Blade's special depth value for sky pixels.
+    pub fn from_blade(renderer: &blade_render::RayTracer) -> Self {
+        Self::from_blade_views(renderer.view_radiance(), renderer.view_gbuffer())
+    }
+
+    /// Build inputs from views previously borrowed from a Blade ray tracer.
+    pub fn from_blade_views(
+        radiance: blade_render::RadianceViews,
+        gbuffer: blade_render::GBufferViews,
+    ) -> Self {
+        Self {
+            // Every shader binding must be populated. The color binding is
+            // unused in this mode, so a readable radiance view is sufficient.
+            color: radiance.diffuse,
+            diffuse_radiance: radiance.diffuse,
+            specular_radiance: radiance.specular,
+            emissive: gbuffer.emissive,
+            depth: gbuffer.depth,
+            normal: gbuffer.basis,
+            albedo: gbuffer.diffuse_albedo,
+            specular: gbuffer.specular_f0,
+            compose_blade_radiance: true,
+            decode_blade_gbuffer: true,
         }
     }
 }
@@ -126,21 +188,18 @@ pub struct Upscaler {
     context: Arc<gpu::Context>,
     session: meganeura::Session,
     config: ModelConfig,
+    input_extent: [u32; 2],
     schedule: crate::diffusion::Schedule,
     sampler_steps: usize,
     pack_pipeline: gpu::ComputePipeline,
     unpack_pipeline: gpu::ComputePipeline,
-    /// Host-side scratch for the sampler's state.
+    /// Host-side scratch for the diffusion sampler's state. Empty for direct
+    /// checkpoints, whose output stays on the GPU.
     x: Vec<f32>,
     next: Vec<f32>,
-    /// Device copy of the residual, read by the unpack shader.
-    ///
-    /// The sampler runs on the host, so the result has to come back. Even for
-    /// the single-pass objective it goes through here, because meganeura does
-    /// not expose the `blade_graphics::Buffer` behind a graph output — binding
-    /// the network's own output in place would save this copy and is the
-    /// obvious thing to do once that accessor exists.
-    residual_buffer: gpu::Buffer,
+    /// Device copy of the host-side diffusion sampler result. Direct
+    /// checkpoints bind Meganeura's pinned graph output instead.
+    residual_buffer: Option<gpu::Buffer>,
     seed: u64,
 }
 
@@ -157,12 +216,36 @@ impl Upscaler {
         sampler_steps: usize,
         timesteps: usize,
     ) -> Result<Self, UpscalerError> {
+        let (config, _) = crate::checkpoint::load_config(&stem)
+            .map_err(|e| UpscalerError::Checkpoint(e.to_string()))?;
+        Self::from_checkpoint_for_extent(
+            context,
+            stem,
+            [config.tile, config.tile],
+            sampler_steps,
+            timesteps,
+        )
+    }
+
+    /// Build a checkpoint for a full, potentially rectangular Blade frame.
+    ///
+    /// Checkpoint parameters do not depend on spatial size. Meganeura's graph
+    /// does, so this recompiles the same network at `input_extent` while
+    /// loading the original weights.
+    pub fn from_checkpoint_for_extent(
+        context: Arc<gpu::Context>,
+        stem: impl AsRef<std::path::Path>,
+        input_extent: [u32; 2],
+        sampler_steps: usize,
+        timesteps: usize,
+    ) -> Result<Self, UpscalerError> {
         let (mut config, paths) = crate::checkpoint::load_config(stem)
             .map_err(|e| UpscalerError::Checkpoint(e.to_string()))?;
         // A checkpoint may have been trained with a batch; a frame is one tile.
         config.batch = 1;
 
-        let model = model::build(&config, false).map_err(UpscalerError::Config)?;
+        let model =
+            model::build_for_extent(&config, false, input_extent).map_err(UpscalerError::Config)?;
         let mut session = meganeura::train::build(
             &model.graph,
             meganeura::SessionConfig {
@@ -199,25 +282,32 @@ impl Upscaler {
             compute: unpack_shader.at("unpack"),
         });
 
-        let per_slot = (config.target_channels() * config.tile * config.tile) as usize;
-        let residual_buffer = context.create_buffer(gpu::BufferDesc {
-            name: "ommatidia-residual",
-            size: per_slot as u64 * 4,
-            // Host-visible and device-local, so the upload is a memcpy with no
-            // staging buffer and no transfer pass.
-            memory: gpu::Memory::Shared,
+        let per_slot = config.target_len_for_extent(input_extent);
+        let residual_buffer = (config.objective == Objective::Diffusion).then(|| {
+            context.create_buffer(gpu::BufferDesc {
+                name: "ommatidia-residual",
+                size: per_slot as u64 * 4,
+                // The diffusion sampler still runs on the host.
+                memory: gpu::Memory::Shared,
+            })
         });
 
+        let host_scratch_len = if config.objective == Objective::Diffusion {
+            per_slot
+        } else {
+            0
+        };
         Ok(Self {
             context,
             session,
             schedule: crate::diffusion::Schedule::cosine(timesteps),
             sampler_steps,
             config,
+            input_extent,
             pack_pipeline,
             unpack_pipeline,
-            x: vec![0.0; per_slot],
-            next: vec![0.0; per_slot],
+            x: vec![0.0; host_scratch_len],
+            next: vec![0.0; host_scratch_len],
             residual_buffer,
             seed: 0,
         })
@@ -229,13 +319,15 @@ impl Upscaler {
 
     /// Input extent the network was compiled for.
     pub fn input_extent(&self) -> (u32, u32) {
-        (self.config.tile, self.config.tile)
+        (self.input_extent[0], self.input_extent[1])
     }
 
     /// Output extent this produces.
     pub fn output_extent(&self) -> (u32, u32) {
-        let tile = self.config.tile * self.config.scale;
-        (tile, tile)
+        (
+            self.input_extent[0] * self.config.scale,
+            self.input_extent[1] * self.config.scale,
+        )
     }
 
     /// Format the output texture has to have, matching the unpack shader's
@@ -263,8 +355,15 @@ impl Upscaler {
                     height,
                     channels: self.config.cond_channels(),
                     planes: self.config.cond_planes.bits(),
+                    compose_blade_radiance: inputs.compose_blade_radiance as u32,
+                    decode_blade_gbuffer: inputs.decode_blade_gbuffer as u32,
+                    _pad0: 0,
+                    _pad1: 0,
                 },
                 t_color: inputs.color,
+                t_diffuse_radiance: inputs.diffuse_radiance,
+                t_specular_radiance: inputs.specular_radiance,
+                t_emissive: inputs.emissive,
                 t_depth: inputs.depth,
                 t_normal: inputs.normal,
                 t_albedo: inputs.albedo,
@@ -281,14 +380,10 @@ impl Upscaler {
     /// [`Objective::Diffusion`] it walks the sampler, which currently costs a
     /// host roundtrip per step — see the note on [`Self::upscale`].
     pub fn run(&mut self) {
-        let per_slot =
-            (self.config.target_channels() * self.config.tile * self.config.tile) as usize;
+        let per_slot = self.config.target_len_for_extent(self.input_extent);
         match self.config.objective {
             Objective::Direct => {
                 self.session.step();
-                self.session.wait();
-                let out = self.session.read_output(per_slot);
-                self.x.copy_from_slice(&out);
             }
             Objective::Diffusion => {
                 let mut rng = crate::rng::Rng::new(self.seed);
@@ -327,22 +422,30 @@ impl Upscaler {
     pub fn unpack(
         &mut self,
         encoder: &mut gpu::CommandEncoder,
-        color: gpu::TextureView,
+        inputs: &FrameInputs,
         output: gpu::TextureView,
     ) {
-        // The sampler ran on the host, so the result goes back to the device.
-        // The buffer is host-coherent, and the write is made visible to the
-        // dispatch below by the implicit host-domain barrier on submit.
-        //
-        // Safety: the buffer was allocated with exactly `self.x.len()` floats
-        // and is `Memory::Shared`, so the pointer is mapped and writable.
-        unsafe {
-            std::ptr::copy_nonoverlapping(
-                self.x.as_ptr(),
-                self.residual_buffer.data() as *mut f32,
-                self.x.len(),
-            );
-        }
+        let residual = match self.config.objective {
+            Objective::Direct => self
+                .session
+                .output_buffer(0)
+                .expect("the inference graph always has one pinned output"),
+            Objective::Diffusion => {
+                let buffer = self
+                    .residual_buffer
+                    .expect("diffusion allocates host-visible sampler output");
+                // The sampler ran on the host, so its result goes back to the
+                // device. Host-coherent memory becomes visible on submit.
+                unsafe {
+                    std::ptr::copy_nonoverlapping(
+                        self.x.as_ptr(),
+                        buffer.data() as *mut f32,
+                        self.x.len(),
+                    );
+                }
+                buffer.into()
+            }
+        };
 
         let (width, height) = self.input_extent();
         let mut pass = encoder.compute("ommatidia-unpack");
@@ -355,9 +458,17 @@ impl Upscaler {
                     height,
                     scale: self.config.scale,
                     inverse_gain: 1.0 / self.config.residual_gain,
+                    compose_blade_radiance: inputs.compose_blade_radiance as u32,
+                    _pad0: 0,
+                    _pad1: 0,
+                    _pad2: 0,
                 },
-                t_color: color,
-                residual: self.residual_buffer.into(),
+                t_color: inputs.color,
+                t_diffuse_radiance: inputs.diffuse_radiance,
+                t_specular_radiance: inputs.specular_radiance,
+                t_emissive: inputs.emissive,
+                t_albedo: inputs.albedo,
+                residual,
                 output,
             },
         );
@@ -390,15 +501,14 @@ impl Upscaler {
         output: gpu::TextureView,
     ) {
         self.pack(encoder, inputs);
-        let sync_point = self.context.submit(encoder);
-        // The network's dispatches go onto meganeura's encoder, on the same
-        // queue, so they are ordered after this submission.
-        let _ = self.context.wait_for(&sync_point, !0);
+        self.context.submit(encoder);
+        // The network's dispatches go onto meganeura's encoder on the same
+        // queue, so submission order is sufficient; no CPU wait is needed.
 
         self.run();
 
         encoder.start();
-        self.unpack(encoder, inputs.color, output);
+        self.unpack(encoder, inputs, output);
     }
 
     /// Seed the sampler's starting noise, for reproducible output.
@@ -406,12 +516,20 @@ impl Upscaler {
         self.seed = seed;
     }
 
-    /// The scaled residual the last [`Self::run`] produced.
+    /// Read the scaled residual produced by the most recent run.
     ///
-    /// Exposed so a test can check the unpack shader against
-    /// [`crate::batch::assemble`] on the very same values.
-    pub fn residual(&self) -> &[f32] {
-        &self.x
+    /// This is a diagnostic path and waits for the GPU. The realtime direct
+    /// path binds the same output buffer from [`Self::unpack`] without reading
+    /// it on the host.
+    pub fn read_residual(&mut self) -> Vec<f32> {
+        match self.config.objective {
+            Objective::Direct => {
+                self.session.wait();
+                self.session
+                    .read_output(self.config.target_len_for_extent(self.input_extent))
+            }
+            Objective::Diffusion => self.x.clone(),
+        }
     }
 
     /// The underlying meganeura session.
@@ -426,7 +544,9 @@ impl Upscaler {
 
     pub fn destroy(&mut self) {
         self.session.wait();
-        self.context.destroy_buffer(self.residual_buffer);
+        if let Some(buffer) = self.residual_buffer.take() {
+            self.context.destroy_buffer(buffer);
+        }
         self.context
             .destroy_compute_pipeline(&mut self.pack_pipeline);
         self.context

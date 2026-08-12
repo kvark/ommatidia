@@ -26,7 +26,7 @@ pub mod rng;
 pub mod runtime;
 pub mod transform;
 
-pub use dataset::{Layout, Plane, PlaneSet, Sample};
+pub use dataset::{InputSource, Layout, Plane, PlaneSet, Sample};
 pub use diffusion::{Schedule, timestep_embedding};
 pub use model::{Model, ModelConfig, Objective};
 pub use runtime::{FrameInputs, Upscaler, UpscalerError};

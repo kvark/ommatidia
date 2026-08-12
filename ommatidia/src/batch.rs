@@ -339,6 +339,7 @@ mod tests {
             scale,
             lr_width: width,
             lr_height: height,
+            lr_source: crate::dataset::InputSource::RawRestir,
             lr_planes: PlaneSet::new().with(Plane::Color).with(Plane::Depth),
             hr_planes: PlaneSet::new().with(Plane::Color),
         }

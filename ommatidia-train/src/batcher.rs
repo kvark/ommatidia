@@ -174,6 +174,7 @@ mod tests {
             scale: 2,
             lr_width: 16,
             lr_height: 16,
+            lr_source: ommatidia::dataset::InputSource::RawRestir,
             lr_planes: PlaneSet::new().with(Plane::Color),
             hr_planes: PlaneSet::new().with(Plane::Color),
         };
@@ -306,6 +307,7 @@ mod tests {
             scale: 2,
             lr_width: 8,
             lr_height: 8,
+            lr_source: ommatidia::dataset::InputSource::RawRestir,
             lr_planes: PlaneSet::new().with(Plane::Color),
             hr_planes: PlaneSet::new().with(Plane::Color),
         };

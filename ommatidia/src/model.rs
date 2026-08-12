@@ -208,12 +208,22 @@ impl ModelConfig {
 
     /// Elements in one conditioning tensor of a batch.
     pub fn cond_len(&self) -> usize {
-        (self.batch * self.cond_channels() * self.tile * self.tile) as usize
+        self.cond_len_for_extent([self.tile, self.tile])
+    }
+
+    /// Elements in one conditioning tensor at a runtime extent.
+    pub fn cond_len_for_extent(&self, extent: [u32; 2]) -> usize {
+        (self.batch * self.cond_channels() * extent[0] * extent[1]) as usize
     }
 
     /// Elements in one target or output tensor of a batch.
     pub fn target_len(&self) -> usize {
-        (self.batch * self.target_channels() * self.tile * self.tile) as usize
+        self.target_len_for_extent([self.tile, self.tile])
+    }
+
+    /// Elements in one target or output tensor at a runtime extent.
+    pub fn target_len_for_extent(&self, extent: [u32; 2]) -> usize {
+        (self.batch * self.target_channels() * extent[0] * extent[1]) as usize
     }
 
     /// Elements in one batch of timestep embeddings.
@@ -232,21 +242,7 @@ impl ModelConfig {
         if self.levels() == 0 {
             return Err("the network needs at least one level".into());
         }
-        let shrink = 1u32 << (self.levels() - 1);
-        if !self.tile.is_multiple_of(shrink) {
-            return Err(format!(
-                "tile {} is not divisible by {shrink}, which {} levels of downsampling need",
-                self.tile,
-                self.levels()
-            ));
-        }
-        if self.tile / shrink < 2 {
-            return Err(format!(
-                "tile {} collapses below 2x2 after {} levels",
-                self.tile,
-                self.levels()
-            ));
-        }
+        self.validate_extent([self.tile, self.tile])?;
         for level in 0..self.levels() {
             let channels = self.channels_at(level);
             if !channels.is_multiple_of(self.num_groups) {
@@ -274,12 +270,37 @@ impl ModelConfig {
         }
         Ok(())
     }
+
+    /// Reject a runtime extent that the checkpoint's U-Net cannot express.
+    pub fn validate_extent(&self, extent: [u32; 2]) -> Result<(), String> {
+        if self.levels() == 0 {
+            return Err("the network needs at least one level".into());
+        }
+        let shrink = 1u32 << (self.levels() - 1);
+        for (axis, value) in [("width", extent[0]), ("height", extent[1])] {
+            if !value.is_multiple_of(shrink) {
+                return Err(format!(
+                    "{axis} {value} is not divisible by {shrink}, which {} levels of downsampling need",
+                    self.levels()
+                ));
+            }
+            if value / shrink < 2 {
+                return Err(format!(
+                    "{axis} {value} collapses below 2 after {} levels",
+                    self.levels()
+                ));
+            }
+        }
+        Ok(())
+    }
 }
 
 /// A built network: the graph, its output, and how to initialise it.
 pub struct Model {
     pub graph: Graph,
     pub config: ModelConfig,
+    /// Spatial extent baked into this graph, in input pixels.
+    pub input_extent: [u32; 2],
     /// Predicted noise under [`Objective::Diffusion`], predicted residual
     /// under [`Objective::Direct`]. Shape `[batch, target_channels, tile,
     /// tile]`, flattened.
@@ -481,7 +502,21 @@ impl<'a> Builder<'a> {
 /// - `target`: `[batch, target_channels, tile, tile]`, training only. The
 ///   noise under diffusion, the residual under direct regression.
 pub fn build(config: &ModelConfig, training: bool) -> Result<Model, String> {
+    build_for_extent(config, training, [config.tile, config.tile])
+}
+
+/// Build the network for a rectangular runtime extent.
+///
+/// Convolution weights are independent of the spatial dimensions, so a
+/// checkpoint trained on square crops can be instantiated for a full Blade
+/// frame. The extent still has to survive every U-Net downsampling level.
+pub fn build_for_extent(
+    config: &ModelConfig,
+    training: bool,
+    extent: [u32; 2],
+) -> Result<Model, String> {
     config.validate()?;
+    config.validate_extent(extent)?;
 
     let mut graph = Graph::new();
     let mut builder = Builder {
@@ -491,22 +526,27 @@ pub fn build(config: &ModelConfig, training: bool) -> Result<Model, String> {
     };
 
     let batch = config.batch;
-    let tile = config.tile;
-    let cond = builder.g.input("cond", &[config.cond_len()]);
+    let [width, height] = extent;
+    let spatial = width * height;
+    let cond = builder
+        .g
+        .input("cond", &[config.cond_len_for_extent(extent)]);
 
     // Under diffusion the network sees the noised residual next to the
     // conditioning, and the noise level tells it how much of what it sees is
     // signal. Direct regression has neither.
     let (input, time) = match config.objective {
         Objective::Diffusion => {
-            let x_t = builder.g.input("x_t", &[config.target_len()]);
+            let x_t = builder
+                .g
+                .input("x_t", &[config.target_len_for_extent(extent)]);
             let joined = builder.g.concat(
                 x_t,
                 cond,
                 batch,
                 config.target_channels(),
                 config.cond_channels(),
-                tile * tile,
+                spatial,
             );
 
             let t_emb = builder
@@ -533,14 +573,14 @@ pub fn build(config: &ModelConfig, training: bool) -> Result<Model, String> {
     // Stem.
     let stem_shape = Shape {
         channels: config.in_channels(),
-        h: tile,
-        w: tile,
+        h: height,
+        w: width,
     };
     let mut h = builder.conv(input, "stem.weight", stem_shape, config.base_channels, 3, 1);
     let mut shape = Shape {
         channels: config.base_channels,
-        h: tile,
-        w: tile,
+        h: height,
+        w: width,
     };
 
     // Encoder. One skip per level, taken before the downsample.
@@ -631,7 +671,7 @@ pub fn build(config: &ModelConfig, training: bool) -> Result<Model, String> {
 
     let params = builder.params;
     let loss = if training {
-        let target = graph.input("target", &[config.target_len()]);
+        let target = graph.input("target", &[config.target_len_for_extent(extent)]);
         let loss = graph.mse_loss(output, target);
         graph.set_outputs(vec![loss]);
         Some(loss)
@@ -643,6 +683,7 @@ pub fn build(config: &ModelConfig, training: bool) -> Result<Model, String> {
     Ok(Model {
         graph,
         config: config.clone(),
+        input_extent: extent,
         output,
         loss,
         params,
@@ -720,6 +761,16 @@ mod tests {
         assert_eq!(model.graph.outputs(), &[model.output]);
         let ty = &model.graph.node(model.output).ty;
         assert_eq!(ty.num_elements(), model.config.target_len());
+    }
+
+    #[test]
+    fn checkpoint_weights_build_for_a_rectangular_frame() {
+        let config = small();
+        let extent = [32, 24];
+        let model = build_for_extent(&config, false, extent).unwrap();
+        assert_eq!(model.input_extent, extent);
+        let ty = &model.graph.node(model.output).ty;
+        assert_eq!(ty.num_elements(), config.target_len_for_extent(extent),);
     }
 
     #[test]

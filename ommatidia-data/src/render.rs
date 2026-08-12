@@ -1,9 +1,9 @@
 //! Headless rendering of one low/high resolution pair.
 //!
 //! The pair is the whole point of the generator: the low resolution side is
-//! the ReSTIR estimator with its denoiser, exactly the renderer the upscaler
-//! will be deployed behind, and the high resolution side is the canonical path
-//! tracer, which is what that estimator is converging to. Training against an
+//! the raw ReSTIR estimator that the neural pass replaces, and the high
+//! resolution side is the canonical path tracer, which is what that estimator
+//! is converging to. Training against an
 //! unbiased reference rather than a supersampled version of the same estimator
 //! is what lets the network learn to remove the estimator's bias, not just its
 //! aliasing.
@@ -124,7 +124,7 @@ impl Target {
 /// Which estimator to run.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Pass {
-    /// ReSTIR plus the denoiser: the network's input.
+    /// Raw ReSTIR, without Blade's built-in SVGF pass: the network's input.
     RealTime,
     /// Accumulated path tracing: the reference.
     Canonical { frames: usize },
@@ -197,10 +197,6 @@ pub fn capture(
     probe: Option<&crate::gbuffer::Probe>,
 ) -> Frame {
     let debug_config = blade_render::DebugConfig::default();
-    let denoiser_config = blade_render::DenoiserConfig {
-        num_passes: 3,
-        temporal_weight: 0.1,
-    };
     let mut temp = blade_render::FrameResources::default();
 
     encoder.start();
@@ -224,7 +220,9 @@ pub fn capture(
             pass.mode(),
             debug_config,
             pass.ray_config(),
-            Some(denoiser_config),
+            // Ommatidium is the denoiser. Feeding it SVGF's output would make
+            // it an upscaler stacked after the filter it is meant to replace.
+            None,
         );
     }
 

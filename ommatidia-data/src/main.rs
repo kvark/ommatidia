@@ -16,7 +16,7 @@ use std::path::PathBuf;
 
 use blade_graphics as gpu;
 use half::f16;
-use ommatidia::dataset::{self, Layout, Plane, PlaneSet, Sample};
+use ommatidia::dataset::{self, InputSource, Layout, Plane, PlaneSet, Sample};
 use ommatidia::rng::Rng;
 
 struct Args {
@@ -356,6 +356,7 @@ fn main() {
         scale: args.scale,
         lr_width: args.lr_width,
         lr_height: args.lr_height,
+        lr_source: InputSource::RawRestir,
         lr_planes,
         hr_planes: PlaneSet::new().with(Plane::Color),
     };

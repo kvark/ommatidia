@@ -160,6 +160,7 @@ fn pack_matches_the_cpu_path() {
         scale: SCALE,
         lr_width: TILE,
         lr_height: TILE,
+        lr_source: ommatidia::dataset::InputSource::RawRestir,
         lr_planes: PlaneSet::new().with(Plane::Color),
         hr_planes: PlaneSet::new().with(Plane::Color),
     };
@@ -305,7 +306,7 @@ fn upscale_matches_the_cpu_path() {
 
     // The CPU reference: the same residual the network produced, assembled the
     // same way.
-    let residual = upscaler.residual().to_vec();
+    let residual = upscaler.read_residual();
     let expected = batch::assemble(
         &colors,
         &residual,

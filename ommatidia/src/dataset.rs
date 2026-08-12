@@ -20,10 +20,35 @@ use half::f16;
 
 /// Magic at the start of every `.omd` file.
 pub const MAGIC: [u8; 8] = *b"OMMATIDA";
-/// Format revision. Bumped on any layout change.
-pub const VERSION: u32 = 1;
+/// Format revision. Version 2 records how the low-resolution colour was
+/// produced; version 1 remains readable and is known to contain SVGF output.
+pub const VERSION: u32 = 2;
 /// Byte size of the header, including the reserved tail.
 pub const HEADER_SIZE: usize = 64;
+
+/// Renderer path that produced the low-resolution colour.
+///
+/// This is part of the training contract: a network intended to replace
+/// Blade's denoiser has to see raw ReSTIR, not the denoiser's own output.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[repr(u32)]
+pub enum InputSource {
+    /// Blade's variance-guided SVGF output. Kept so version-1 datasets remain
+    /// identifiable and usable for historical comparisons.
+    Svgf = 1,
+    /// Raw real-time ReSTIR radiance, before Blade's built-in denoiser.
+    RawRestir = 2,
+}
+
+impl InputSource {
+    fn from_u32(value: u32) -> Result<Self, Error> {
+        match value {
+            1 => Ok(Self::Svgf),
+            2 => Ok(Self::RawRestir),
+            other => Err(Error::UnknownInputSource(other)),
+        }
+    }
+}
 
 /// A group of channels a sample can carry.
 ///
@@ -155,6 +180,8 @@ pub struct Layout {
     pub scale: u32,
     pub lr_width: u32,
     pub lr_height: u32,
+    /// Whether colour is raw estimator output or already denoised.
+    pub lr_source: InputSource,
     /// Planes stored at low resolution: the network's conditioning.
     pub lr_planes: PlaneSet,
     /// Planes stored at high resolution: the reference the network fits.
@@ -240,6 +267,8 @@ pub enum Error {
     Version(u32),
     /// A plane bit this build does not know about.
     UnknownPlane(u32),
+    /// A low-resolution renderer path this build does not know about.
+    UnknownInputSource(u32),
     /// Header describes a layout with a zero extent or scale.
     EmptyLayout,
     /// The file is shorter than its header claims.
@@ -270,8 +299,11 @@ impl std::fmt::Display for Error {
         match *self {
             Self::Io(ref e) => write!(f, "{e}"),
             Self::BadMagic => write!(f, "not an ommatidia dataset"),
-            Self::Version(v) => write!(f, "unsupported format version {v}, expected {VERSION}"),
+            Self::Version(v) => {
+                write!(f, "unsupported format version {v}, expected 1 or {VERSION}")
+            }
             Self::UnknownPlane(bits) => write!(f, "unknown plane bits {bits:#x}"),
+            Self::UnknownInputSource(value) => write!(f, "unknown input source {value}"),
             Self::EmptyLayout => write!(f, "layout has a zero extent or scale"),
             Self::Truncated { expected, actual } => {
                 write!(f, "truncated: expected {expected} bytes, found {actual}")
@@ -308,7 +340,8 @@ fn encode_header(layout: &Layout, count: u32) -> [u8; HEADER_SIZE] {
     write_u32(&mut header, 24, layout.lr_planes.bits());
     write_u32(&mut header, 28, layout.hr_planes.bits());
     write_u32(&mut header, 32, count);
-    // 36..64 reserved, left zero.
+    write_u32(&mut header, 36, layout.lr_source as u32);
+    // 40..64 reserved, left zero.
     header
 }
 
@@ -317,13 +350,19 @@ fn decode_header(header: &[u8; HEADER_SIZE]) -> Result<(Layout, u32), Error> {
         return Err(Error::BadMagic);
     }
     let version = read_u32(header, 8);
-    if version != VERSION {
+    if version != 1 && version != VERSION {
         return Err(Error::Version(version));
     }
     let layout = Layout {
         scale: read_u32(header, 12),
         lr_width: read_u32(header, 16),
         lr_height: read_u32(header, 20),
+        // Every version-1 file predates raw-ReSTIR capture.
+        lr_source: if version == 1 {
+            InputSource::Svgf
+        } else {
+            InputSource::from_u32(read_u32(header, 36))?
+        },
         lr_planes: PlaneSet::from_bits(read_u32(header, 24))?,
         hr_planes: PlaneSet::from_bits(read_u32(header, 28))?,
     };
@@ -473,6 +512,7 @@ mod tests {
             scale: 2,
             lr_width: 4,
             lr_height: 3,
+            lr_source: InputSource::RawRestir,
             lr_planes: PlaneSet::new()
                 .with(Plane::Color)
                 .with(Plane::Depth)
@@ -569,5 +609,15 @@ mod tests {
         std::fs::write(&path, [0u8; HEADER_SIZE]).unwrap();
         assert!(matches!(Reader::open(&path), Err(Error::BadMagic)));
         std::fs::remove_file(&path).unwrap();
+    }
+
+    #[test]
+    fn version_one_is_identified_as_svgf() {
+        let l = layout();
+        let mut header = encode_header(&l, 0);
+        write_u32(&mut header, 8, 1);
+        write_u32(&mut header, 36, 0);
+        let (decoded, _) = decode_header(&header).unwrap();
+        assert_eq!(decoded.lr_source, InputSource::Svgf);
     }
 }

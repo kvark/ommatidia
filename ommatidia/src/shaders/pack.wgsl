@@ -18,6 +18,10 @@ struct PackParams {
     channels: u32,
     // Which optional planes are present, matching `PlaneSet`'s bits.
     planes: u32,
+    compose_blade_radiance: u32,
+    decode_blade_gbuffer: u32,
+    _pad0: u32,
+    _pad1: u32,
 }
 
 // Bits of `ommatidia::dataset::Plane`, in storage order.
@@ -30,11 +34,21 @@ const PLANE_ROUGHNESS: u32 = 32u;
 
 var<uniform> params: PackParams;
 var t_color: texture_2d<f32>;
+var t_diffuse_radiance: texture_2d<f32>;
+var t_specular_radiance: texture_2d<f32>;
+var t_emissive: texture_2d<f32>;
 var t_depth: texture_2d<f32>;
 var t_normal: texture_2d<f32>;
 var t_albedo: texture_2d<f32>;
 var t_specular: texture_2d<f32>;
 var<storage, read_write> cond: array<f32>;
+
+const SKY_DEPTH: f32 = 1.0e6;
+
+// Matches `qrot` in Blade's quaternion.inc.wgsl and the training-data probe.
+fn qrot(q: vec4<f32>, v: vec3<f32>) -> vec3<f32> {
+    return v + 2.0 * cross(q.xyz, cross(q.xyz, v) + q.w * v);
+}
 
 // Unbounded radiance into [0, 1). Mirrors `transform::compress`.
 fn compress(x: f32) -> f32 {
@@ -61,19 +75,38 @@ fn pack(@builtin(global_invocation_id) id: vec3<u32>) {
     var channel = 0u;
 
     if (params.planes & PLANE_COLOR) != 0u {
-        let color = textureLoad(t_color, texel, 0).xyz;
+        var color: vec3<f32>;
+        if params.compose_blade_radiance != 0u {
+            let albedo = textureLoad(t_albedo, texel, 0).xyz;
+            let diffuse = textureLoad(t_diffuse_radiance, texel, 0).xyz;
+            let specular = textureLoad(t_specular_radiance, texel, 0).xyz;
+            let emissive = textureLoad(t_emissive, texel, 0).xyz;
+            color = albedo * diffuse + specular + emissive;
+        } else {
+            color = textureLoad(t_color, texel, 0).xyz;
+        }
         cond[(channel + 0u) * plane_stride + offset] = compress(color.x);
         cond[(channel + 1u) * plane_stride + offset] = compress(color.y);
         cond[(channel + 2u) * plane_stride + offset] = compress(color.z);
         channel += 3u;
     }
     if (params.planes & PLANE_DEPTH) != 0u {
-        let depth = textureLoad(t_depth, texel, 0).x;
+        let raw_depth = textureLoad(t_depth, texel, 0).x;
+        let depth = select(
+            raw_depth,
+            select(SKY_DEPTH, raw_depth, raw_depth > 0.0),
+            params.decode_blade_gbuffer != 0u,
+        );
         cond[channel * plane_stride + offset] = encode_depth(depth);
         channel += 1u;
     }
     if (params.planes & PLANE_NORMAL) != 0u {
-        let normal = textureLoad(t_normal, texel, 0).xyz;
+        let encoded = textureLoad(t_normal, texel, 0);
+        var normal = encoded.xyz;
+        if params.decode_blade_gbuffer != 0u {
+            let hit = textureLoad(t_depth, texel, 0).x > 0.0;
+            normal = select(vec3<f32>(0.0), qrot(encoded, vec3<f32>(0.0, 0.0, 1.0)), hit);
+        }
         cond[(channel + 0u) * plane_stride + offset] = normal.x;
         cond[(channel + 1u) * plane_stride + offset] = normal.y;
         cond[(channel + 2u) * plane_stride + offset] = normal.z;

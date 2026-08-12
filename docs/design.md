@@ -227,12 +227,18 @@ is shown to earn its keep.
 Training data comes from [blade](https://github.com/kvark/blade), which has
 both halves of the pair already:
 
-- `RenderMode::RealTime` is the ReSTIR estimator with a denoiser, one sample
-  per pixel. This is the input, and critically it is the *actual* renderer the
-  upscaler will be deployed behind, noise characteristics and all.
+- `RenderMode::RealTime` is the raw ReSTIR estimator, one sample per pixel,
+  with Blade's SVGF pass disabled. This is the input: Ommatidium replaces the
+  built-in denoiser rather than learning to upscale its output.
 - `RenderMode::Canonical` is `RayTracer::path_trace`: full paths, BSDF sampling
   with next event estimation, MIS, accumulated over many frames with no reuse
   and no denoising. This is the ground truth.
+
+The `.omd` header records which of those renderer paths produced the input.
+Version-1 files are identified as SVGF because they predate raw capture, and
+the trainer rejects them by default. This turns the most expensive possible
+configuration mistake — fitting a supposed replacement to the filter it is
+meant to replace — into an immediate error.
 
 Both are driven headless. For each sample the generator builds a fresh
 procedural scene, picks a camera pose, renders the low resolution input, then

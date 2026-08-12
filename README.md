@@ -14,6 +14,13 @@ its output.
 > no temporal context. See [`docs/design.md`](docs/design.md) for the
 > formulation and the roadmap.
 
+The checked-in July checkpoints and quality numbers were produced from
+SVGF-filtered low-resolution inputs. They demonstrate the model and runtime,
+but they are not valid replacements for SVGF. The generator now captures raw
+ReSTIR and records that provenance in the dataset header. The trainer refuses
+legacy filtered data unless `--allow-filtered-input` is explicitly requested;
+regenerate the dataset and retrain before judging the Blade integration below.
+
 On 2400 procedural scenes at 128x128 to 256x256, with 360 held out, the network
 beats nearest upsampling by **5.04 dB** at **28 ms** for a 1080p frame — down
 from 656 ms for the same quality at the start of the work. Findings worth
@@ -60,16 +67,16 @@ cargo run --release -p ommatidia-data -- \
 
 # Train, then reconstruct a crop and write input/nearest/predicted/reference PNGs.
 cargo run --release -p ommatidia-train -- \
-    --data data/train.omd --steps 8000 --objective direct --batch 8 \
+    --data data/train.omd --steps 8000 \
     --lr 3e-4 --lr-final 1e-5 --eval-every 1000 --checkpoint-every 1000 \
     --out runs/first --eval-out runs/first-eval
 ```
 
-`--objective direct` regresses the frame in one forward pass and is the main
-line; `diffusion` shares the same backbone and is kept for comparison, not
-because it wins — see the status note above. A checkpoint of either loads into
-the same runtime, and `--eval-only` re-scores a finished one without retraining
-it, which is how the sampler-step sweep above was measured.
+Direct regression in one forward pass is the default and the main line;
+`--objective diffusion` shares the same backbone and is kept for comparison,
+not because it wins — see the status note above. A checkpoint of either loads
+into the same runtime, and `--eval-only` re-scores a finished one without
+retraining it, which is how the sampler-step sweep above was measured.
 
 Each sample stores the colour alongside the renderer's own depth, normals,
 albedo, specular reflectance, and roughness. That is the structural advantage a
@@ -81,18 +88,44 @@ the other arm of that ablation without regenerating anything.
 
 ## Using it from Blade
 
-Hand over the context you already have. The network executes on your device and
-queue — no second context, no external memory import, no cross-device copy.
+Render Blade at the model's input resolution with its built-in denoiser
+disabled, then hand Ommatidium the renderer and the context you already have.
+The network executes on the same device and queue — no second context, external
+memory import, cross-device copy, or direct-model CPU readback.
 
 ```rust
-let mut upscaler = ommatidia::Upscaler::from_checkpoint(
-    context.clone(), "runs/first", /* sampler steps = */ 20, /* timesteps = */ 1000,
+renderer.render(
+    &mut encoder,
+    blade_render::RenderMode::RealTime,
+    debug_config,
+    ray_config,
+    None, // Ommatidium replaces SVGF.
+);
+
+let low = renderer.get_surface_size();
+let mut upscaler = ommatidia::Upscaler::from_checkpoint_for_extent(
+    context.clone(),
+    "runs/first",
+    [low.width, low.height],
+    /* sampler steps = */ 1,
+    /* timesteps = */ 1000,
 )?;
 
 upscaler.upscale(
     &mut encoder,
-    &ommatidia::FrameInputs::color_only(color_view, color_view),
+    &ommatidia::FrameInputs::from_blade(&renderer),
     output_view, // Rgba16Float, at upscaler.output_extent()
+);
+
+// Record display after the unpack dispatch. Blade applies its normal tone
+// mapper to the neural result instead of its internal radiance.
+renderer.post_proc_external(
+    &mut display_pass,
+    output_view,
+    debug_config,
+    post_proc_config,
+    &[],
+    &[],
 );
 ```
 
