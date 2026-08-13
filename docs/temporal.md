@@ -70,6 +70,14 @@ stage before learned fusion. The reproducible CPU experiment is
 `cargo run --release -p ommatidia-train --bin temporal-oracle -- DATA.omd`;
 it adds no Meganeura graph operation or shipping shader.
 
+A 14-point gate sweep (normal cosine 0.8–0.95, squared albedo delta
+0.01–0.16, and encoded-depth delta 0.0025–0.04) stays within 0.01 dB of the
+selected result while accepting 96.5–97.3% of pixels. The gain is therefore
+not a fragile threshold fit on this set: categorical sky/surface changes and
+surface discontinuities identify most bad reprojections. The oracle accepts
+the three thresholds as optional arguments so the same claim can be retested
+once object motion and harder materials are present.
+
 The first temporal model should keep reprojection outside the learned network.
 The GPU pack stage will sample the previous high-resolution output at
 `current_pixel + motion`, reject history using depth and normal disagreement,

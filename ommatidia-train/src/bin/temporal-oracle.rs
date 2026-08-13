@@ -10,6 +10,23 @@ struct History {
     count: Vec<f32>,
 }
 
+#[derive(Clone, Copy)]
+struct RejectConfig {
+    depth_delta: f32,
+    normal_cosine: f32,
+    albedo_delta2: f32,
+}
+
+impl Default for RejectConfig {
+    fn default() -> Self {
+        Self {
+            depth_delta: 0.01,
+            normal_cosine: 0.9,
+            albedo_delta2: 0.04,
+        }
+    }
+}
+
 fn plane(sample: &Sample, layout: &Layout, plane: Plane, channel: usize, index: usize) -> f32 {
     sample.lr_channel(layout, plane, channel).unwrap()[index].to_f32()
 }
@@ -44,6 +61,7 @@ fn surfaces_match(
     layout: &Layout,
     current_index: usize,
     previous_index: usize,
+    config: RejectConfig,
 ) -> bool {
     let current_depth = plane(current, layout, Plane::Depth, 0, current_index);
     let previous_depth = plane(previous, layout, Plane::Depth, 0, previous_index);
@@ -52,7 +70,7 @@ fn surfaces_match(
         return sky(current_depth) == sky(previous_depth);
     }
     let encoded = |depth: f32| 1.0 / (1.0 + depth.max(0.0));
-    if (encoded(current_depth) - encoded(previous_depth)).abs() > 0.01 {
+    if (encoded(current_depth) - encoded(previous_depth)).abs() > config.depth_delta {
         return false;
     }
 
@@ -82,7 +100,7 @@ fn surfaces_match(
         albedo_delta2 += delta * delta;
     }
     let cosine = normal_dot / (current_len2 * previous_len2).sqrt().max(1.0e-6);
-    cosine > 0.9 && albedo_delta2 < 0.04
+    cosine > config.normal_cosine && albedo_delta2 < config.albedo_delta2
 }
 
 fn accumulate(
@@ -90,7 +108,7 @@ fn accumulate(
     previous: &Sample,
     layout: &Layout,
     history: &History,
-    reject: bool,
+    rejection: Option<RejectConfig>,
 ) -> History {
     let width = layout.lr_width as usize;
     let height = layout.lr_height as usize;
@@ -114,14 +132,16 @@ fn accumulate(
             let previous_x = position[0].round().clamp(0.0, (width - 1) as f32) as usize;
             let previous_y = position[1].round().clamp(0.0, (height - 1) as f32) as usize;
             let valid = inside
-                && (!reject
-                    || surfaces_match(
+                && rejection.is_none_or(|config| {
+                    surfaces_match(
                         current,
                         previous,
                         layout,
                         index,
                         previous_y * width + previous_x,
-                    ));
+                        config,
+                    )
+                });
             let count = if valid {
                 bilinear(&history.count, width, height, 1, position)[0].min(3.0)
             } else {
@@ -192,10 +212,24 @@ impl Score {
 }
 
 fn main() {
-    let path = std::env::args_os().nth(1).unwrap_or_else(|| {
-        eprintln!("usage: temporal-oracle DATASET.omd");
+    let mut args = std::env::args_os().skip(1);
+    let path = args.next().unwrap_or_else(|| {
+        eprintln!("usage: temporal-oracle DATASET.omd [DEPTH_DELTA NORMAL_COSINE ALBEDO_DELTA2]");
         std::process::exit(2);
     });
+    let mut rejection = RejectConfig::default();
+    for (name, target) in [
+        ("depth delta", &mut rejection.depth_delta),
+        ("normal cosine", &mut rejection.normal_cosine),
+        ("albedo delta²", &mut rejection.albedo_delta2),
+    ] {
+        if let Some(value) = args.next() {
+            *target = value
+                .to_str()
+                .and_then(|text| text.parse().ok())
+                .unwrap_or_else(|| panic!("invalid {name}"));
+        }
+    }
     let mut reader = Reader::open(path).expect("open sequence dataset");
     let layout = *reader.layout();
     let sequence_length = reader.sequence_length();
@@ -239,8 +273,14 @@ fn main() {
         let mut valid_history = initial_history(&previous, &layout);
         for frame in 1..sequence_length {
             let current = reader.sample(sequence * sequence_length + frame).unwrap();
-            raw_history = accumulate(&current, &previous, &layout, &raw_history, false);
-            valid_history = accumulate(&current, &previous, &layout, &valid_history, true);
+            raw_history = accumulate(&current, &previous, &layout, &raw_history, None);
+            valid_history = accumulate(
+                &current,
+                &previous,
+                &layout,
+                &valid_history,
+                Some(rejection),
+            );
             accepted_pixels += valid_history
                 .count
                 .iter()
@@ -278,6 +318,10 @@ fn main() {
         "surface history accepted at {:.1}% of pixels",
         100.0 * accepted_pixels as f64 / history_pixels as f64,
     );
+    println!(
+        "rejection: depth {:.4}, normal {:.3}, albedo² {:.4}",
+        rejection.depth_delta, rejection.normal_cosine, rejection.albedo_delta2,
+    );
 }
 
 #[cfg(test)]
@@ -310,7 +354,7 @@ mod tests {
             color: vec![0.0, 0.0, 0.0, 2.0, 4.0, 6.0, 0.0, 0.0, 0.0],
             count: vec![1.0; 3],
         };
-        let result = accumulate(&sample, &sample, &layout, &history, false);
+        let result = accumulate(&sample, &sample, &layout, &history, None);
         assert_eq!(&result.color[..3], &[1.0, 2.0, 3.0]);
         assert_eq!(result.count[0], 2.0);
     }
