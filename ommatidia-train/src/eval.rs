@@ -77,15 +77,7 @@ pub fn reconstruct(
     };
 
     let low = batch::crop_color(sample, layout, crop);
-    batch::assemble(
-        &low,
-        guided,
-        &residual,
-        [crop.tile as usize; 2],
-        config.scale as usize,
-        config.residual_gain,
-        config.reconstruction_base,
-    )
+    batch::assemble(&low, guided, &residual, [crop.tile as usize; 2], config)
 }
 
 /// Tone map linear RGB and write it out, so the three images can be compared

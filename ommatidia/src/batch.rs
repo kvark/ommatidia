@@ -34,7 +34,7 @@
 use half::f16;
 
 use crate::dataset::{Layout, Plane, PlaneSet, Sample};
-use crate::model::ReconstructionBase;
+use crate::model::{GuideConfig, ModelConfig, ReconstructionBase};
 use crate::transform;
 
 /// A rectangular crop of one sample, in low resolution pixels.
@@ -124,10 +124,6 @@ pub fn write_conditioning(
     }
 }
 
-const GUIDE_SPATIAL_SIGMA: f32 = 3.0;
-const GUIDE_DEPTH_SIGMA: f32 = 0.05;
-const GUIDE_NORMAL_POWER: f32 = 32.0;
-const GUIDE_ALBEDO_SIGMA: f32 = 0.1;
 const GUIDE_RADIUS: i32 = 6;
 
 fn plane_value(
@@ -163,6 +159,7 @@ fn hr_plane_value(
 }
 
 fn guide_similarity(
+    guide: GuideConfig,
     center_depth: f32,
     center_normal: [f32; 3],
     center_albedo: [f32; 3],
@@ -170,8 +167,8 @@ fn guide_similarity(
     normal: [f32; 3],
     albedo: [f32; 3],
 ) -> f32 {
-    let depth_denominator = 2.0 * GUIDE_DEPTH_SIGMA * GUIDE_DEPTH_SIGMA;
-    let albedo_denominator = 2.0 * GUIDE_ALBEDO_SIGMA * GUIDE_ALBEDO_SIGMA;
+    let depth_denominator = 2.0 * guide.depth_sigma * guide.depth_sigma;
+    let albedo_denominator = 2.0 * guide.albedo_sigma * guide.albedo_sigma;
     let mut weight = (-(depth - center_depth).powi(2) / depth_denominator).exp();
 
     let center_normal_len2 = center_normal.iter().map(|v| v * v).sum::<f32>();
@@ -187,7 +184,7 @@ fn guide_similarity(
             .map(|(a, b)| a * b)
             .sum::<f32>()
             / (normal_len2 * center_normal_len2).sqrt();
-        dot.max(0.0).powf(GUIDE_NORMAL_POWER)
+        dot.max(0.0).powf(guide.normal_power)
     };
     weight *= normal_weight;
 
@@ -197,7 +194,13 @@ fn guide_similarity(
     weight * (-albedo_delta2 / albedo_denominator).exp()
 }
 
-fn guided_texel(sample: &Sample, layout: &Layout, center_x: i32, center_y: i32) -> [f32; 3] {
+fn guided_texel(
+    sample: &Sample,
+    layout: &Layout,
+    center_x: i32,
+    center_y: i32,
+    guide: GuideConfig,
+) -> [f32; 3] {
     let width = layout.lr_width as i32;
     let height = layout.lr_height as i32;
     let cx = center_x.clamp(0, width - 1) as usize;
@@ -214,7 +217,7 @@ fn guided_texel(sample: &Sample, layout: &Layout, center_x: i32, center_y: i32) 
         plane_value(sample, layout, Plane::DiffuseAlbedo, 1, cx, cy),
         plane_value(sample, layout, Plane::DiffuseAlbedo, 2, cx, cy),
     ];
-    let spatial_denominator = 2.0 * GUIDE_SPATIAL_SIGMA * GUIDE_SPATIAL_SIGMA;
+    let spatial_denominator = 2.0 * guide.spatial_sigma * guide.spatial_sigma;
     let mut sum = [0.0f32; 3];
     let mut weight_sum = 0.0f32;
 
@@ -237,6 +240,7 @@ fn guided_texel(sample: &Sample, layout: &Layout, center_x: i32, center_y: i32) 
                 plane_value(sample, layout, Plane::DiffuseAlbedo, 2, x, y),
             ];
             weight *= guide_similarity(
+                guide,
                 center_depth,
                 center_normal,
                 center_albedo,
@@ -260,7 +264,7 @@ fn guided_texel(sample: &Sample, layout: &Layout, center_x: i32, center_y: i32) 
 /// Geometry-guided denoising at input resolution followed by exact bilinear
 /// reconstruction of one crop. The filter reads beyond crop boundaries, just
 /// as the full-frame GPU path does.
-pub fn guided_base(sample: &Sample, layout: &Layout, crop: Crop) -> Vec<f32> {
+pub fn guided_base(sample: &Sample, layout: &Layout, crop: Crop, guide: GuideConfig) -> Vec<f32> {
     let tile = crop.tile as usize;
     let padded_width = tile + 2;
     let origin_x = crop.x as i32 - 1;
@@ -268,7 +272,13 @@ pub fn guided_base(sample: &Sample, layout: &Layout, crop: Crop) -> Vec<f32> {
     let mut padded = vec![0.0f32; padded_width * padded_width * 3];
     for y in 0..padded_width {
         for x in 0..padded_width {
-            let color = guided_texel(sample, layout, origin_x + x as i32, origin_y + y as i32);
+            let color = guided_texel(
+                sample,
+                layout,
+                origin_x + x as i32,
+                origin_y + y as i32,
+                guide,
+            );
             padded[(y * padded_width + x) * 3..(y * padded_width + x) * 3 + 3]
                 .copy_from_slice(&color);
         }
@@ -304,7 +314,12 @@ pub fn guided_base(sample: &Sample, layout: &Layout, crop: Crop) -> Vec<f32> {
 /// surface pass. Unlike bilinear reconstruction, this can place an edge
 /// between low-resolution texel centres when the renderer supplies its exact
 /// high-resolution depth, normal, and albedo.
-pub fn high_resolution_guided_base(sample: &Sample, layout: &Layout, crop: Crop) -> Vec<f32> {
+pub fn high_resolution_guided_base(
+    sample: &Sample,
+    layout: &Layout,
+    crop: Crop,
+    guide: GuideConfig,
+) -> Vec<f32> {
     const RADIUS: i32 = 2;
     const PADDING: i32 = RADIUS + 1;
     const SPATIAL_SIGMA: f32 = 1.5;
@@ -316,8 +331,13 @@ pub fn high_resolution_guided_base(sample: &Sample, layout: &Layout, crop: Crop)
     let mut low = vec![[0.0f32; 3]; padded_width * padded_width];
     for y in 0..padded_width {
         for x in 0..padded_width {
-            low[y * padded_width + x] =
-                guided_texel(sample, layout, origin_x + x as i32, origin_y + y as i32);
+            low[y * padded_width + x] = guided_texel(
+                sample,
+                layout,
+                origin_x + x as i32,
+                origin_y + y as i32,
+                guide,
+            );
         }
     }
 
@@ -375,6 +395,7 @@ pub fn high_resolution_guided_base(sample: &Sample, layout: &Layout, crop: Crop)
                         plane_value(sample, layout, Plane::DiffuseAlbedo, 2, x, y),
                     ];
                     weight *= guide_similarity(
+                        guide,
                         center_depth,
                         center_normal,
                         center_albedo,
@@ -420,10 +441,11 @@ pub fn write_residual(
     layout: &Layout,
     crop: Crop,
     slot: usize,
-    gain: f32,
-    reconstruction_base: ReconstructionBase,
+    config: &ModelConfig,
     out: &mut [f32],
 ) {
+    let gain = config.residual_gain;
+    let reconstruction_base = config.reconstruction_base;
     let scale = layout.scale as usize;
     let tile = crop.tile as usize;
     let sub = scale * scale;
@@ -446,10 +468,13 @@ pub fn write_residual(
     let lr_stride = layout.lr_width as usize;
     let hr_stride = layout.hr_width() as usize;
     let guided = match reconstruction_base {
-        ReconstructionBase::GuidedBilinear => Some(guided_base(sample, layout, crop)),
-        ReconstructionBase::HighResolutionGuided => {
-            Some(high_resolution_guided_base(sample, layout, crop))
-        }
+        ReconstructionBase::GuidedBilinear => Some(guided_base(sample, layout, crop, config.guide)),
+        ReconstructionBase::HighResolutionGuided => Some(high_resolution_guided_base(
+            sample,
+            layout,
+            crop,
+            config.guide,
+        )),
         ReconstructionBase::Nearest | ReconstructionBase::Bilinear => None,
     };
 
@@ -504,11 +529,12 @@ pub fn assemble(
     guided: Option<&[f32]>,
     residual: &[f32],
     extent: [usize; 2],
-    scale: usize,
-    gain: f32,
-    reconstruction_base: ReconstructionBase,
+    config: &ModelConfig,
 ) -> Vec<f32> {
     let [width, height] = extent;
+    let scale = config.scale as usize;
+    let gain = config.residual_gain;
+    let reconstruction_base = config.reconstruction_base;
     assert_eq!(low.len(), width * height * 3);
     let sub = scale * scale;
     assert_eq!(residual.len(), 3 * sub * width * height);
@@ -570,7 +596,7 @@ pub fn assemble(
 pub fn estimate_gain(
     samples: impl IntoIterator<Item = Sample>,
     layout: &Layout,
-    reconstruction_base: ReconstructionBase,
+    config: &ModelConfig,
 ) -> f32 {
     let tile = layout.lr_width.min(layout.lr_height);
     let sub = (layout.scale * layout.scale) as usize;
@@ -578,17 +604,11 @@ pub fn estimate_gain(
 
     let mut sum = 0.0f64;
     let mut count = 0usize;
+    let mut unit = config.clone();
+    unit.residual_gain = 1.0;
     for sample in samples {
         let crop = Crop { x: 0, y: 0, tile };
-        write_residual(
-            &sample,
-            layout,
-            crop,
-            0,
-            1.0,
-            reconstruction_base,
-            &mut scratch,
-        );
+        write_residual(&sample, layout, crop, 0, &unit, &mut scratch);
         // The residual is centred on zero by construction, so the mean square
         // is the variance and there is no mean to subtract.
         sum += scratch
@@ -709,6 +729,15 @@ mod tests {
     use super::*;
     use crate::rng::Rng;
 
+    fn reconstruction_config(scale: u32, base: ReconstructionBase) -> ModelConfig {
+        ModelConfig {
+            scale,
+            reconstruction_base: base,
+            guide: GuideConfig::TUNED,
+            ..ModelConfig::default()
+        }
+    }
+
     fn layout(scale: u32, width: u32, height: u32) -> Layout {
         Layout {
             scale,
@@ -747,26 +776,11 @@ mod tests {
             };
 
             let mut residual = vec![0.0; 3 * (scale * scale * 64) as usize];
-            write_residual(
-                &s,
-                &l,
-                crop,
-                0,
-                1.0,
-                ReconstructionBase::Bilinear,
-                &mut residual,
-            );
+            let config = reconstruction_config(scale, ReconstructionBase::Bilinear);
+            write_residual(&s, &l, crop, 0, &config, &mut residual);
 
             let low = crop_color(&s, &l, crop);
-            let rebuilt = assemble(
-                &low,
-                None,
-                &residual,
-                [8, 8],
-                scale as usize,
-                1.0,
-                ReconstructionBase::Bilinear,
-            );
+            let rebuilt = assemble(&low, None, &residual, [8, 8], &config);
             let reference = crop_reference(&s, &l, crop);
 
             assert_eq!(rebuilt.len(), reference.len());
@@ -789,27 +803,12 @@ mod tests {
             y: 1,
             tile: 6,
         };
-        let guided = guided_base(&s, &l, crop);
+        let config = reconstruction_config(2, ReconstructionBase::GuidedBilinear);
+        let guided = guided_base(&s, &l, crop, config.guide);
         let mut residual = vec![0.0; 3 * 4 * 36];
-        write_residual(
-            &s,
-            &l,
-            crop,
-            0,
-            1.0,
-            ReconstructionBase::GuidedBilinear,
-            &mut residual,
-        );
+        write_residual(&s, &l, crop, 0, &config, &mut residual);
         let low = crop_color(&s, &l, crop);
-        let rebuilt = assemble(
-            &low,
-            Some(&guided),
-            &residual,
-            [6, 6],
-            2,
-            1.0,
-            ReconstructionBase::GuidedBilinear,
-        );
+        let rebuilt = assemble(&low, Some(&guided), &residual, [6, 6], &config);
         let reference = crop_reference(&s, &l, crop);
         for (actual, expected) in rebuilt.iter().zip(reference) {
             assert!((actual - expected).abs() < 1e-3);
@@ -831,27 +830,12 @@ mod tests {
             y: 1,
             tile: 6,
         };
-        let guided = high_resolution_guided_base(&s, &l, crop);
+        let config = reconstruction_config(2, ReconstructionBase::HighResolutionGuided);
+        let guided = high_resolution_guided_base(&s, &l, crop, config.guide);
         let mut residual = vec![0.0; 3 * 4 * 36];
-        write_residual(
-            &s,
-            &l,
-            crop,
-            0,
-            1.0,
-            ReconstructionBase::HighResolutionGuided,
-            &mut residual,
-        );
+        write_residual(&s, &l, crop, 0, &config, &mut residual);
         let low = crop_color(&s, &l, crop);
-        let rebuilt = assemble(
-            &low,
-            Some(&guided),
-            &residual,
-            [6, 6],
-            2,
-            1.0,
-            ReconstructionBase::HighResolutionGuided,
-        );
+        let rebuilt = assemble(&low, Some(&guided), &residual, [6, 6], &config);
         let reference = crop_reference(&s, &l, crop);
         for (actual, expected) in rebuilt.iter().zip(reference) {
             assert!((actual - expected).abs() < 1e-3);
@@ -870,15 +854,8 @@ mod tests {
             tile: 4,
         };
         let low = crop_color(&s, &l, crop);
-        let rebuilt = assemble(
-            &low,
-            None,
-            &vec![0.0; 3 * 4 * 16],
-            [4, 4],
-            2,
-            1.0,
-            ReconstructionBase::Nearest,
-        );
+        let config = reconstruction_config(2, ReconstructionBase::Nearest);
+        let rebuilt = assemble(&low, None, &vec![0.0; 3 * 4 * 16], [4, 4], &config);
 
         for y in 0..4 {
             for x in 0..4 {
@@ -976,6 +953,7 @@ mod tests {
         };
 
         let mut residual = vec![0.0; 3 * 4 * 64];
+        let config = reconstruction_config(2, ReconstructionBase::Bilinear);
         write_residual(
             &s,
             &l,
@@ -985,8 +963,7 @@ mod tests {
                 tile: 8,
             },
             0,
-            1.0,
-            ReconstructionBase::Bilinear,
+            &config,
             &mut residual,
         );
         assert!(

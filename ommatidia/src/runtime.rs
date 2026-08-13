@@ -56,6 +56,10 @@ struct PackParams {
     decode_blade_gbuffer: u32,
     reconstruction_base: u32,
     _pad1: u32,
+    guide_spatial_denominator: f32,
+    guide_depth_denominator: f32,
+    guide_normal_power: f32,
+    guide_albedo_denominator: f32,
 }
 
 #[derive(blade_macros::ShaderData)]
@@ -83,6 +87,10 @@ struct UnpackParams {
     decode_blade_gbuffer: u32,
     decode_hr_blade_gbuffer: u32,
     _pad2: u32,
+    guide_spatial_denominator: f32,
+    guide_depth_denominator: f32,
+    guide_normal_power: f32,
+    guide_albedo_denominator: f32,
 }
 
 /// The textures a frame is reconstructed from.
@@ -477,6 +485,10 @@ impl Upscaler {
                     decode_blade_gbuffer: inputs.decode_blade_gbuffer as u32,
                     reconstruction_base: self.config.reconstruction_base as u32,
                     _pad1: 0,
+                    guide_spatial_denominator: self.config.guide.spatial_denominator(),
+                    guide_depth_denominator: self.config.guide.depth_denominator(),
+                    guide_normal_power: self.config.guide.normal_power,
+                    guide_albedo_denominator: self.config.guide.albedo_denominator(),
                 },
                 t_color: inputs.color,
                 t_diffuse_radiance: inputs.diffuse_radiance,
@@ -581,6 +593,10 @@ impl Upscaler {
                     decode_blade_gbuffer: inputs.decode_blade_gbuffer as u32,
                     decode_hr_blade_gbuffer: inputs.decode_hr_blade_gbuffer as u32,
                     _pad2: 0,
+                    guide_spatial_denominator: self.config.guide.spatial_denominator(),
+                    guide_depth_denominator: self.config.guide.depth_denominator(),
+                    guide_normal_power: self.config.guide.normal_power,
+                    guide_albedo_denominator: self.config.guide.albedo_denominator(),
                 },
                 base_pixels: self.base_buffer.into(),
                 residual,

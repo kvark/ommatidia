@@ -124,15 +124,7 @@ impl Batcher {
                 slot,
                 &mut out.cond,
             );
-            batch::write_residual(
-                &sample,
-                &self.layout,
-                crop,
-                0,
-                config.residual_gain,
-                config.reconstruction_base,
-                &mut self.residual,
-            );
+            batch::write_residual(&sample, &self.layout, crop, 0, &config, &mut self.residual);
 
             if diffusing {
                 // Every slot gets its own timestep. Sharing one across the
