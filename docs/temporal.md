@@ -27,6 +27,24 @@ from scratch on the same 1-spp distribution adds less than 0.005 dB. The next
 model must receive additional samples through valid history; changing the
 static block family cannot recover evidence absent from the frame.
 
+A common 128-crop static-history oracle quantifies the available signal. With
+the tuned deterministic guide, one accumulated sample scores 32.17 dB /
+0.9327 SSIM, two score 33.76 / 0.9488, four score 34.72 / 0.9574, eight score
+35.50 / 0.9636, and sixteen score 35.89 / 0.9663. Thus four perfectly aligned
+1-spp frames buy +2.55 dB over one frame before motion and rejection losses.
+This is an upper bound rather than a temporal-model result, but it is over one
+hundred times the gain measured from the static learned residual.
+
+The dataset container now records a fixed sequence length in its reserved
+header and the generator can emit independent static-camera frames with
+`--sequence-frames N`. Geometry, camera, canonical target, and G-buffers stay
+byte-identical inside a sequence while Blade's stochastic frame index advances
+the sparse paths. Legacy files read as length one. Until the temporal batcher
+splits and shuffles whole sequences, the spatial trainer rejects length-above-
+one files instead of leaking neighboring frames across its train/validation
+split. This is deliberately only the static bring-up path; moving sequences
+and motion-vector conventions remain the next data change.
+
 The first temporal model should keep reprojection outside the learned network.
 The GPU pack stage will sample the previous high-resolution output at
 `current_pixel + motion`, reject history using depth and normal disagreement,

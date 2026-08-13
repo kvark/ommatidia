@@ -289,6 +289,11 @@ pub enum Error {
         index: usize,
         count: usize,
     },
+    /// Record count does not contain a whole number of declared sequences.
+    IncompleteSequence {
+        count: usize,
+        sequence_length: usize,
+    },
 }
 
 impl From<io::Error> for Error {
@@ -317,6 +322,13 @@ impl std::fmt::Display for Error {
             Self::OutOfRange { index, count } => {
                 write!(f, "sample {index} is out of range, the set holds {count}")
             }
+            Self::IncompleteSequence {
+                count,
+                sequence_length,
+            } => write!(
+                f,
+                "{count} records do not contain whole {sequence_length}-frame sequences"
+            ),
         }
     }
 }
@@ -333,7 +345,7 @@ fn read_u32(input: &[u8], offset: usize) -> u32 {
     u32::from_le_bytes(bytes)
 }
 
-fn encode_header(layout: &Layout, count: u32) -> [u8; HEADER_SIZE] {
+fn encode_header(layout: &Layout, count: u32, sequence_length: u32) -> [u8; HEADER_SIZE] {
     let mut header = [0u8; HEADER_SIZE];
     header[..8].copy_from_slice(&MAGIC);
     write_u32(&mut header, 8, VERSION);
@@ -344,11 +356,13 @@ fn encode_header(layout: &Layout, count: u32) -> [u8; HEADER_SIZE] {
     write_u32(&mut header, 28, layout.hr_planes.bits());
     write_u32(&mut header, 32, count);
     write_u32(&mut header, 36, layout.lr_source as u32);
-    // 40..64 reserved, left zero.
+    // Zero was historically reserved, so readers interpret it as one.
+    write_u32(&mut header, 40, sequence_length);
+    // 44..64 reserved, left zero.
     header
 }
 
-fn decode_header(header: &[u8; HEADER_SIZE]) -> Result<(Layout, u32), Error> {
+fn decode_header(header: &[u8; HEADER_SIZE]) -> Result<(Layout, u32, u32), Error> {
     if header[..8] != MAGIC {
         return Err(Error::BadMagic);
     }
@@ -372,7 +386,7 @@ fn decode_header(header: &[u8; HEADER_SIZE]) -> Result<(Layout, u32), Error> {
     if layout.scale == 0 || layout.lr_width == 0 || layout.lr_height == 0 {
         return Err(Error::EmptyLayout);
     }
-    Ok((layout, read_u32(header, 32)))
+    Ok((layout, read_u32(header, 32), read_u32(header, 40).max(1)))
 }
 
 /// Streams samples out to a `.omd` file.
@@ -385,22 +399,38 @@ pub struct Writer {
     file: BufWriter<File>,
     layout: Layout,
     count: u32,
+    sequence_length: u32,
 }
 
 impl Writer {
     /// Create a dataset at `path`, truncating anything already there.
     pub fn create(path: impl AsRef<Path>, layout: Layout) -> Result<Self, Error> {
+        Self::create_sequence(path, layout, 1)
+    }
+
+    /// Create a dataset whose consecutive records form fixed-length sequences.
+    pub fn create_sequence(
+        path: impl AsRef<Path>,
+        layout: Layout,
+        sequence_length: u32,
+    ) -> Result<Self, Error> {
+        assert!(sequence_length != 0, "sequence length must be positive");
         let mut file = BufWriter::new(File::create(path)?);
-        file.write_all(&encode_header(&layout, 0))?;
+        file.write_all(&encode_header(&layout, 0, sequence_length))?;
         Ok(Self {
             file,
             layout,
             count: 0,
+            sequence_length,
         })
     }
 
     pub fn layout(&self) -> &Layout {
         &self.layout
+    }
+
+    pub fn sequence_length(&self) -> usize {
+        self.sequence_length as usize
     }
 
     /// Append one sample.
@@ -428,6 +458,12 @@ impl Writer {
     /// Flush and patch the sample count into the header.
     pub fn finish(self) -> Result<u32, Error> {
         let count = self.count;
+        if !count.is_multiple_of(self.sequence_length) {
+            return Err(Error::IncompleteSequence {
+                count: count as usize,
+                sequence_length: self.sequence_length as usize,
+            });
+        }
         let mut file = self.file.into_inner().map_err(|e| e.into_error())?;
         file.seek(SeekFrom::Start(32))?;
         file.write_all(&count.to_le_bytes())?;
@@ -445,6 +481,7 @@ pub struct Reader {
     file: BufReader<File>,
     layout: Layout,
     count: usize,
+    sequence_length: usize,
 }
 
 impl Reader {
@@ -456,7 +493,13 @@ impl Reader {
 
         let mut header = [0u8; HEADER_SIZE];
         file.read_exact(&mut header)?;
-        let (layout, count) = decode_header(&header)?;
+        let (layout, count, sequence_length) = decode_header(&header)?;
+        if !count.is_multiple_of(sequence_length) {
+            return Err(Error::IncompleteSequence {
+                count: count as usize,
+                sequence_length: sequence_length as usize,
+            });
+        }
 
         let expected = HEADER_SIZE as u64 + layout.record_bytes() * count as u64;
         if byte_len < expected {
@@ -470,11 +513,17 @@ impl Reader {
             file,
             layout,
             count: count as usize,
+            sequence_length: sequence_length as usize,
         })
     }
 
     pub fn layout(&self) -> &Layout {
         &self.layout
+    }
+
+    /// Number of consecutive records belonging to one generated sequence.
+    pub fn sequence_length(&self) -> usize {
+        self.sequence_length
     }
 
     /// Number of samples in the set.
@@ -573,6 +622,7 @@ mod tests {
         let mut reader = Reader::open(&path).unwrap();
         assert_eq!(*reader.layout(), l);
         assert_eq!(reader.len(), 2);
+        assert_eq!(reader.sequence_length(), 1);
         // Out of order, to exercise the seek rather than sequential reads.
         assert_eq!(reader.sample(1).unwrap().lr, make(1.0).lr);
         assert_eq!(reader.sample(0).unwrap().hr, make(0.0).hr);
@@ -617,10 +667,10 @@ mod tests {
     #[test]
     fn version_one_is_identified_as_svgf() {
         let l = layout();
-        let mut header = encode_header(&l, 0);
+        let mut header = encode_header(&l, 0, 1);
         write_u32(&mut header, 8, 1);
         write_u32(&mut header, 36, 0);
-        let (decoded, _) = decode_header(&header).unwrap();
+        let (decoded, _, _) = decode_header(&header).unwrap();
         assert_eq!(decoded.lr_source, InputSource::Svgf);
     }
 
@@ -628,9 +678,46 @@ mod tests {
     fn sparse_path_provenance_survives_a_round_trip() {
         let mut layout = layout();
         layout.lr_source = InputSource::PathTrace;
-        let encoded = encode_header(&layout, 4);
-        let (decoded, count) = decode_header(&encoded).unwrap();
+        let encoded = encode_header(&layout, 4, 1);
+        let (decoded, count, sequence_length) = decode_header(&encoded).unwrap();
         assert_eq!(count, 4);
+        assert_eq!(sequence_length, 1);
         assert_eq!(decoded.lr_source, InputSource::PathTrace);
+    }
+
+    #[test]
+    fn sequence_length_survives_a_round_trip() {
+        let l = layout();
+        let dir = std::env::temp_dir().join("ommatidia-dataset-sequence");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("set.omd");
+        let writer = Writer::create_sequence(&path, l, 4).unwrap();
+        assert_eq!(writer.sequence_length(), 4);
+        writer.finish().unwrap();
+        assert_eq!(Reader::open(&path).unwrap().sequence_length(), 4);
+        std::fs::remove_file(&path).unwrap();
+    }
+
+    #[test]
+    fn incomplete_sequences_are_rejected() {
+        let l = layout();
+        let dir = std::env::temp_dir().join("ommatidia-dataset-incomplete-sequence");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("set.omd");
+        let mut writer = Writer::create_sequence(&path, l, 2).unwrap();
+        writer
+            .write(&Sample {
+                lr: vec![f16::ZERO; l.lr_len()],
+                hr: vec![f16::ZERO; l.hr_len()],
+            })
+            .unwrap();
+        assert!(matches!(
+            writer.finish(),
+            Err(Error::IncompleteSequence {
+                count: 1,
+                sequence_length: 2,
+            })
+        ));
+        std::fs::remove_file(&path).unwrap();
     }
 }
