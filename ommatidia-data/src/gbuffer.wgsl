@@ -11,6 +11,8 @@
 struct Params {
     width: u32,
     height: u32,
+    include_motion: u32,
+    _pad: u32,
 }
 
 var<uniform> params: Params;
@@ -18,6 +20,7 @@ var t_depth: texture_2d<f32>;
 var t_basis: texture_2d<f32>;
 var t_diffuse_albedo: texture_2d<f32>;
 var t_specular_f0: texture_2d<f32>;
+var t_motion: texture_2d<f32>;
 var<storage, read_write> planes: array<f32>;
 
 // Distance recorded where no geometry was hit.
@@ -26,6 +29,7 @@ var<storage, read_write> planes: array<f32>;
 // possible surface rather than the sky. Anything past the far plane reads as
 // zero once inverted, which is what the sky should look like.
 const SKY_DEPTH: f32 = 1.0e6;
+const MOTION_SCALE: f32 = 0.02;
 
 // Matches `qrot` in blade's quaternion.inc.wgsl.
 fn qrot(q: vec4<f32>, v: vec3<f32>) -> vec3<f32> {
@@ -67,4 +71,9 @@ fn probe(@builtin(global_invocation_id) id: vec3<u32>) {
     planes[8u * stride + offset] = specular.y;
     planes[9u * stride + offset] = specular.z;
     planes[10u * stride + offset] = specular.w;
+    if params.include_motion != 0u {
+        let motion = textureLoad(t_motion, texel, 0).xy / MOTION_SCALE;
+        planes[11u * stride + offset] = motion.x;
+        planes[12u * stride + offset] = motion.y;
+    }
 }
