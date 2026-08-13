@@ -74,6 +74,23 @@ separate validation set. It remains in the deployment path as the learned
 spatial checkpoint, but the result is a strong signal not to spend more
 training or backbone complexity on a single-frame residual.
 
+### Fixed-cost guide tuning
+
+A held-out sweep changed only the four guide coefficients, retaining the same
+13×13 low-resolution filter, 5×5 output gather, two dispatches, and Meganeura
+graph. The selected profile changes spatial sigma 3.0 → 4.5, encoded-depth
+sigma 0.05 → 0.01, normal exponent 32 → 24, and albedo sigma 0.1 → 0.2.
+On a common 128-crop external score, the legacy v0.3 base reaches 34.61 dB /
+0.9543 SSIM and the tuned base reaches 34.72 dB / 0.9574. A matching b8 run
+reaches 34.74 dB / 0.9575 after 2,000 steps. Its 1080p trace is unchanged
+within run-to-run noise: 8.83 ms median, split into 0.79 ms pack, 7.22 ms
+network, and 0.88 ms unpack.
+
+The coefficients are serialized with the checkpoint and passed through the
+existing pack/unpack uniforms. A missing field selects the exact legacy
+profile, so updating the runtime does not silently reinterpret v0.2 or v0.3
+weights. This is released as v0.3.1 rather than mutating v0.3.0.
+
 ## Lower-ray-budget gate
 
 A matched 1-spp HR-G-buffer set tests whether four samples had simply made the

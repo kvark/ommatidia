@@ -108,8 +108,9 @@ gated-convolution block. A model-family label is not an ablation.
 The original nearest-base one-frame model gained only 0.22 dB at 1 spp and
 0.08 dB on the four-sample spatial set. Low-resolution renderer guidance fixes
 most of the static denoising failure at 34.08 dB / 0.9473 SSIM; exact
-output-resolution primary surfaces lift the deterministic 5×5 reconstruction
-to 34.75 dB / 0.9545. The learned b8 residual adds only about 0.02 dB. History
+output-resolution primary surfaces and a fixed-cost guide tuning lift the
+deterministic 5×5 reconstruction to 34.72 dB / 0.9574 on the current 128-crop
+release score. The learned b8 residual reaches 34.74 dB / 0.9575. History
 is therefore the missing evidence for lower sample counts, sub-pixel detail
 across motion, and temporal stability—not a reason to enlarge the static
 receptive field. Two relevant production research results agree:

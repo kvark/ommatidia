@@ -11,7 +11,7 @@ a sparse low-resolution path trace provides the primary input and a converged
 high-resolution path trace provides ground truth. ReSTIR+SVGF is a comparison
 control only; the product does not assume sample reuse or a prior denoiser.
 
-> **Status:** early. The current v0.3 checkpoint is trained from independent
+> **Status:** early. The current v0.3.1 checkpoint is trained from independent
 > sparse paths, uses no sample reuse, and accepts output-resolution primary
 > surfaces for sharper silhouettes. The v0.1 raw-ReSTIR checkpoint remains as
 > historical provenance. Temporal history is designed but not yet implemented;
@@ -25,11 +25,12 @@ documented in [`docs/architecture-decision.md`](docs/architecture-decision.md).
 [Download the checkpoint](https://huggingface.co/mad-bot/ommatidia) ·
 [Training and validation data](https://huggingface.co/datasets/mad-bot/ommatidia)
 
-The Hugging Face `v0.3.0` revision contains the HR-guided b8 checkpoint used
+The Hugging Face `v0.3.1` revision contains the tuned HR-guided b8 checkpoint used
 below; `v0.2.0` retains the low-resolution-only checkpoint. Repeated
-960×540 → 1920×1080 runs on a Radeon RX 7900 XT span 8.46–9.30 ms median,
-including pack, model, unpack, and submissions. The stable isolated split is
-0.77–0.80 ms pack, 7.01–7.28 ms network, and 0.89–0.90 ms unpack. Ray tracing,
+960×540 → 1920×1080 runs on a Radeon RX 7900 XT span 8.46–9.30 ms median;
+the v0.3.1 trace measured 8.83 ms median and 8.90 ms p90, including pack,
+model, unpack, and submissions. Its isolated split was 0.79 ms pack, 7.22 ms
+network, and 0.88 ms unpack. Ray tracing,
 the optional output-resolution primary-surface pass, and display
 post-processing are excluded. The range is reported because amdgpu's load
 counter became intermittently unavailable during the final trace; the harness
@@ -48,14 +49,16 @@ The path-tracing-first data path produces independent sparse paths and a
 4,096-spp reference. It does not run historical weights on an
 out-of-distribution input.
 
-On 76 crops from a separate 128-scene validation set, texel-aligned bilinear
-scores 26.46 dB / 0.5864 SSIM. A depth/normal/albedo guide at input resolution
-raises the deterministic reconstruction to 34.08 dB / 0.9473. Supplying exact
-output-resolution primary surfaces raises a selected 5×5 reconstruction to
-34.75 dB / 0.9545, and the b8 learned residual reaches 34.77 dB / 0.9545. The
+On 128 non-overlapping crops from a separate seed-10000 validation set,
+texel-aligned bilinear scores 26.51 dB / 0.5776 SSIM. The v0.3 filter reaches
+34.61 dB / 0.9543 before its learned correction. A held-out sweep tuned the
+same fixed-cost filter to 34.72 dB / 0.9574; the matching b8 residual reaches
+34.74 dB / 0.9575. The
 network still runs wholly at low resolution; the extra guide is contained in
 Ommatidium's existing unpack dispatch, with no ReSTIR or SVGF upstream and no
-new Meganeura graph operation or shader group.
+new Meganeura graph operation or shader group. Filter coefficients are stored
+in the checkpoint, so the runtime continues to interpret v0.3.0 exactly as it
+was trained while v0.3.1 opts into the tuned profile.
 A matched 1-spp arm reaches 31.74 dB / 0.9215 SSIM with the HR guide, but a b8
 network trained specifically on that distribution adds less than 0.005 dB.
 That closes the “larger static network” branch: temporal history must supply
