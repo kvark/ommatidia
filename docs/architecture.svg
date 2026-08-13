@@ -1,6 +1,6 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="1120" height="410" viewBox="0 0 1120 410" role="img" aria-labelledby="title desc">
+<svg xmlns="http://www.w3.org/2000/svg" width="1120" height="500" viewBox="0 0 1120 500" role="img" aria-labelledby="title desc">
   <title id="title">Ommatidium reconstruction architecture</title>
-  <desc id="desc">A low-resolution path traced frame and G-buffer are packed into a multi-scale reconstruction network, whose sub-pixel residual is unpacked into a two-times larger output. A dashed temporal feedback path reprojects and validates a compact learned feature state with host motion, depth, normals, and disocclusion data.</desc>
+  <desc id="desc">A low-resolution path traced frame and G-buffer are packed into a multi-scale reconstruction network. The sub-pixel residual and an optional output-resolution primary-surface G-buffer are combined into a two-times larger output. A dashed temporal feedback path reprojects and validates a compact learned feature state with host motion, depth, normals, and disocclusion data.</desc>
   <defs>
     <marker id="arrow" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto"><path d="M0,0 L9,3 L0,6 Z" fill="#59636e"/></marker>
     <style>
@@ -30,23 +30,28 @@
   <rect x="810" y="60" width="150" height="112" class="box"/>
   <text x="885" y="98" text-anchor="middle" class="h">GPU unpack</text>
   <text x="885" y="126" text-anchor="middle" class="p">sub-pixel scatter</text>
-  <text x="885" y="148" text-anchor="middle" class="p">+ guided bilinear base</text>
+  <text x="885" y="148" text-anchor="middle" class="p">+ geometry-aware base</text>
   <path d="M960 116 H1010" class="line"/>
   <rect x="1010" y="73" width="80" height="86" class="box"/>
   <text x="1050" y="107" text-anchor="middle" class="h">2×</text>
   <text x="1050" y="132" text-anchor="middle" class="p">HDR out</text>
 
-  <text x="40" y="237" class="tag" style="fill:#9a6700">NEXT · TEMPORAL RECONSTRUCTION</text>
-  <rect x="160" y="267" width="240" height="100" class="future"/>
-  <text x="280" y="301" text-anchor="middle" class="h">Learned feature state</text>
-  <text x="280" y="329" text-anchor="middle" class="p">1/4 input size · FP16 · ~6.2 MB</text>
-  <text x="280" y="351" text-anchor="middle" class="p">one recurrent frame on device</text>
-  <path d="M400 317 H500" class="dash"/>
-  <rect x="500" y="255" width="275" height="124" class="future"/>
-  <text x="638" y="289" text-anchor="middle" class="h">Reproject + validate</text>
-  <text x="638" y="317" text-anchor="middle" class="p">host motion · depth · normal</text>
-  <text x="638" y="341" text-anchor="middle" class="p">disocclusion · reactive confidence</text>
-  <text x="638" y="363" text-anchor="middle" class="p">coarse gated / attention fusion</text>
-  <path d="M638 255 V203 H638 V185" class="dash"/>
-  <path d="M590 185 V222 H280 V267" class="dash"/>
+  <rect x="770" y="205" width="230" height="72" class="box"/>
+  <text x="885" y="234" text-anchor="middle" class="h">HR primary surfaces</text>
+  <text x="885" y="258" text-anchor="middle" class="p">depth · normal · albedo</text>
+  <path d="M885 205 V174" class="line"/>
+
+  <text x="40" y="327" class="tag" style="fill:#9a6700">NEXT · TEMPORAL RECONSTRUCTION</text>
+  <rect x="160" y="357" width="240" height="100" class="future"/>
+  <text x="280" y="391" text-anchor="middle" class="h">Learned feature state</text>
+  <text x="280" y="419" text-anchor="middle" class="p">1/4 input size · FP16 · ~6.2 MB</text>
+  <text x="280" y="441" text-anchor="middle" class="p">one recurrent frame on device</text>
+  <path d="M400 407 H500" class="dash"/>
+  <rect x="500" y="345" width="275" height="124" class="future"/>
+  <text x="638" y="379" text-anchor="middle" class="h">Reproject + validate</text>
+  <text x="638" y="407" text-anchor="middle" class="p">host motion · depth · normal</text>
+  <text x="638" y="431" text-anchor="middle" class="p">disocclusion · reactive confidence</text>
+  <text x="638" y="453" text-anchor="middle" class="p">coarse gated / attention fusion</text>
+  <path d="M638 345 V293 H638 V185" class="dash"/>
+  <path d="M590 185 V312 H280 V357" class="dash"/>
 </svg>

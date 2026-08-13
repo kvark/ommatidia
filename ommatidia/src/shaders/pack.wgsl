@@ -189,7 +189,7 @@ fn pack(@builtin(global_invocation_id) id: vec3<u32>) {
     }
 
     var base_color = load_color(texel);
-    if params.reconstruction_base == 2u {
+    if params.reconstruction_base >= 2u {
         base_color = guided_color(texel);
     }
     base[0u * plane_stride + offset] = base_color.x;

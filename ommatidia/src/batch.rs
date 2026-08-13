@@ -146,6 +146,57 @@ fn plane_value(
     sample.lr[channel * layout.lr_texels() + y * layout.lr_width as usize + x].to_f32()
 }
 
+fn hr_plane_value(
+    sample: &Sample,
+    layout: &Layout,
+    plane: Plane,
+    component: usize,
+    x: usize,
+    y: usize,
+) -> f32 {
+    let channel = layout
+        .hr_planes
+        .channel_offset(plane)
+        .unwrap_or_else(|| panic!("dataset has no high-resolution {plane:?} plane"))
+        + component;
+    sample.hr[channel * layout.hr_texels() + y * layout.hr_width() as usize + x].to_f32()
+}
+
+fn guide_similarity(
+    center_depth: f32,
+    center_normal: [f32; 3],
+    center_albedo: [f32; 3],
+    depth: f32,
+    normal: [f32; 3],
+    albedo: [f32; 3],
+) -> f32 {
+    let depth_denominator = 2.0 * GUIDE_DEPTH_SIGMA * GUIDE_DEPTH_SIGMA;
+    let albedo_denominator = 2.0 * GUIDE_ALBEDO_SIGMA * GUIDE_ALBEDO_SIGMA;
+    let mut weight = (-(depth - center_depth).powi(2) / depth_denominator).exp();
+
+    let center_normal_len2 = center_normal.iter().map(|v| v * v).sum::<f32>();
+    let normal_len2 = normal.iter().map(|v| v * v).sum::<f32>();
+    let normal_weight = if center_normal_len2 < 0.25 {
+        (normal_len2 < 0.25) as u8 as f32
+    } else if normal_len2 < 0.25 {
+        0.0
+    } else {
+        let dot = normal
+            .iter()
+            .zip(center_normal)
+            .map(|(a, b)| a * b)
+            .sum::<f32>()
+            / (normal_len2 * center_normal_len2).sqrt();
+        dot.max(0.0).powf(GUIDE_NORMAL_POWER)
+    };
+    weight *= normal_weight;
+
+    let albedo_delta2 = (0..3)
+        .map(|component| (albedo[component] - center_albedo[component]).powi(2))
+        .sum::<f32>();
+    weight * (-albedo_delta2 / albedo_denominator).exp()
+}
+
 fn guided_texel(sample: &Sample, layout: &Layout, center_x: i32, center_y: i32) -> [f32; 3] {
     let width = layout.lr_width as i32;
     let height = layout.lr_height as i32;
@@ -163,10 +214,7 @@ fn guided_texel(sample: &Sample, layout: &Layout, center_x: i32, center_y: i32) 
         plane_value(sample, layout, Plane::DiffuseAlbedo, 1, cx, cy),
         plane_value(sample, layout, Plane::DiffuseAlbedo, 2, cx, cy),
     ];
-    let center_normal_len2 = center_normal.iter().map(|v| v * v).sum::<f32>();
     let spatial_denominator = 2.0 * GUIDE_SPATIAL_SIGMA * GUIDE_SPATIAL_SIGMA;
-    let depth_denominator = 2.0 * GUIDE_DEPTH_SIGMA * GUIDE_DEPTH_SIGMA;
-    let albedo_denominator = 2.0 * GUIDE_ALBEDO_SIGMA * GUIDE_ALBEDO_SIGMA;
     let mut sum = [0.0f32; 3];
     let mut weight_sum = 0.0f32;
 
@@ -177,37 +225,25 @@ fn guided_texel(sample: &Sample, layout: &Layout, center_x: i32, center_y: i32) 
             let distance2 = (dx * dx + dy * dy) as f32;
             let mut weight = (-distance2 / spatial_denominator).exp();
             let depth = transform::encode_depth(plane_value(sample, layout, Plane::Depth, 0, x, y));
-            weight *= (-(depth - center_depth).powi(2) / depth_denominator).exp();
 
             let normal = [
                 plane_value(sample, layout, Plane::Normal, 0, x, y),
                 plane_value(sample, layout, Plane::Normal, 1, x, y),
                 plane_value(sample, layout, Plane::Normal, 2, x, y),
             ];
-            let normal_len2 = normal.iter().map(|v| v * v).sum::<f32>();
-            let normal_weight = if center_normal_len2 < 0.25 {
-                (normal_len2 < 0.25) as u8 as f32
-            } else if normal_len2 < 0.25 {
-                0.0
-            } else {
-                let dot = normal
-                    .iter()
-                    .zip(center_normal)
-                    .map(|(a, b)| a * b)
-                    .sum::<f32>()
-                    / (normal_len2 * center_normal_len2).sqrt();
-                dot.max(0.0).powf(GUIDE_NORMAL_POWER)
-            };
-            weight *= normal_weight;
-
-            let albedo_delta2 = (0..3)
-                .map(|component| {
-                    (plane_value(sample, layout, Plane::DiffuseAlbedo, component, x, y)
-                        - center_albedo[component])
-                        .powi(2)
-                })
-                .sum::<f32>();
-            weight *= (-albedo_delta2 / albedo_denominator).exp();
+            let albedo = [
+                plane_value(sample, layout, Plane::DiffuseAlbedo, 0, x, y),
+                plane_value(sample, layout, Plane::DiffuseAlbedo, 1, x, y),
+                plane_value(sample, layout, Plane::DiffuseAlbedo, 2, x, y),
+            ];
+            weight *= guide_similarity(
+                center_depth,
+                center_normal,
+                center_albedo,
+                depth,
+                normal,
+                albedo,
+            );
 
             for (component, value) in sum.iter_mut().enumerate() {
                 *value += weight * plane_value(sample, layout, Plane::Color, component, x, y);
@@ -264,6 +300,104 @@ pub fn guided_base(sample: &Sample, layout: &Layout, crop: Crop) -> Vec<f32> {
     out
 }
 
+/// Joint bilateral upsampling using an optional high-resolution primary
+/// surface pass. Unlike bilinear reconstruction, this can place an edge
+/// between low-resolution texel centres when the renderer supplies its exact
+/// high-resolution depth, normal, and albedo.
+pub fn high_resolution_guided_base(sample: &Sample, layout: &Layout, crop: Crop) -> Vec<f32> {
+    const RADIUS: i32 = 2;
+    const PADDING: i32 = RADIUS + 1;
+    const SPATIAL_SIGMA: f32 = 1.5;
+    let tile = crop.tile as usize;
+    let scale = layout.scale as usize;
+    let padded_width = tile + 2 * PADDING as usize;
+    let origin_x = crop.x as i32 - PADDING;
+    let origin_y = crop.y as i32 - PADDING;
+    let mut low = vec![[0.0f32; 3]; padded_width * padded_width];
+    for y in 0..padded_width {
+        for x in 0..padded_width {
+            low[y * padded_width + x] =
+                guided_texel(sample, layout, origin_x + x as i32, origin_y + y as i32);
+        }
+    }
+
+    let out_width = tile * scale;
+    let mut out = vec![0.0f32; out_width * out_width * 3];
+    let spatial_denominator = 2.0 * SPATIAL_SIGMA * SPATIAL_SIGMA;
+    for oy in 0..out_width {
+        let global_y = crop.y as usize * scale + oy;
+        let position_y = (global_y as f32 + 0.5) / scale as f32 - 0.5;
+        for ox in 0..out_width {
+            let global_x = crop.x as usize * scale + ox;
+            let position_x = (global_x as f32 + 0.5) / scale as f32 - 0.5;
+            let center_depth = transform::encode_depth(hr_plane_value(
+                sample,
+                layout,
+                Plane::Depth,
+                0,
+                global_x,
+                global_y,
+            ));
+            let center_normal = [
+                hr_plane_value(sample, layout, Plane::Normal, 0, global_x, global_y),
+                hr_plane_value(sample, layout, Plane::Normal, 1, global_x, global_y),
+                hr_plane_value(sample, layout, Plane::Normal, 2, global_x, global_y),
+            ];
+            let center_albedo = [
+                hr_plane_value(sample, layout, Plane::DiffuseAlbedo, 0, global_x, global_y),
+                hr_plane_value(sample, layout, Plane::DiffuseAlbedo, 1, global_x, global_y),
+                hr_plane_value(sample, layout, Plane::DiffuseAlbedo, 2, global_x, global_y),
+            ];
+
+            let base_x = position_x.floor() as i32;
+            let base_y = position_y.floor() as i32;
+            let mut sum = [0.0f32; 3];
+            let mut weight_sum = 0.0f32;
+            for dy in -RADIUS..=RADIUS {
+                let source_y = (base_y + dy).clamp(0, layout.lr_height as i32 - 1);
+                for dx in -RADIUS..=RADIUS {
+                    let source_x = (base_x + dx).clamp(0, layout.lr_width as i32 - 1);
+                    let distance2 = (source_x as f32 - position_x).powi(2)
+                        + (source_y as f32 - position_y).powi(2);
+                    let mut weight = (-distance2 / spatial_denominator).exp();
+                    let x = source_x as usize;
+                    let y = source_y as usize;
+                    let depth =
+                        transform::encode_depth(plane_value(sample, layout, Plane::Depth, 0, x, y));
+                    let normal = [
+                        plane_value(sample, layout, Plane::Normal, 0, x, y),
+                        plane_value(sample, layout, Plane::Normal, 1, x, y),
+                        plane_value(sample, layout, Plane::Normal, 2, x, y),
+                    ];
+                    let albedo = [
+                        plane_value(sample, layout, Plane::DiffuseAlbedo, 0, x, y),
+                        plane_value(sample, layout, Plane::DiffuseAlbedo, 1, x, y),
+                        plane_value(sample, layout, Plane::DiffuseAlbedo, 2, x, y),
+                    ];
+                    weight *= guide_similarity(
+                        center_depth,
+                        center_normal,
+                        center_albedo,
+                        depth,
+                        normal,
+                        albedo,
+                    );
+                    let local_x = (source_x - origin_x) as usize;
+                    let local_y = (source_y - origin_y) as usize;
+                    for component in 0..3 {
+                        sum[component] += weight * low[local_y * padded_width + local_x][component];
+                    }
+                    weight_sum += weight;
+                }
+            }
+            for component in 0..3 {
+                out[(oy * out_width + ox) * 3 + component] = sum[component] / weight_sum.max(1e-12);
+            }
+        }
+    }
+    out
+}
+
 /// Write the sub-pixel residual target of one crop into `out` at `slot`,
 /// multiplied by `gain`.
 ///
@@ -311,8 +445,13 @@ pub fn write_residual(
     let hr_texels = layout.hr_texels();
     let lr_stride = layout.lr_width as usize;
     let hr_stride = layout.hr_width() as usize;
-    let guided = (reconstruction_base == ReconstructionBase::GuidedBilinear)
-        .then(|| guided_base(sample, layout, crop));
+    let guided = match reconstruction_base {
+        ReconstructionBase::GuidedBilinear => Some(guided_base(sample, layout, crop)),
+        ReconstructionBase::HighResolutionGuided => {
+            Some(high_resolution_guided_base(sample, layout, crop))
+        }
+        ReconstructionBase::Nearest | ReconstructionBase::Bilinear => None,
+    };
 
     for c in 0..3 {
         let low = &sample.lr[(lr_base + c) * lr_texels..(lr_base + c + 1) * lr_texels];
@@ -335,7 +474,8 @@ pub fn write_residual(
                                 source_y * scale + dy,
                                 scale,
                             ),
-                            ReconstructionBase::GuidedBilinear => guided.as_ref().unwrap()
+                            ReconstructionBase::GuidedBilinear
+                            | ReconstructionBase::HighResolutionGuided => guided.as_ref().unwrap()
                                 [((y * scale + dy) * tile * scale + x * scale + dx) * 3 + c],
                         };
                         let base = transform::compress(base);
@@ -363,12 +503,12 @@ pub fn assemble(
     low: &[f32],
     guided: Option<&[f32]>,
     residual: &[f32],
-    width: usize,
-    height: usize,
+    extent: [usize; 2],
     scale: usize,
     gain: f32,
     reconstruction_base: ReconstructionBase,
 ) -> Vec<f32> {
+    let [width, height] = extent;
     assert_eq!(low.len(), width * height * 3);
     let sub = scale * scale;
     assert_eq!(residual.len(), 3 * sub * width * height);
@@ -398,7 +538,8 @@ pub fn assemble(
                                 scale,
                                 c,
                             ),
-                            ReconstructionBase::GuidedBilinear => guided
+                            ReconstructionBase::GuidedBilinear
+                            | ReconstructionBase::HighResolutionGuided => guided
                                 .expect("guided reconstruction needs a prefiltered base")
                                 [((y * scale + dy) * out_width + x * scale + dx) * 3 + c],
                         };
@@ -621,8 +762,7 @@ mod tests {
                 &low,
                 None,
                 &residual,
-                8,
-                8,
+                [8, 8],
                 scale as usize,
                 1.0,
                 ReconstructionBase::Bilinear,
@@ -665,11 +805,52 @@ mod tests {
             &low,
             Some(&guided),
             &residual,
-            6,
-            6,
+            [6, 6],
             2,
             1.0,
             ReconstructionBase::GuidedBilinear,
+        );
+        let reference = crop_reference(&s, &l, crop);
+        for (actual, expected) in rebuilt.iter().zip(reference) {
+            assert!((actual - expected).abs() < 1e-3);
+        }
+    }
+
+    #[test]
+    fn high_resolution_guided_residual_round_trip_recovers_the_reference() {
+        let mut l = layout(2, 8, 8);
+        l.lr_planes = l.lr_planes.with(Plane::Normal).with(Plane::DiffuseAlbedo);
+        l.hr_planes = l
+            .hr_planes
+            .with(Plane::Depth)
+            .with(Plane::Normal)
+            .with(Plane::DiffuseAlbedo);
+        let s = sample(&l, 9);
+        let crop = Crop {
+            x: 1,
+            y: 1,
+            tile: 6,
+        };
+        let guided = high_resolution_guided_base(&s, &l, crop);
+        let mut residual = vec![0.0; 3 * 4 * 36];
+        write_residual(
+            &s,
+            &l,
+            crop,
+            0,
+            1.0,
+            ReconstructionBase::HighResolutionGuided,
+            &mut residual,
+        );
+        let low = crop_color(&s, &l, crop);
+        let rebuilt = assemble(
+            &low,
+            Some(&guided),
+            &residual,
+            [6, 6],
+            2,
+            1.0,
+            ReconstructionBase::HighResolutionGuided,
         );
         let reference = crop_reference(&s, &l, crop);
         for (actual, expected) in rebuilt.iter().zip(reference) {
@@ -693,8 +874,7 @@ mod tests {
             &low,
             None,
             &vec![0.0; 3 * 4 * 16],
-            4,
-            4,
+            [4, 4],
             2,
             1.0,
             ReconstructionBase::Nearest,

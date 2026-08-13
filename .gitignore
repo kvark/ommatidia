@@ -31,3 +31,5 @@ target
 !/runs/eval-path-control-svgf/
 /runs/eval-path-control-svgf/*
 !/runs/eval-path-control-svgf/bilinear.png
+!/runs/eval-path-trace-4spp-hr-guided-validation/
+!/runs/eval-path-trace-4spp-hr-guided-validation/*.png

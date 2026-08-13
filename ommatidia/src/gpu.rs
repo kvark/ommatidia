@@ -59,11 +59,21 @@ impl DeviceLoad {
     pub fn read() -> Option<Self> {
         let base = std::path::Path::new("/sys/class/drm/card0/device");
         let read = |name: &str| -> Option<u64> {
-            std::fs::read_to_string(base.join(name))
-                .ok()?
-                .trim()
-                .parse()
-                .ok()
+            // amdgpu occasionally returns EBUSY for a sysfs counter while the
+            // device changes power state. A missing load sample must not turn
+            // into a falsely trusted timing, so tolerate the transient rather
+            // than silently dropping the diagnostic.
+            for attempt in 0..5 {
+                if let Ok(value) = std::fs::read_to_string(base.join(name))
+                    && let Ok(value) = value.trim().parse()
+                {
+                    return Some(value);
+                }
+                if attempt != 4 {
+                    std::thread::sleep(std::time::Duration::from_millis(10));
+                }
+            }
+            None
         };
         Some(Self {
             busy_percent: read("gpu_busy_percent")? as u32,
@@ -86,6 +96,7 @@ impl DeviceLoad {
 /// now should not be believed.
 pub fn warn_if_busy() {
     let Some(load) = DeviceLoad::read() else {
+        println!("device load unavailable; absolute timing has no idle-state validation");
         return;
     };
     if load.is_quiet() {

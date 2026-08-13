@@ -8,14 +8,17 @@ samples that a 2× spatial model is otherwise asked to invent again.
 
 The first path-tracing experiment exposed a weak nearest-neighbor base rather
 than a transformer deficit. On 76 crops from a separate 128-scene 4-spp
-validation set, bilinear scores 26.46 dB / 0.5864 SSIM, while the current
-depth/normal/albedo-guided spatial base scores 34.08 dB / 0.9473 and the b8
-learned correction reaches 34.12 dB / 0.9474. The b24 arm reaches 34.15 dB /
-0.9476 but takes 20.71 ms instead of b8's 7.76 ms.
-That makes the spatial release credible, but it does not recover sub-pixel
-samples across motion or address 1-spp flicker. History remains the next
-quality source for lower ray budgets and temporal stability. The superseded
-nearest-base result remains recorded in
+validation set, bilinear scores 26.46 dB / 0.5864 SSIM. Low-resolution
+depth/normal/albedo guidance reaches 34.08 dB / 0.9473; supplying the exact
+output-resolution primary surfaces raises a 5×5 guided reconstruction to
+34.75 dB / 0.9545 before the learned correction runs. The spatial network adds
+only about 0.02 dB to that base.
+
+This makes geometry-aware spatial reconstruction credible, but it also makes
+the remaining limitation unambiguous: a larger static network cannot recover
+samples that were never observed. History is the next quality source for lower
+ray budgets, sub-pixel evidence across motion, and 1-spp stability. The
+superseded nearest-base result remains recorded in
 [`results/path-trace-spatial-b24-2026-08-12.md`](results/path-trace-spatial-b24-2026-08-12.md).
 
 The first temporal model should keep reprojection outside the learned network.

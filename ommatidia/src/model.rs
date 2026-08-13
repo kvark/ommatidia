@@ -37,6 +37,9 @@ pub enum ReconstructionBase {
     Bilinear = 1,
     /// Geometry-guided low-resolution denoising followed by bilinear filtering.
     GuidedBilinear = 2,
+    /// Low-resolution denoising followed by joint bilateral upsampling against
+    /// a high-resolution primary-surface G-buffer.
+    HighResolutionGuided = 3,
 }
 
 fn legacy_reconstruction_base() -> ReconstructionBase {
@@ -282,7 +285,10 @@ impl ModelConfig {
         if self.cond_channels() == 0 {
             return Err("the conditioning plane set is empty".into());
         }
-        if self.reconstruction_base == ReconstructionBase::GuidedBilinear {
+        if matches!(
+            self.reconstruction_base,
+            ReconstructionBase::GuidedBilinear | ReconstructionBase::HighResolutionGuided
+        ) {
             for plane in [
                 Plane::Color,
                 Plane::Depth,

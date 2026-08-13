@@ -63,6 +63,12 @@ struct UnpackData {
     params: UnpackParams,
     base_pixels: gpu::BufferPiece,
     residual: gpu::BufferPiece,
+    t_depth: gpu::TextureView,
+    t_normal: gpu::TextureView,
+    t_albedo: gpu::TextureView,
+    t_hr_depth: gpu::TextureView,
+    t_hr_normal: gpu::TextureView,
+    t_hr_albedo: gpu::TextureView,
     output: gpu::TextureView,
 }
 
@@ -74,8 +80,8 @@ struct UnpackParams {
     scale: u32,
     inverse_gain: f32,
     reconstruction_base: u32,
-    _pad0: u32,
-    _pad1: u32,
+    decode_blade_gbuffer: u32,
+    decode_hr_blade_gbuffer: u32,
     _pad2: u32,
 }
 
@@ -104,8 +110,16 @@ pub struct FrameInputs {
     pub albedo: gpu::TextureView,
     /// Specular reflectance in RGB, roughness in alpha — Blade's own layout.
     pub specular: gpu::TextureView,
+    /// Optional high-resolution view-space depth for geometry-aware upsampling.
+    pub hr_depth: gpu::TextureView,
+    /// Optional high-resolution world-space shading normal.
+    pub hr_normal: gpu::TextureView,
+    /// Optional high-resolution diffuse albedo.
+    pub hr_albedo: gpu::TextureView,
     compose_blade_radiance: bool,
     decode_blade_gbuffer: bool,
+    decode_hr_blade_gbuffer: bool,
+    has_high_resolution_gbuffer: bool,
 }
 
 impl FrameInputs {
@@ -123,8 +137,13 @@ impl FrameInputs {
             normal: placeholder,
             albedo: placeholder,
             specular: placeholder,
+            hr_depth: placeholder,
+            hr_normal: placeholder,
+            hr_albedo: placeholder,
             compose_blade_radiance: false,
             decode_blade_gbuffer: false,
+            decode_hr_blade_gbuffer: false,
+            has_high_resolution_gbuffer: false,
         }
     }
 
@@ -149,9 +168,42 @@ impl FrameInputs {
             normal,
             albedo,
             specular,
+            hr_depth: depth,
+            hr_normal: normal,
+            hr_albedo: albedo,
             compose_blade_radiance: false,
             decode_blade_gbuffer: false,
+            decode_hr_blade_gbuffer: false,
+            has_high_resolution_gbuffer: false,
         }
+    }
+
+    /// Add full-output-resolution geometry for joint bilateral upsampling.
+    pub fn with_high_resolution_gbuffer(
+        mut self,
+        depth: gpu::TextureView,
+        normal: gpu::TextureView,
+        albedo: gpu::TextureView,
+    ) -> Self {
+        self.hr_depth = depth;
+        self.hr_normal = normal;
+        self.hr_albedo = albedo;
+        self.decode_hr_blade_gbuffer = false;
+        self.has_high_resolution_gbuffer = true;
+        self
+    }
+
+    /// Add Blade's packed full-output-resolution primary-surface G-buffer.
+    pub fn with_blade_high_resolution_gbuffer(
+        mut self,
+        gbuffer: blade_render::GBufferViews,
+    ) -> Self {
+        self.hr_depth = gbuffer.depth;
+        self.hr_normal = gbuffer.basis;
+        self.hr_albedo = gbuffer.diffuse_albedo;
+        self.decode_hr_blade_gbuffer = true;
+        self.has_high_resolution_gbuffer = true;
+        self
     }
 
     /// Read the raw real-time estimate and G-buffer from a Blade ray tracer.
@@ -180,8 +232,13 @@ impl FrameInputs {
             normal: gbuffer.basis,
             albedo: gbuffer.diffuse_albedo,
             specular: gbuffer.specular_f0,
+            hr_depth: gbuffer.depth,
+            hr_normal: gbuffer.basis,
+            hr_albedo: gbuffer.diffuse_albedo,
             compose_blade_radiance: false,
             decode_blade_gbuffer: true,
+            decode_hr_blade_gbuffer: true,
+            has_high_resolution_gbuffer: false,
         }
     }
 
@@ -201,8 +258,13 @@ impl FrameInputs {
             normal: gbuffer.basis,
             albedo: gbuffer.diffuse_albedo,
             specular: gbuffer.specular_f0,
+            hr_depth: gbuffer.depth,
+            hr_normal: gbuffer.basis,
+            hr_albedo: gbuffer.diffuse_albedo,
             compose_blade_radiance: true,
             decode_blade_gbuffer: true,
+            decode_hr_blade_gbuffer: true,
+            has_high_resolution_gbuffer: false,
         }
     }
 }
@@ -390,6 +452,11 @@ impl Upscaler {
     /// The caller submits this before [`Self::run`], because meganeura submits
     /// on its own encoder and the network has to see the packed tensor.
     pub fn pack(&self, encoder: &mut gpu::CommandEncoder, inputs: &FrameInputs) {
+        assert!(
+            self.config.reconstruction_base != model::ReconstructionBase::HighResolutionGuided
+                || inputs.has_high_resolution_gbuffer,
+            "this checkpoint requires a high-resolution G-buffer"
+        );
         let cond = self
             .session
             .input_buffer("cond")
@@ -474,7 +541,7 @@ impl Upscaler {
     pub fn unpack(
         &mut self,
         encoder: &mut gpu::CommandEncoder,
-        _inputs: &FrameInputs,
+        inputs: &FrameInputs,
         output: gpu::TextureView,
     ) {
         let residual = match self.config.objective {
@@ -511,12 +578,18 @@ impl Upscaler {
                     scale: self.config.scale,
                     inverse_gain: 1.0 / self.config.residual_gain,
                     reconstruction_base: self.config.reconstruction_base as u32,
-                    _pad0: 0,
-                    _pad1: 0,
+                    decode_blade_gbuffer: inputs.decode_blade_gbuffer as u32,
+                    decode_hr_blade_gbuffer: inputs.decode_hr_blade_gbuffer as u32,
                     _pad2: 0,
                 },
                 base_pixels: self.base_buffer.into(),
                 residual,
+                t_depth: inputs.depth,
+                t_normal: inputs.normal,
+                t_albedo: inputs.albedo,
+                t_hr_depth: inputs.hr_depth,
+                t_hr_normal: inputs.hr_normal,
+                t_hr_albedo: inputs.hr_albedo,
                 output,
             },
         );

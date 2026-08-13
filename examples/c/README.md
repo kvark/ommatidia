@@ -1,6 +1,6 @@
 # C ABI example
 
-ABI 1.0 proves distribution, linking, error handling, and checkpoint metadata
+ABI 1.1 proves distribution, linking, error handling, and checkpoint metadata
 without pretending that a second internally-created Vulkan device is native
 integration. Build the library and example with:
 

@@ -39,6 +39,8 @@ int main(int argc, char **argv) {
            info.output_channel_count);
     printf("objective: %u, backbone: %u, parameters: %" PRIu64 "\n",
            info.objective, info.backbone, info.parameter_count);
+    printf("reconstruction base: %u, required HR planes: 0x%08x\n",
+           info.reconstruction_base, info.required_hr_plane_mask);
     if (info.backbone == OMMATIDIA_BACKBONE_HYBRID_WINDOW_ATTENTION) {
         printf("attention: %ux%u windows, head dimension %u\n",
                info.attention_window, info.attention_window,

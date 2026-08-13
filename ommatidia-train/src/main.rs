@@ -17,7 +17,7 @@ use ommatidia::batch::{self, Crop};
 use ommatidia::checkpoint;
 use ommatidia::dataset::Reader;
 use ommatidia::diffusion::Schedule;
-use ommatidia::model::{self, ModelConfig, Objective};
+use ommatidia::model::{self, ModelConfig, Objective, ReconstructionBase};
 
 /// How a dataset is divided between fitting and scoring.
 ///
@@ -70,6 +70,7 @@ struct Args {
     timesteps: usize,
     sampler_steps: usize,
     objective: Objective,
+    reconstruction_base: ReconstructionBase,
     seed: u64,
     log_every: usize,
     eval_out: Option<PathBuf>,
@@ -101,6 +102,7 @@ impl Default for Args {
             timesteps: 1000,
             sampler_steps: 20,
             objective: Objective::Direct,
+            reconstruction_base: ReconstructionBase::GuidedBilinear,
             seed: 0,
             log_every: 50,
             eval_out: None,
@@ -138,6 +140,8 @@ usage: ommatidia-train [options]
   --timesteps N        diffusion schedule length  [1000]
   --sampler-steps N    DDIM steps used when evaluating  [20]
   --objective KIND     direct or diffusion  [direct]
+  --reconstruction-base KIND
+                       nearest, bilinear, guided, or hr-guided  [guided]
   --seed N             seed for init and batching  [0]
   --device-id ID       adapter ID for this standalone process (hex or decimal)
   --log-every N        steps between loss lines  [50]
@@ -213,6 +217,15 @@ fn parse_from(argv: impl Iterator<Item = String>) -> Result<Args, String> {
                     "diffusion" => Objective::Diffusion,
                     "direct" => Objective::Direct,
                     other => return Err(format!("unknown objective {other:?}")),
+                }
+            }
+            "--reconstruction-base" => {
+                args.reconstruction_base = match value()?.as_str() {
+                    "nearest" => ReconstructionBase::Nearest,
+                    "bilinear" => ReconstructionBase::Bilinear,
+                    "guided" => ReconstructionBase::GuidedBilinear,
+                    "hr-guided" => ReconstructionBase::HighResolutionGuided,
+                    other => return Err(format!("unknown reconstruction base {other:?}")),
                 }
             }
             "--seed" => args.seed = value()?.parse().map_err(|e| format!("--seed: {e}"))?,
@@ -309,10 +322,22 @@ fn main() {
             .map(|(config, _)| config.reconstruction_base)
             .unwrap_or_else(|_| ModelConfig::default().reconstruction_base)
     } else if args.color_only {
-        ommatidia::model::ReconstructionBase::Bilinear
+        ReconstructionBase::Bilinear
     } else {
-        ModelConfig::default().reconstruction_base
+        args.reconstruction_base
     };
+    if reconstruction_base == ReconstructionBase::HighResolutionGuided {
+        for plane in [
+            ommatidia::Plane::Depth,
+            ommatidia::Plane::Normal,
+            ommatidia::Plane::DiffuseAlbedo,
+        ] {
+            if !layout.hr_planes.contains(plane) {
+                eprintln!("high-resolution guided reconstruction needs the HR {plane:?} plane");
+                std::process::exit(1);
+            }
+        }
+    }
 
     // The residual is small, and how small depends on the content and the
     // scale factor, so it is measured rather than assumed. Without this the
@@ -666,6 +691,15 @@ impl Evaluator {
         ]
         .into_iter()
         .all(|plane| layout.lr_planes.contains(plane));
+        let has_hr_guides = [
+            ommatidia::Plane::Depth,
+            ommatidia::Plane::Normal,
+            ommatidia::Plane::DiffuseAlbedo,
+        ]
+        .into_iter()
+        .all(|plane| layout.hr_planes.contains(plane));
+        let mut hr_guided_total = 0.0f64;
+        let mut hr_guided_ssim_total = 0.0f64;
         let mut counted = 0usize;
         let started = std::time::Instant::now();
 
@@ -682,6 +716,13 @@ impl Evaluator {
                     break 'outer;
                 }
                 let guided = has_guides.then(|| batch::guided_base(&sample, &layout, crop));
+                let hr_guided = has_hr_guides
+                    .then(|| batch::high_resolution_guided_base(&sample, &layout, crop));
+                let model_base = match self.config.reconstruction_base {
+                    ReconstructionBase::GuidedBilinear => guided.as_deref(),
+                    ReconstructionBase::HighResolutionGuided => hr_guided.as_deref(),
+                    ReconstructionBase::Nearest | ReconstructionBase::Bilinear => None,
+                };
                 let predicted = eval::reconstruct(
                     &mut self.session,
                     &self.config,
@@ -689,7 +730,7 @@ impl Evaluator {
                     &sample,
                     &layout,
                     crop,
-                    guided.as_deref(),
+                    model_base,
                     args.sampler_steps,
                     // Vary the sampler noise per crop, so the score is not one
                     // lucky or unlucky draw repeated.
@@ -720,6 +761,11 @@ impl Evaluator {
                     guided_total += eval::error(guided, &reference) as f64;
                     guided_ssim_total += eval::ssim(guided, &reference, extent, extent) as f64;
                 }
+                if let Some(hr_guided) = &hr_guided {
+                    hr_guided_total += eval::error(hr_guided, &reference) as f64;
+                    hr_guided_ssim_total +=
+                        eval::ssim(hr_guided, &reference, extent, extent) as f64;
+                }
 
                 // The first crop also goes out as images, for eyeballing.
                 if counted == 0
@@ -741,6 +787,12 @@ impl Evaluator {
                     if let Some(guided) = &guided {
                         let path = dir.join("guided.png");
                         if let Err(e) = eval::write_png(&path, guided, hr_extent, hr_extent) {
+                            eprintln!("cannot write {}: {e}", path.display());
+                        }
+                    }
+                    if let Some(hr_guided) = &hr_guided {
+                        let path = dir.join("hr-guided.png");
+                        if let Err(e) = eval::write_png(&path, hr_guided, hr_extent, hr_extent) {
                             eprintln!("cannot write {}: {e}", path.display());
                         }
                     }
@@ -769,12 +821,16 @@ impl Evaluator {
             (error, psnr, ssim)
         });
         let (base_name, base_error) = match self.config.reconstruction_base {
-            ommatidia::model::ReconstructionBase::Nearest => ("nearest", baseline_error),
-            ommatidia::model::ReconstructionBase::Bilinear => ("bilinear", bilinear_error),
-            ommatidia::model::ReconstructionBase::GuidedBilinear => (
+            ReconstructionBase::Nearest => ("nearest", baseline_error),
+            ReconstructionBase::Bilinear => ("bilinear", bilinear_error),
+            ReconstructionBase::GuidedBilinear => (
                 "guided",
                 guided.expect("guided models require guide planes").0,
             ),
+            ReconstructionBase::HighResolutionGuided => {
+                let error = hr_guided_total / counted as f64;
+                ("HR guide", error)
+            }
         };
         let gain = if network_error > 0.0 {
             10.0 * (base_error / network_error).log10()
@@ -789,6 +845,12 @@ impl Evaluator {
         );
         if let Some((error, psnr, ssim)) = guided {
             println!("  guided   MSE {error:.6}, PSNR {psnr:.2} dB, SSIM {ssim:.4}");
+        }
+        if has_hr_guides {
+            let error = hr_guided_total / counted as f64;
+            let psnr = -10.0 * error.log10();
+            let ssim = hr_guided_ssim_total / counted as f64;
+            println!("  HR guide MSE {error:.6}, PSNR {psnr:.2} dB, SSIM {ssim:.4}");
         }
         println!(
             "  network  MSE {network_error:.6}, PSNR {network_psnr:.2} dB, SSIM {network_ssim:.4} \
@@ -829,6 +891,9 @@ mod cli_tests {
             // without, so a new switch needs no entry here to stay covered.
             let candidates: Vec<Vec<&str>> = match flag.as_str() {
                 "--objective" => vec![vec!["--objective", "direct"]],
+                "--reconstruction-base" => {
+                    vec![vec!["--reconstruction-base", "guided"]]
+                }
                 "--val-fraction" => vec![vec!["--val-fraction", "0.1"]],
                 _ => vec![vec![&flag, VALUE], vec![&flag]],
             };

@@ -11,12 +11,13 @@ a sparse low-resolution path trace provides the primary input and a converged
 high-resolution path trace provides ground truth. ReSTIR+SVGF is a comparison
 control only; the product does not assume sample reuse or a prior denoiser.
 
-> **Status:** early. The current v0.2 checkpoint is trained from independent
-> sparse paths and uses no sample reuse. The v0.1 raw-ReSTIR checkpoint remains
-> available as historical provenance. Temporal history is designed but not yet
-> implemented; see [`docs/temporal.md`](docs/temporal.md).
+> **Status:** early. The current v0.3 checkpoint is trained from independent
+> sparse paths, uses no sample reuse, and accepts output-resolution primary
+> surfaces for sharper silhouettes. The v0.1 raw-ReSTIR checkpoint remains as
+> historical provenance. Temporal history is designed but not yet implemented;
+> see [`docs/temporal.md`](docs/temporal.md).
 
-![Ommatidium architecture: sparse path trace and G-buffer through GPU packing, a multi-scale low-resolution reconstructor, sub-pixel unpacking, and future compact temporal feature feedback](docs/architecture.svg)
+![Ommatidium architecture: sparse path trace and low-resolution G-buffer through GPU packing and a multi-scale low-resolution reconstructor; output-resolution primary surfaces guide sub-pixel unpacking, with future compact temporal feature feedback](docs/architecture.svg)
 
 The transformer investigation and the resulting complexity/temporal decision are
 documented in [`docs/architecture-decision.md`](docs/architecture-decision.md).
@@ -24,12 +25,15 @@ documented in [`docs/architecture-decision.md`](docs/architecture-decision.md).
 [Download the checkpoint](https://huggingface.co/mad-bot/ommatidia) ·
 [Training and validation data](https://huggingface.co/datasets/mad-bot/ommatidia)
 
-The Hugging Face `v0.2.0` revision contains the guided b8 checkpoint used for
-the results below; `v0.1.0` is retained for release provenance. It reconstructs
-an actual 960×540 → 1920×1080 frame in 7.76 ms median (7.94 ms p90) on an idle
-Radeon RX 7900 XT, including pack, model, unpack, and submissions but excluding
-ray tracing and display post-processing. An isolated trace attributes 0.76 ms to
-the guided pack, 6.99 ms to the network, and 0.12 ms to unpacking.
+The Hugging Face `v0.3.0` revision contains the HR-guided b8 checkpoint used
+below; `v0.2.0` retains the low-resolution-only checkpoint. Repeated
+960×540 → 1920×1080 runs on a Radeon RX 7900 XT span 8.46–9.30 ms median,
+including pack, model, unpack, and submissions. The stable isolated split is
+0.77–0.80 ms pack, 7.01–7.28 ms network, and 0.89–0.90 ms unpack. Ray tracing,
+the optional output-resolution primary-surface pass, and display
+post-processing are excluded. The range is reported because amdgpu's load
+counter became intermittently unavailable during the final trace; the harness
+now reports that condition rather than silently calling the device idle.
 
 Upscaling is real today, but narrowly scoped: the published checkpoint and the
 current training recipe are **2×**. Runtime frames may be rectangular (the
@@ -44,14 +48,14 @@ The path-tracing-first data path produces independent sparse paths and a
 4,096-spp reference. It does not run historical weights on an
 out-of-distribution input.
 
-The original model was evaluated against the wrong deterministic base. On 76
-crops from a separate 128-scene validation set, texel-aligned bilinear scores
-26.46 dB / 0.5864 SSIM. A depth/normal/albedo-guided prefilter at input
-resolution raises the zero-network reconstruction to 34.08 dB / 0.9473; the
-b8 learned residual reaches 34.12 dB / 0.9474. A b24 control reaches 34.15 dB /
-0.9476 but costs 2.67× as much end-to-end time. The filter is part of
-Ommatidium's reconstruction contract and runs inside the existing pack
-stage—there is still no ReSTIR or SVGF upstream.
+On 76 crops from a separate 128-scene validation set, texel-aligned bilinear
+scores 26.46 dB / 0.5864 SSIM. A depth/normal/albedo guide at input resolution
+raises the deterministic reconstruction to 34.08 dB / 0.9473. Supplying exact
+output-resolution primary surfaces raises a selected 5×5 reconstruction to
+34.75 dB / 0.9545, and the b8 learned residual reaches 34.77 dB / 0.9545. The
+network still runs wholly at low resolution; the extra guide is contained in
+Ommatidium's existing unpack dispatch, with no ReSTIR or SVGF upstream and no
+new Meganeura graph operation or shader group.
 The complete controlled setup and trace are recorded in the
 [`independent-path result`](docs/results/path-trace-guided-2026-08-13.md).
 
@@ -65,9 +69,9 @@ The primary comparison is now ordered by the actual product path. Every image
 is a matched 2× reconstruction of the same held-out scene; ReSTIR+SVGF is a
 separate control, not Ommatidium's input.
 
-| Sparse paths (4 spp, 64×64 crop) | Bilinear 2× | Ommatidium 2× | ReSTIR+SVGF control, bilinear 2× | Canonical (4,096 spp, 128×128 crop) |
+| Sparse paths (4 spp, 128×128) | Bilinear 2× | Ommatidium HR-guided 2× | ReSTIR+SVGF control, bilinear 2× | Canonical (4,096 spp, 256×256) |
 |---|---|---|---|---|
-| ![Independent sparse path input](runs/eval-path-trace-4spp-guided-validation/input.png) | ![Bilinear sparse path upsampling](runs/eval-path-trace-4spp-guided-validation/bilinear.png) | ![Ommatidium guided neural reconstruction](runs/eval-path-trace-4spp-guided-validation/predicted.png) | ![Matched Blade ReSTIR plus SVGF control](runs/eval-path-control-svgf/bilinear.png) | ![Matched converged canonical path trace](runs/eval-path-trace-4spp-guided-validation/reference.png) |
+| ![Independent sparse path input](runs/eval-path-trace-4spp-hr-guided-validation/input.png) | ![Bilinear sparse path upsampling](runs/eval-path-trace-4spp-hr-guided-validation/bilinear.png) | ![Ommatidium high-resolution-guided neural reconstruction](runs/eval-path-trace-4spp-hr-guided-validation/predicted.png) | ![Matched Blade ReSTIR plus SVGF control](runs/eval-path-trace-4spp-hr-guided-validation/restir-svgf-bilinear.png) | ![Matched converged canonical path trace](runs/eval-path-trace-4spp-hr-guided-validation/reference.png) |
 
 ### Why the ReSTIR control is darker
 
@@ -101,8 +105,9 @@ further:
   Winograd transforms read contiguously — were worth 5.4x with the weights
   untouched. The rest was not needing the large network at all: a 649k
   parameter model matches the 6.5M one once it is trained out. With the much
-  stronger guided base, a 74k-parameter b8 model stays within 0.03 dB of b24
-  and runs in 7.76 ms end to end at 960×540 → 1920×1080.
+  stronger low-resolution guided base, a 74k-parameter b8 model stays within
+  0.03 dB of b24 and runs in 7.76 ms end to end at 960×540 → 1920×1080. The
+  sharper v0.3 HR-guided path adds roughly one millisecond in unpack.
 - **Compare shapes at convergence, not at a fixed step count.** A sweep that
   gave every shape 5000 steps ranked them almost exactly wrong, because the
   large ones were the undertrained ones.
@@ -128,7 +133,7 @@ the `Context` a host renderer owns is not the type meganeura's session accepts.
 cargo run --release -p ommatidia-data -- \
     --device-id 0x744c --out data/train.omd \
     --samples 2400 --lr 128x128 --scale 2 \
-    --input-frames 1 --canonical-frames 1024
+    --input-frames 4 --canonical-frames 1024 --hr-gbuffer
 
 # Train, then reconstruct a crop and write input/nearest/predicted/reference PNGs.
 cargo run --release -p ommatidia-train -- \
@@ -158,10 +163,12 @@ sample's G-buffer against the newly rendered scene and camera, so a mismatched
 seed cannot silently pair unrelated input and ground truth.
 
 Each sample stores the colour alongside the renderer's own depth, normals,
-albedo, specular reflectance, and roughness. That is the structural advantage a
-renderer has over photographic super-resolution — it knows where the
-silhouettes are rather than having to infer them — and at input resolution it
-costs nothing, since the renderer filled those targets on its way to shading.
+albedo, specular reflectance, and roughness. With `--hr-gbuffer`, it also stores
+output-resolution depth, normal, and albedo. That is the structural advantage a
+renderer has over photographic super-resolution—it can provide exact
+silhouettes rather than ask the upscaler to infer them. Input-resolution planes
+come from sparse shading; output-resolution planes may require a separate
+primary-surface pass in a pure path tracer.
 The trainer takes the plane set from the file header, so `--color-only` gives
 the other arm of that ablation without regenerating anything.
 
@@ -187,12 +194,16 @@ let mut upscaler = ommatidia::Upscaler::from_checkpoint_for_extent(
     /* timesteps = */ 1000,
 )?;
 
+let inputs = ommatidia::FrameInputs::from_color_and_blade_gbuffer(
+    sparse_path_color,
+    renderer.view_gbuffer(),
+).with_blade_high_resolution_gbuffer(
+    high_res_renderer.view_gbuffer(), // after the host's output-resolution primary pass
+);
+
 upscaler.upscale(
     &mut encoder,
-    &ommatidia::FrameInputs::from_color_and_blade_gbuffer(
-        sparse_path_color,
-        renderer.view_gbuffer(),
-    ),
+    &inputs,
     output_view, // Rgba16Float, at upscaler.output_extent()
 );
 
@@ -212,7 +223,7 @@ Raw Vulkan/C integration is planned as a user-space C ABI, not a Vulkan
 extension. The ownership, synchronization, and release contract is in
 [`docs/integration.md`](docs/integration.md).
 
-The first ABI 1.0 slice is available now in
+The ABI 1.1 checkpoint-inspection slice is available now in
 [`include/ommatidia.h`](include/ommatidia.h): it links from plain C and
 inspects a checkpoint's exact graph/resource contract without enumerating a
 GPU. [`examples/c/inspect.c`](examples/c/inspect.c) is the conformance example.

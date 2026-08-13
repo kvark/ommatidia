@@ -31,6 +31,7 @@ struct Args {
     seed: u64,
     preview: Option<PathBuf>,
     gbuffer: bool,
+    hr_gbuffer: bool,
     svgf_input: bool,
     restir_input: bool,
     checkpoint: Option<PathBuf>,
@@ -53,6 +54,7 @@ impl Default for Args {
             seed: 0,
             preview: None,
             gbuffer: true,
+            hr_gbuffer: false,
             svgf_input: false,
             restir_input: false,
             checkpoint: None,
@@ -80,6 +82,8 @@ usage: ommatidia-data [options]
   --shader-dir PATH         blade-render shader directory [../blade/blade-render/code]
   --preview DIR             also write PNGs of the first few pairs
   --no-gbuffer              store only colour, leaving out the G-buffer planes
+  --hr-gbuffer              also store a high-resolution G-buffer for
+                            geometry-aware upsampling experiments
   --svgf-input              capture Blade's built-in variance-guided filter
                             instead of raw ReSTIR; baseline comparisons only
   --restir-input            capture raw ReSTIR instead of sparse path tracing;
@@ -134,6 +138,7 @@ fn parse_args() -> Result<Args, String> {
             "--shader-dir" => args.shader_dir = Some(PathBuf::from(value()?)),
             "--preview" => args.preview = Some(PathBuf::from(value()?)),
             "--no-gbuffer" => args.gbuffer = false,
+            "--hr-gbuffer" => args.hr_gbuffer = true,
             "--svgf-input" => args.svgf_input = true,
             "--restir-input" => args.restir_input = true,
             "--checkpoint" => args.checkpoint = Some(PathBuf::from(value()?)),
@@ -389,8 +394,9 @@ fn main() {
         depth: 1,
     };
 
-    // The input carries the geometry and material the renderer already knew;
-    // the reference is only the colour the network has to reach.
+    // High-resolution geometry is opt-in: it costs a cheap full-resolution
+    // primary-surface pass in an application, but may recover silhouettes that
+    // no low-resolution signal can locate.
     let lr_planes = if args.gbuffer {
         gbuffer::plane_set().with(Plane::Color)
     } else {
@@ -408,7 +414,11 @@ fn main() {
             InputSource::PathTrace
         },
         lr_planes,
-        hr_planes: PlaneSet::new().with(Plane::Color),
+        hr_planes: if args.hr_gbuffer {
+            gbuffer::plane_set().with(Plane::Color)
+        } else {
+            PlaneSet::new().with(Plane::Color)
+        },
     };
 
     if let Some(parent) = args.out.parent() {
@@ -429,9 +439,9 @@ fn main() {
             source.lr_planes, layout.lr_planes,
             "reference input planes differ"
         );
-        assert_eq!(
-            source.hr_planes, layout.hr_planes,
-            "reference planes differ"
+        assert!(
+            source.hr_planes.contains(Plane::Color),
+            "reference dataset has no high-resolution colour"
         );
         assert!(
             reader.len() >= args.samples,
@@ -455,15 +465,10 @@ fn main() {
     // acceleration structures all depend on the extent, and the pair alternates
     // between them on every sample.
     let mut lr_renderer = make_renderer(&harness, &mut encoder, lr_size);
-    let mut hr_renderer = args
-        .reference_from
-        .is_none()
-        .then(|| make_renderer(&harness, &mut encoder, hr_size));
+    let need_hr_render = args.reference_from.is_none() || args.hr_gbuffer;
+    let mut hr_renderer = need_hr_render.then(|| make_renderer(&harness, &mut encoder, hr_size));
     let lr_target = render::Target::new(&context, lr_size);
-    let hr_target = args
-        .reference_from
-        .is_none()
-        .then(|| render::Target::new(&context, hr_size));
+    let hr_target = need_hr_render.then(|| render::Target::new(&context, hr_size));
     let neural_target = args
         .checkpoint
         .as_ref()
@@ -478,9 +483,10 @@ fn main() {
         )
         .unwrap_or_else(|e| panic!("cannot load {}: {e}", stem.display()))
     });
-    // Only the input side carries a G-buffer: the reference is what the
-    // network has to reach, and it is reached in colour.
     let lr_probe = args.gbuffer.then(|| gbuffer::Probe::new(&context, lr_size));
+    let hr_probe = args
+        .hr_gbuffer
+        .then(|| gbuffer::Probe::new(&context, hr_size));
     let sync_point = context.submit(&mut encoder);
     assert!(
         context.wait_for(&sync_point, 30_000).unwrap(),
@@ -540,13 +546,32 @@ fn main() {
             lr_probe.as_ref(),
         );
         let (hr, reference_lr) = if let Some(reader) = &mut reference_reader {
+            let source_layout = *reader.layout();
             let sample = reader
                 .sample(index)
                 .unwrap_or_else(|e| panic!("cannot read reference sample {index}: {e}"));
+            let color_len = Plane::Color.channels() * source_layout.hr_texels();
+            let gbuffer = if args.hr_gbuffer {
+                render::capture(
+                    hr_renderer.as_mut().expect("HR G-buffer renderer exists"),
+                    hr_target.as_ref().expect("HR G-buffer target exists"),
+                    &context,
+                    &mut encoder,
+                    &harness.asset_hub,
+                    &objects,
+                    &camera,
+                    render::Pass::PathTrace { frames: 1 },
+                    false,
+                    hr_probe.as_ref(),
+                )
+                .gbuffer
+            } else {
+                None
+            };
             (
                 render::Frame {
-                    color: from_planes(&sample.hr, layout.hr_texels()),
-                    gbuffer: None,
+                    color: from_planes(&sample.hr[..color_len], source_layout.hr_texels()),
+                    gbuffer,
                 },
                 Some(sample.lr),
             )
@@ -565,7 +590,7 @@ fn main() {
                         max_bounces: args.canonical_bounces,
                     },
                     false,
-                    None,
+                    hr_probe.as_ref(),
                 ),
                 None,
             )
@@ -582,6 +607,16 @@ fn main() {
                         lr_target.view(),
                         lr_renderer.view_gbuffer(),
                     )
+                };
+                let inputs = if args.hr_gbuffer {
+                    inputs.with_blade_high_resolution_gbuffer(
+                        hr_renderer
+                            .as_ref()
+                            .expect("HR G-buffer renderer exists")
+                            .view_gbuffer(),
+                    )
+                } else {
+                    inputs
                 };
                 upscaler.upscale(&mut encoder, &inputs, target.view());
                 Some(target.read_linear(&context, &mut encoder))
@@ -629,7 +664,7 @@ fn main() {
         writer
             .write(&Sample {
                 lr: record,
-                hr: to_planes(&hr.color, layout.hr_texels()),
+                hr: to_record(&hr, layout.hr_texels()),
             })
             .expect("cannot write a sample");
 
@@ -656,6 +691,9 @@ fn main() {
     }
 
     if let Some(probe) = lr_probe {
+        probe.destroy(&context);
+    }
+    if let Some(probe) = hr_probe {
         probe.destroy(&context);
     }
     if let Some(mut upscaler) = upscaler {

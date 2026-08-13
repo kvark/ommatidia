@@ -9,8 +9,8 @@ use std::mem::size_of;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::Path;
 
-/// ABI 1.0, encoded as `major << 16 | minor`.
-pub const API_VERSION: u32 = 1 << 16;
+/// ABI 1.1, encoded as `major << 16 | minor`.
+pub const API_VERSION: u32 = (1 << 16) | 1;
 
 #[repr(i32)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -41,7 +41,9 @@ pub struct ModelInfo {
     pub attention_window: u32,
     pub attention_head_dim: u32,
     pub parameter_count: u64,
-    pub reserved: [u32; 8],
+    pub reconstruction_base: u32,
+    pub required_hr_plane_mask: u32,
+    pub reserved: [u32; 6],
 }
 
 impl Default for ModelInfo {
@@ -60,7 +62,9 @@ impl Default for ModelInfo {
             attention_window: 0,
             attention_head_dim: 0,
             parameter_count: 0,
-            reserved: [0; 8],
+            reconstruction_base: 0,
+            required_hr_plane_mask: 0,
+            reserved: [0; 6],
         }
     }
 }
@@ -93,6 +97,19 @@ fn inspect_model(stem: &Path) -> Result<ModelInfo, (Status, String)> {
         ommatidia::Objective::Direct => 1,
         ommatidia::Objective::Diffusion => 2,
     };
+    let required_hr_plane_mask =
+        if config.reconstruction_base == ommatidia::ReconstructionBase::HighResolutionGuided {
+            [
+                ommatidia::Plane::Depth,
+                ommatidia::Plane::Normal,
+                ommatidia::Plane::DiffuseAlbedo,
+            ]
+            .into_iter()
+            .collect::<ommatidia::PlaneSet>()
+            .bits()
+        } else {
+            0
+        };
     Ok(ModelInfo {
         scale: config.scale,
         training_tile: config.tile,
@@ -109,6 +126,8 @@ fn inspect_model(stem: &Path) -> Result<ModelInfo, (Status, String)> {
             .iter()
             .map(|parameter| parameter.len as u64)
             .sum(),
+        reconstruction_base: config.reconstruction_base as u32,
+        required_hr_plane_mask,
         ..ModelInfo::default()
     })
 }
@@ -165,7 +184,7 @@ pub unsafe extern "C" fn ommatidia_model_inspect(
         write_error(
             error_message,
             error_message_capacity,
-            "OmmatidiumModelInfo is smaller than ABI 1.0 requires",
+            "OmmatidiumModelInfo is smaller than ABI 1.1 requires",
         );
         return Status::IncompatibleStruct;
     }
@@ -239,6 +258,8 @@ mod tests {
         assert_eq!(info.input_plane_mask, config.cond_planes.bits());
         assert_eq!(info.backbone, 1);
         assert_eq!(info.parameter_count, 73_808);
+        assert_eq!(info.reconstruction_base, 2);
+        assert_eq!(info.required_hr_plane_mask, 0);
         std::fs::remove_file(stem.to_str().unwrap().to_owned() + ".ron").unwrap();
     }
 
