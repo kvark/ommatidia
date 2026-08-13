@@ -17,7 +17,7 @@ const INPUT_MAX_BOUNCES: u32 = 3;
 /// Blade's path tracer applying Russian roulette after the fourth bounce.
 /// Keeping this separate from the input avoids training against a clean but
 /// systematically truncated target.
-const REFERENCE_MAX_BOUNCES: u32 = 8;
+pub const REFERENCE_MAX_BOUNCES: u32 = 8;
 /// Limit one command submission's retained scene resources. Reference captures
 /// can run for thousands of frames; keeping every transient BLAS/TLAS alive
 /// until the final readback otherwise turns convergence into an OOM.
@@ -233,7 +233,7 @@ pub enum Pass {
     /// Sparse unbiased paths: the primary network input.
     PathTrace { frames: usize },
     /// Accumulated path tracing: the reference.
-    Canonical { frames: usize },
+    Canonical { frames: usize, max_bounces: u32 },
 }
 
 impl Pass {
@@ -248,7 +248,7 @@ impl Pass {
         match self {
             Self::RealTime => RESTIR_FRAMES,
             Self::PathTrace { frames } => frames,
-            Self::Canonical { frames } => frames,
+            Self::Canonical { frames, .. } => frames,
         }
     }
 
@@ -269,7 +269,7 @@ impl Pass {
             // The dummy environment map carries no importance sampling data.
             environment_importance_sampling: false,
             max_bounces: match self {
-                Self::Canonical { .. } => REFERENCE_MAX_BOUNCES,
+                Self::Canonical { max_bounces, .. } => max_bounces,
                 Self::RealTime | Self::PathTrace { .. } => INPUT_MAX_BOUNCES,
             },
             max_accumulated_samples: 0,
@@ -278,6 +278,9 @@ impl Pass {
             tap_confidence_near: 8,
             tap_confidence_far: 4,
             t_start: 0.01,
+            // Samples cross surfaces with different target distributions, so
+            // the pairwise MIS weights are required to preserve energy. The
+            // cheaper approximation is visibly biased dark in occluded areas.
             pairwise_mis: true,
             defensive_mis: 0.1,
         }
@@ -416,9 +419,18 @@ mod tests {
 
     #[test]
     fn reference_paths_are_deeper_than_realtime_inputs() {
+        let restir = Pass::RealTime.ray_config();
         let input = Pass::PathTrace { frames: 1 }.ray_config();
-        let reference = Pass::Canonical { frames: 1 }.ray_config();
+        let reference = Pass::Canonical {
+            frames: 1,
+            max_bounces: REFERENCE_MAX_BOUNCES,
+        }
+        .ray_config();
 
+        assert!(
+            restir.pairwise_mis,
+            "comparison captures must preserve energy"
+        );
         assert_eq!(input.num_brdf_samples, 1);
         assert_eq!(input.max_bounces, INPUT_MAX_BOUNCES);
         assert_eq!(reference.num_brdf_samples, 4);

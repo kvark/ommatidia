@@ -16,24 +16,29 @@ remain comparison baselines; the product does not assume either one upstream.
 > path-tracing-first for the next checkpoint. Temporal history is designed but
 > not implemented; see [`docs/temporal.md`](docs/temporal.md).
 
-![Ommatidium architecture: sparse path trace and G-buffer through GPU packing, a low-resolution U-Net, and sub-pixel unpacking, with future temporal reprojection](docs/architecture.svg)
+![Ommatidium architecture: sparse path trace and G-buffer through GPU packing, a multi-scale low-resolution reconstructor, sub-pixel unpacking, and future compact temporal feature feedback](docs/architecture.svg)
+
+The transformer investigation and the resulting hybrid/temporal decision are
+documented in [`docs/architecture-decision.md`](docs/architecture-decision.md).
 
 [Download the checkpoint](https://huggingface.co/mad-bot/ommatidia) ·
 [Training and validation data](https://huggingface.co/datasets/mad-bot/ommatidia)
 
-The v0.1 replacement checkpoint is trained on 2,400 raw-ReSTIR/canonical
-pairs, with 360 scenes held out. It improves over raw nearest upsampling by
-**2.93 dB**. On a separate matched validation set whose canonical references
-are byte-identical between both captures, it scores **0.002876** error against
-Blade SVGF's **0.004284** after nearest upscale: a **1.73 dB improvement over
-the variance-guided denoiser it replaces**. On an idle Radeon RX 7900 XT, a
-sustained end-to-end upscaler benchmark measures **about 20 ms for an actual
-960×540 → 1920×1080 2× reconstruction**, including texture pack, the 649k
-parameter model, unpack, and queue submissions. It excludes the ray tracer and
-display post-processing. Repeated sustained medians range from 19.54 to 20.91
-ms; the benchmark also reports p90 and range because a recent 40-frame run had
-a 29.95 ms p90. This is not a claim that the full renderer runs at 20 ms—or
-that median throughput alone guarantees frame pacing.
+The v0.1 checkpoint was trained on 2,400 raw-ReSTIR/canonical pairs before the
+Blade energy fixes below, with 360 scenes held out. Its frozen historical
+capture improved over raw nearest upsampling by **2.93 dB** and beat the old
+SVGF capture by **1.73 dB**. That is release provenance, not a current
+replacement claim: on a new 128-scene capture from corrected Blade, the v0.1
+weights improve raw input by **1.84 dB** but score 24.12 dB versus current
+SVGF's 24.95 dB. The changed input distribution requires a retrain, and the
+next checkpoint targets sparse path tracing rather than ReSTIR. On an idle
+Radeon RX 7900 XT, a sustained end-to-end upscaler benchmark measures **about
+20 ms for an actual 960×540 → 1920×1080 2× reconstruction**, including texture
+pack, the 649k parameter model, unpack, and queue submissions. It excludes the
+ray tracer and display post-processing. Repeated sustained medians range from
+19.54 to 20.91 ms; the benchmark also reports p90 and range because a recent
+40-frame run had a 29.95 ms p90. This is not a claim that the full renderer
+runs at 20 ms—or that median throughput alone guarantees frame pacing.
 
 Upscaling is real today, but narrowly scoped: the published checkpoint and the
 current training recipe are **2×**. Runtime frames may be rectangular (the
@@ -62,32 +67,62 @@ evidence. The next checkpoint therefore needs the temporal contract described
 in [`docs/temporal.md`](docs/temporal.md); the full controlled result is
 [`documented here`](docs/results/path-trace-spatial-b24-2026-08-12.md).
 
+A compute-matched shifted-window transformer bottleneck also reaches 23.66 dB
+and effectively identical SSIM, while taking 21.36 ms model-only versus 19.88
+ms for convolution on the RX 7900 XT. The spatial default therefore stays
+convolutional; coarse attention remains available for the future temporal
+fusion ablation. The controls and reasoning are in the
+[`architecture decision`](docs/architecture-decision.md).
+
 | ReSTIR+SVGF | Sparse path (1 spp) | Spatial Ommatidium | Canonical reference |
 |---|---|---|---|
 | ![Blade ReSTIR plus SVGF](runs/eval-path-reference-svgf/nearest.png) | ![One-sample sparse path input](runs/eval-path-trace-validation/nearest.png) | ![The current spatial path reconstruction](runs/eval-path-trace-validation/predicted.png) | ![The matched canonical reference](runs/eval-path-trace-validation/reference.png) |
 
-The v0.1 live shared-context path, from Blade's raw ReSTIR output to the
-canonical reference:
+The Raw ReSTIR screenshot exposed an invalid comparison as well as real Blade
+bugs. The corrected capture below puts the same raw frame beside a
+transport-matched canonical direct reference and the eight-bounce training
+target:
+
+| Corrected Raw ReSTIR (128×128) | Matched direct reference (256×256) | Full canonical target (256×256) |
+|---|---|---|
+| ![Corrected noisy low-resolution Blade ReSTIR render](runs/restir-energy-comparison/000-lr.png) | ![Canonical reference restricted to the transport ReSTIR estimates](runs/restir-energy-comparison/000-hr.png) | ![The full multi-bounce canonical path-traced reference](runs/live-energy-fixed/000-hr.png) |
+
+In a linear-HDR white-furnace regression, the canonical ReSTIR candidates
+carry 99.1% of matched reference energy and pairwise neighbor reuse carries
+99.0%. The cheap non-pairwise approximation carried only 88.5%, so Ommatidia's
+Blade captures now use pairwise MIS. Blade also no longer discards dim
+candidates by an absolute cutoff, and a visibility ray that first hits an
+emissive mesh now returns that emission instead of treating the light as a
+black occluder. A black-environment test pins the latter behavior.
+
+The remaining dark occluded faces appear in the matched direct reference too;
+the clean eight-bounce image fills them with indirect transport that
+`RenderMode::RealTime` does not estimate. Raw ReSTIR versus the full reference
+is therefore useful as an end-to-end error measurement, but not as proof of
+its direct-light energy. Ommatidia's product input remains sparse path tracing,
+not ReSTIR.
+
+The v0.1 shared-context checkpoint, re-run through Blade's corrected pairwise
+ReSTIR path:
 
 | Raw ReSTIR input (128×128) | Ommatidium (2×, 256×256) | Canonical path trace (256×256) |
 |---|---|---|
-| ![A noisy low-resolution Blade ReSTIR render](runs/live-check/000-lr.png) | ![The Ommatidium reconstruction](runs/live-check/000-predicted.png) | ![The canonical path-traced reference](runs/live-check/000-hr.png) |
+| ![A noisy low-resolution Blade ReSTIR render](runs/live-energy-fixed/000-lr.png) | ![The Ommatidium reconstruction](runs/live-energy-fixed/000-predicted.png) | ![The canonical path-traced reference](runs/live-energy-fixed/000-hr.png) |
 
-The visually dominant near-black faces from the first capture are gone. The
-audit also fixed a real stale-target defect in Blade's non-pairwise reservoir
-reuse and added a strict image regression for it. ReSTIR is still not the
-primary product input: its real-time mode estimates direct illumination, so
-occluded surfaces legitimately differ from the multi-bounce canonical target.
-Missing indirect transport is an estimator limitation, not something an
-ambient term should hide.
-
-The matched historical validation capture below uses the same scene and byte-identical
-canonical reference for both Blade inputs. Images are nearest-upscaled for a
-like-for-like 2×, 256×256 comparison.
+The current energy-correct validation capture below uses the same scene and a
+byte-identical canonical reference for both Blade inputs. Images are
+64×64 held-out crops reconstructed or nearest-upscaled for a like-for-like 2×,
+128×128 comparison.
 
 | Raw ReSTIR | Blade SVGF | Ommatidium | Canonical reference |
 |---|---|---|---|
-| ![Raw ReSTIR validation crop](runs/eval-validation-raw/nearest.png) | ![Blade SVGF validation crop](runs/eval-validation-svgf/nearest.png) | ![Ommatidium validation crop](runs/eval-validation-raw/predicted.png) | ![Canonical validation crop](runs/eval-validation-raw/reference.png) |
+| ![Raw ReSTIR validation crop](runs/eval-validation-energy-fixed/nearest.png) | ![Blade SVGF validation crop](runs/eval-validation-svgf-energy-fixed/nearest.png) | ![Ommatidium validation crop](runs/eval-validation-energy-fixed/predicted.png) | ![Canonical validation crop](runs/eval-validation-energy-fixed/reference.png) |
+
+Over all 76 held-out crops, raw nearest is 22.28 dB / 0.4969 SSIM, v0.1 is
+24.12 dB / 0.5103, and SVGF is 24.95 dB / 0.8706. This revalidation is a more
+useful architecture signal than the old headline: a spatial network trained
+on one biased estimator neither generalizes to a corrected estimator nor
+recovers the structural evidence that temporal filtering supplies.
 
 The checked-in July experiments below used SVGF-filtered inputs. They found the
 architecture and kernel optimizations, but their quality figures describe an
@@ -120,6 +155,7 @@ further:
 | crate | what it does |
 |---|---|
 | `ommatidia` | the model, the dataset format, the diffusion schedule, and the host-facing `Upscaler` |
+| `ommatidia-capi` | versioned C ABI; checkpoint discovery today, borrowed-Vulkan inference in progress |
 | `ommatidia-data` | renders training pairs with blade |
 | `ommatidia-train` | trains a checkpoint and evaluates it |
 
@@ -221,6 +257,13 @@ renderer.post_proc_external(
 Raw Vulkan/C integration is planned as a user-space C ABI, not a Vulkan
 extension. The ownership, synchronization, and release contract is in
 [`docs/integration.md`](docs/integration.md).
+
+The first ABI 1.0 slice is available now in
+[`include/ommatidia.h`](include/ommatidia.h): it links from plain C and
+inspects a checkpoint's exact graph/resource contract without enumerating a
+GPU. [`examples/c/inspect.c`](examples/c/inspect.c) is the conformance example.
+GPU execution is intentionally not exported yet; adding an entry point that
+secretly created a second device would violate the integration contract.
 
 Note the sampler still walks the chain on the host, one roundtrip per step, so
 a diffusion checkpoint is far from a frame budget. A direct one is a single

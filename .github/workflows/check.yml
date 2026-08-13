@@ -18,8 +18,8 @@ env:
   RUST_BACKTRACE: 1
   # Path dependencies live in sibling checkouts, so pin their exact commits
   # just as Cargo.lock pins registry and Git dependencies.
-  BLADE_REV: b19b90deff1090b5eca464675961bb7c7f386554
-  MEGANEURA_REV: 19a1f001dff4663a41e6002b8f1e3950810fcad3
+  BLADE_REV: 2c5cbe98870f5ac48c1b219d961315d72113e446
+  MEGANEURA_REV: 16bdfcd3c1a14c4fbee41b4d0c9e34da6eda4082
 
 jobs:
   platform:
@@ -45,7 +45,6 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: kvark/blade
-          # Update to the merge commit once kvark/blade#366 lands.
           ref: ${{ env.BLADE_REV }}
           path: blade
       - name: Check out Meganeura
@@ -73,7 +72,6 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: kvark/blade
-          # Update to the merge commit once kvark/blade#366 lands.
           ref: ${{ env.BLADE_REV }}
           path: blade
       - name: Check out Meganeura
@@ -93,6 +91,13 @@ jobs:
       - name: Unit tests
         working-directory: ommatidia
         run: cargo +1.92.0 test --workspace --locked
+      - name: Build and run the plain-C ABI example
+        working-directory: ommatidia
+        run: |
+          cargo +1.92.0 build --release -p ommatidia-capi --locked
+          cc -std=c11 -Wall -Wextra -Werror -Iinclude examples/c/inspect.c \
+            -Ltarget/release -lommatidia_native -o target/ommatidia-inspect
+          LD_LIBRARY_PATH="$PWD/target/release" target/ommatidia-inspect
 
   lavapipe:
     name: GPU image reference (LavaPipe)
@@ -107,7 +112,6 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: kvark/blade
-          # Update to the merge commit once kvark/blade#366 lands.
           ref: ${{ env.BLADE_REV }}
           path: blade
       - name: Check out Meganeura

@@ -7,7 +7,7 @@
 //!   cargo test -p ommatidia --test gpu_model -- --ignored --nocapture
 //! ```
 
-use ommatidia::model::{ModelConfig, Objective, build, build_for_extent};
+use ommatidia::model::{Backbone, ModelConfig, Objective, build, build_for_extent};
 use ommatidia::rng::Rng;
 use ommatidia::{Plane, PlaneSet};
 
@@ -291,6 +291,82 @@ fn frame_cost_by_model_size() {
              {:>7.1} ms at 960x540 -> 1920x1080",
             config.flops(1920 * 1080),
             per_frame * 1e3,
+        );
+    }
+}
+
+/// Compute-matched architecture comparison at the deployment extent.
+#[test]
+#[ignore = "requires a GPU"]
+fn frame_cost_by_backbone() {
+    ommatidia::gpu::warn_if_busy();
+    const INPUT: [u32; 2] = [960, 540];
+    let gpu = context(false);
+    let mut candidates = Vec::new();
+    for (label, backbone) in [
+        ("convolutional", Backbone::Conv),
+        (
+            "hybrid window attention",
+            Backbone::HybridWindowAttention {
+                window: 8,
+                head_dim: 16,
+            },
+        ),
+    ] {
+        let config = ModelConfig {
+            batch: 1,
+            backbone,
+            ..ModelConfig::default()
+        };
+        let model = build_for_extent(&config, false, INPUT).expect("deployment extent");
+        let params: usize = model.params.iter().map(|parameter| parameter.len).sum();
+        let mut session = ommatidia::gpu::inference_session(&model.graph, gpu.clone());
+        model.initialize(&mut session, 1);
+        let mut rng = Rng::new(1);
+        session.set_input(
+            "cond",
+            &filled(&mut rng, config.cond_len_for_extent(INPUT), 0.5),
+        );
+        candidates.push((label, config, params, session));
+    }
+
+    // Warm both pipelines before timing either, then alternate the order. On
+    // desktop GPUs, measuring a cold first candidate and a clocked-up second
+    // candidate can manufacture a double-digit architecture win.
+    for (_, _, _, session) in &mut candidates {
+        for _ in 0..10 {
+            session.step();
+            session.wait();
+        }
+    }
+    let mut samples = vec![Vec::new(); candidates.len()];
+    const ROUNDS: usize = 6;
+    const RUNS_PER_ROUND: u32 = 20;
+    for round in 0..ROUNDS {
+        for ordinal in 0..candidates.len() {
+            let index = if round.is_multiple_of(2) {
+                ordinal
+            } else {
+                candidates.len() - 1 - ordinal
+            };
+            let session = &mut candidates[index].3;
+            let started = std::time::Instant::now();
+            for _ in 0..RUNS_PER_ROUND {
+                session.step();
+                session.wait();
+            }
+            samples[index].push(started.elapsed().as_secs_f64() * 1e3 / RUNS_PER_ROUND as f64);
+        }
+    }
+    for ((label, config, params, session), mut timings) in candidates.into_iter().zip(samples) {
+        timings.sort_by(f64::total_cmp);
+        let median = 0.5 * (timings[ROUNDS / 2 - 1] + timings[ROUNDS / 2]);
+        println!(
+            "{label}: {params} params, {:.1} GFLOP, {} dispatches, {median:.3} ms median ({:.3}..{:.3})",
+            config.flops(1920 * 1080),
+            session.plan().dispatches.len(),
+            timings[0],
+            timings[ROUNDS - 1],
         );
     }
 }

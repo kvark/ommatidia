@@ -27,6 +27,28 @@ pub enum Objective {
     Direct,
 }
 
+/// Spatial backbone used between the sub-pixel input and output contracts.
+///
+/// The hybrid keeps the U-shaped multi-scale encoder/decoder, but replaces
+/// its two lowest-resolution convolutional blocks with shifted local
+/// self-attention plus convolutional feed-forward blocks.  "Transformer" and
+/// "U-Net" are not mutually exclusive choices for dense restoration: global
+/// ViT attention is quadratic in frame size, while the hierarchy and skip
+/// paths remain valuable for exact reconstruction.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Backbone {
+    /// The measured v0.1 convolutional U-Net.
+    #[default]
+    Conv,
+    /// Linear-in-pixel local attention at the narrowest U-Net resolution.
+    HybridWindowAttention {
+        /// Square attention window in bottleneck pixels.
+        window: u32,
+        /// Channels per attention head. Must be a power of two.
+        head_dim: u32,
+    },
+}
+
 /// How a parameter should be filled before training starts.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum InitKind {
@@ -67,6 +89,10 @@ pub struct ModelConfig {
     pub blocks_per_level: usize,
     pub num_groups: u32,
     pub gn_eps: f32,
+    /// Reconstruction backbone. Defaults to [`Backbone::Conv`] when absent so
+    /// v0.1 checkpoint sidecars remain loadable.
+    #[serde(default)]
+    pub backbone: Backbone,
     /// Width of the sinusoidal timestep embedding the host computes.
     pub time_input_dim: u32,
     /// Width the timestep MLP projects to.
@@ -101,6 +127,7 @@ impl Default for ModelConfig {
             blocks_per_level: 1,
             num_groups: 8,
             gn_eps: 1e-5,
+            backbone: Backbone::Conv,
             time_input_dim: 64,
             time_embed_dim: 256,
             // Overwritten from the data; 1.0 leaves the residual as it is.
@@ -139,13 +166,14 @@ impl ModelConfig {
         self.base_channels * self.level_multipliers[level]
     }
 
-    /// Multiply-accumulates the convolutions cost for one frame, in GFLOP.
+    /// Estimate the convolution and attention arithmetic for one frame, in
+    /// GFLOP.
     ///
-    /// Counts the convolutions only, which is where essentially all the
-    /// arithmetic is — the normalisations and activations are bandwidth, not
-    /// flops, and are counted nowhere here even though they take a third of
-    /// the measured frame. So this is a floor on the cost, useful for ruling a
-    /// configuration out rather than for predicting its runtime.
+    /// Counts convolution multiply-accumulates and the two attention matrix
+    /// products. Normalisation, softmax, activation, and window movement are
+    /// bandwidth or scalar work and are not counted even though they matter to
+    /// measured frame time. This is therefore a floor on cost, useful for
+    /// ruling a configuration out rather than predicting its runtime.
     ///
     /// `output_pixels` lets a configuration compiled for one tile be costed at
     /// the extent it would actually run at.
@@ -182,9 +210,27 @@ impl ModelConfig {
             }
         }
 
-        // Middle: two blocks at the narrowest extent.
-        for _ in 0..2 {
-            total += conv(pixels, channels, channels, 3) * 2.0;
+        // Middle. The hybrid is deliberately close to the convolutional
+        // baseline's arithmetic: four 1x1 attention projections, a 3x3
+        // positional mixer, and a 2x channel FFN replace each two-convolution
+        // residual block. Window attention itself is linear in pixel count.
+        match self.backbone {
+            Backbone::Conv => {
+                for _ in 0..2 {
+                    total += conv(pixels, channels, channels, 3) * 2.0;
+                }
+            }
+            Backbone::HybridWindowAttention { window, .. } => {
+                for _ in 0..2 {
+                    total += conv(pixels, channels, channels, 1) * 4.0;
+                    total += conv(pixels, channels, channels, 3);
+                    total += conv(pixels, channels, 2 * channels, 1);
+                    total += conv(pixels, 2 * channels, channels, 1);
+                    // QK^T and softmax-weighted V: two matrix products, each
+                    // one multiply-add per channel per query/key pair.
+                    total += 4.0 * pixels * (window * window * channels) as f64;
+                }
+            }
         }
 
         // Decoder: upsample, concatenate the skip, then narrow back down.
@@ -242,7 +288,6 @@ impl ModelConfig {
         if self.levels() == 0 {
             return Err("the network needs at least one level".into());
         }
-        self.validate_extent([self.tile, self.tile])?;
         for level in 0..self.levels() {
             let channels = self.channels_at(level);
             if !channels.is_multiple_of(self.num_groups) {
@@ -250,6 +295,23 @@ impl ModelConfig {
                     "level {level} has {channels} channels, not divisible by \
                      num_groups {}",
                     self.num_groups
+                ));
+            }
+        }
+        self.validate_extent([self.tile, self.tile])?;
+        if let Backbone::HybridWindowAttention { window, head_dim } = self.backbone {
+            if window < 2 {
+                return Err(format!("attention window {window} must be at least 2"));
+            }
+            if !head_dim.is_power_of_two() || head_dim < 2 {
+                return Err(format!(
+                    "attention head_dim {head_dim} must be a power of two at least 2"
+                ));
+            }
+            let channels = self.channels_at(self.levels() - 1);
+            if !channels.is_multiple_of(head_dim) {
+                return Err(format!(
+                    "bottleneck width {channels} is not divisible by attention head_dim {head_dim}"
                 ));
             }
         }
@@ -288,6 +350,26 @@ impl ModelConfig {
                 return Err(format!(
                     "{axis} {value} collapses below 2 after {} levels",
                     self.levels()
+                ));
+            }
+        }
+        if let Backbone::HybridWindowAttention { window, head_dim } = self.backbone {
+            if window == 0 || head_dim == 0 {
+                return Err("attention window and head_dim must be non-zero".into());
+            }
+            let shrink = 1u32 << (self.levels() - 1);
+            let width = extent[0] / shrink;
+            let height = extent[1] / shrink;
+            let channels = self.channels_at(self.levels() - 1);
+            // The second block shifts by half a window and therefore has the
+            // larger padded grid. Windows are represented as attention heads;
+            // Meganeura packs the head counts into 16 bits.
+            let shift = window / 2;
+            let windows = (width + shift).div_ceil(window) * (height + shift).div_ceil(window);
+            let heads = self.batch * windows * (channels / head_dim);
+            if heads > u16::MAX as u32 {
+                return Err(format!(
+                    "shifted bottleneck needs {heads} attention heads, above the portable 65535 limit"
                 ));
             }
         }
@@ -342,6 +424,13 @@ impl Shape {
     fn spatial(&self) -> u32 {
         self.h * self.w
     }
+}
+
+#[derive(Clone, Copy)]
+struct WindowAttentionSpec {
+    window: u32,
+    head_dim: u32,
+    shift: u32,
 }
 
 /// Collects parameter declarations as the graph is built.
@@ -485,6 +574,134 @@ impl<'a> Builder<'a> {
             self.g.add(skip, h)
         }
     }
+
+    /// Pre-normalized local attention followed by a convolutional FFN.
+    ///
+    /// Packing windows as independent heads composes Meganeura's existing
+    /// differentiable attention kernel; no image-specialized attention shader
+    /// is needed. Alternating an unshifted and half-window-shifted block lets
+    /// information cross fixed window boundaries.
+    fn hybrid_window_block(
+        &mut self,
+        x: NodeId,
+        time: Option<NodeId>,
+        name: &str,
+        s: Shape,
+        attention: WindowAttentionSpec,
+    ) -> NodeId {
+        let WindowAttentionSpec {
+            window,
+            head_dim,
+            shift,
+        } = attention;
+        debug_assert!(s.channels.is_multiple_of(head_dim));
+        let normalized = self.group_norm(x, &format!("{name}.attn.norm"), s);
+        let q = self.conv(
+            normalized,
+            &format!("{name}.attn.q.weight"),
+            s,
+            s.channels,
+            1,
+            1,
+        );
+        let k = self.conv(
+            normalized,
+            &format!("{name}.attn.k.weight"),
+            s,
+            s.channels,
+            1,
+            1,
+        );
+        let v = self.conv(
+            normalized,
+            &format!("{name}.attn.v.weight"),
+            s,
+            s.channels,
+            1,
+            1,
+        );
+        let pack = |g: &mut Graph, value| {
+            g.window_partition_2d(
+                value,
+                self.config.batch,
+                s.channels,
+                s.h,
+                s.w,
+                window,
+                shift,
+            )
+        };
+        let q = pack(self.g, q);
+        let k = pack(self.g, k);
+        let v = pack(self.g, v);
+        let windows_y = (s.h + shift).div_ceil(window);
+        let windows_x = (s.w + shift).div_ceil(window);
+        let heads = self.config.batch * windows_y * windows_x * (s.channels / head_dim);
+        let attended = self
+            .g
+            .multi_head_attn(q, k, v, heads, heads, head_dim, false);
+        let attended = self.g.window_merge_2d(
+            attended,
+            self.config.batch,
+            s.channels,
+            s.h,
+            s.w,
+            window,
+            shift,
+        );
+        let attended = self.conv(
+            attended,
+            &format!("{name}.attn.out.weight"),
+            s,
+            s.channels,
+            1,
+            1,
+        );
+        let residual = self.g.add(x, attended);
+
+        let normalized = self.group_norm(residual, &format!("{name}.ffn.norm"), s);
+        let mut mixed = self.conv(
+            normalized,
+            &format!("{name}.ffn.spatial.weight"),
+            s,
+            s.channels,
+            3,
+            1,
+        );
+        if let Some(time) = time {
+            let projected = self.linear(
+                time,
+                &format!("{name}.ffn.time_proj"),
+                self.config.time_embed_dim,
+                s.channels,
+            );
+            let plane = self.broadcast_spatial(projected, s.channels, s.spatial());
+            mixed = self.g.add(mixed, plane);
+        }
+        let mixed = self.g.silu(mixed);
+        let expanded = self.conv(
+            mixed,
+            &format!("{name}.ffn.expand.weight"),
+            s,
+            2 * s.channels,
+            1,
+            1,
+        );
+        let expanded = self.g.silu(expanded);
+        let expanded_shape = Shape {
+            channels: 2 * s.channels,
+            ..s
+        };
+        let projected = self.conv(
+            expanded,
+            &format!("{name}.ffn.project.weight"),
+            expanded_shape,
+            s.channels,
+            1,
+            1,
+        );
+        self.g.add(residual, projected)
+    }
 }
 
 /// Build the network.
@@ -605,10 +822,41 @@ pub fn build_for_extent(
         }
     }
 
-    // Middle.
+    // Middle. Local attention lives only at the narrowest resolution: this
+    // buys a 32x32-input-pixel receptive window at the default three levels,
+    // while avoiding quadratic full-frame attention and preserving the
+    // high-resolution convolutional skip path.
     let middle = shape.channels;
-    h = builder.resblock(h, time, "middle.0", shape, middle);
-    h = builder.resblock(h, time, "middle.1", shape, middle);
+    match config.backbone {
+        Backbone::Conv => {
+            h = builder.resblock(h, time, "middle.0", shape, middle);
+            h = builder.resblock(h, time, "middle.1", shape, middle);
+        }
+        Backbone::HybridWindowAttention { window, head_dim } => {
+            h = builder.hybrid_window_block(
+                h,
+                time,
+                "middle.0",
+                shape,
+                WindowAttentionSpec {
+                    window,
+                    head_dim,
+                    shift: 0,
+                },
+            );
+            h = builder.hybrid_window_block(
+                h,
+                time,
+                "middle.1",
+                shape,
+                WindowAttentionSpec {
+                    window,
+                    head_dim,
+                    shift: window / 2,
+                },
+            );
+        }
+    }
 
     // Decoder. Upsample, concatenate the matching skip, then narrow back down.
     for level in (0..levels - 1).rev() {
@@ -786,6 +1034,77 @@ mod tests {
     }
 
     #[test]
+    fn hybrid_attention_is_a_bottleneck_swap_not_a_second_network() {
+        let mut config = small();
+        config.objective = Objective::Direct;
+        config.backbone = Backbone::HybridWindowAttention {
+            window: 4,
+            head_dim: 8,
+        };
+        let model = build(&config, true).unwrap();
+        let attention_blocks = model
+            .params
+            .iter()
+            .filter(|parameter| parameter.name.ends_with("attn.q.weight"))
+            .count();
+        assert_eq!(attention_blocks, 2);
+        assert!(
+            model
+                .params
+                .iter()
+                .any(|parameter| parameter.name.starts_with("down.")),
+            "the hybrid must retain the convolutional encoder"
+        );
+        assert!(
+            model
+                .params
+                .iter()
+                .any(|parameter| parameter.name.starts_with("up.")),
+            "the hybrid must retain the convolutional decoder"
+        );
+
+        let mut names: Vec<_> = model
+            .params
+            .iter()
+            .map(|parameter| parameter.name.as_str())
+            .collect();
+        let count = names.len();
+        names.sort_unstable();
+        names.dedup();
+        assert_eq!(names.len(), count, "hybrid parameter names collide");
+    }
+
+    #[test]
+    fn hybrid_attention_supports_the_deployment_extent() {
+        let mut config = ModelConfig {
+            batch: 1,
+            ..ModelConfig::default()
+        };
+        config.backbone = Backbone::HybridWindowAttention {
+            window: 8,
+            head_dim: 16,
+        };
+        let model = build_for_extent(&config, false, [960, 540]).unwrap();
+        assert_eq!(model.input_extent, [960, 540]);
+    }
+
+    #[test]
+    fn attention_shape_errors_are_reported_without_panicking() {
+        let mut config = small();
+        config.backbone = Backbone::HybridWindowAttention {
+            window: 0,
+            head_dim: 0,
+        };
+        assert!(config.validate().unwrap_err().contains("window"));
+
+        config.backbone = Backbone::HybridWindowAttention {
+            window: 4,
+            head_dim: 64,
+        };
+        assert!(config.validate().unwrap_err().contains("bottleneck"));
+    }
+
+    #[test]
     fn training_graph_ends_at_the_loss() {
         let model = build(&small(), true).unwrap();
         let loss = model.loss.expect("training graph has a loss");
@@ -891,6 +1210,23 @@ mod flop_tests {
         assert!(
             (3.4..4.0).contains(&ratio),
             "halving the width changed the cost by {ratio:.2}x"
+        );
+    }
+
+    #[test]
+    fn hybrid_candidate_stays_in_the_baseline_compute_class() {
+        let conv = ModelConfig::default();
+        let mut hybrid = conv.clone();
+        hybrid.backbone = Backbone::HybridWindowAttention {
+            window: 8,
+            head_dim: 16,
+        };
+        let conv_cost = conv.flops(1920 * 1080);
+        let hybrid_cost = hybrid.flops(1920 * 1080);
+        let ratio = hybrid_cost / conv_cost;
+        assert!(
+            (0.9..1.1).contains(&ratio),
+            "candidate arithmetic is {ratio:.2}x baseline ({hybrid_cost:.1} vs {conv_cost:.1} GFLOP)"
         );
     }
 }

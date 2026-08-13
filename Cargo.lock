@@ -2095,6 +2095,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "ommatidia-capi"
+version = "0.1.0"
+dependencies = [
+ "ommatidia",
+ "ron",
+]
+
+[[package]]
 name = "ommatidia-data"
 version = "0.1.0"
 dependencies = [

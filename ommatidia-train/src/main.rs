@@ -17,7 +17,7 @@ use ommatidia::batch::Crop;
 use ommatidia::checkpoint;
 use ommatidia::dataset::Reader;
 use ommatidia::diffusion::Schedule;
-use ommatidia::model::{self, ModelConfig, Objective};
+use ommatidia::model::{self, Backbone, ModelConfig, Objective};
 
 /// How a dataset is divided between fitting and scoring.
 ///
@@ -67,6 +67,7 @@ struct Args {
     levels: usize,
     blocks_per_level: usize,
     num_groups: u32,
+    backbone: Backbone,
     timesteps: usize,
     sampler_steps: usize,
     objective: Objective,
@@ -98,6 +99,7 @@ impl Default for Args {
             levels: 3,
             blocks_per_level: 1,
             num_groups: 8,
+            backbone: Backbone::Conv,
             timesteps: 1000,
             sampler_steps: 20,
             objective: Objective::Direct,
@@ -135,6 +137,9 @@ usage: ommatidia-train [options]
   --levels N           U-Net levels  [3]
   --blocks N           residual blocks per level  [1]
   --num-groups N       GroupNorm groups; must divide every level width  [8]
+  --backbone KIND      conv or hybrid-window  [conv]
+  --attention-window N local attention window at the bottleneck  [8]
+  --attention-head-dim channels in each attention head  [16]
   --timesteps N        diffusion schedule length  [1000]
   --sampler-steps N    DDIM steps used when evaluating  [20]
   --objective KIND     direct or diffusion  [direct]
@@ -199,6 +204,39 @@ fn parse_from(argv: impl Iterator<Item = String>) -> Result<Args, String> {
             }
             "--num-groups" => {
                 args.num_groups = value()?.parse().map_err(|e| format!("--num-groups: {e}"))?
+            }
+            "--backbone" => {
+                args.backbone = match value()?.as_str() {
+                    "conv" => Backbone::Conv,
+                    "hybrid-window" => match args.backbone {
+                        Backbone::Conv => Backbone::HybridWindowAttention {
+                            window: 8,
+                            head_dim: 16,
+                        },
+                        configured @ Backbone::HybridWindowAttention { .. } => configured,
+                    },
+                    other => return Err(format!("unknown backbone {other:?}")),
+                }
+            }
+            "--attention-window" => {
+                let window = value()?
+                    .parse()
+                    .map_err(|e| format!("--attention-window: {e}"))?;
+                let head_dim = match args.backbone {
+                    Backbone::Conv => 16,
+                    Backbone::HybridWindowAttention { head_dim, .. } => head_dim,
+                };
+                args.backbone = Backbone::HybridWindowAttention { window, head_dim };
+            }
+            "--attention-head-dim" => {
+                let head_dim = value()?
+                    .parse()
+                    .map_err(|e| format!("--attention-head-dim: {e}"))?;
+                let window = match args.backbone {
+                    Backbone::Conv => 8,
+                    Backbone::HybridWindowAttention { window, .. } => window,
+                };
+                args.backbone = Backbone::HybridWindowAttention { window, head_dim };
             }
             "--timesteps" => {
                 args.timesteps = value()?.parse().map_err(|e| format!("--timesteps: {e}"))?
@@ -338,6 +376,7 @@ fn main() {
         level_multipliers: (0..args.levels).map(|i| 1 << i).collect(),
         blocks_per_level: args.blocks_per_level,
         num_groups: args.num_groups,
+        backbone: args.backbone,
         residual_gain: gain,
         objective: args.objective,
         ..ModelConfig::default()
@@ -421,14 +460,15 @@ fn main() {
     );
     let parameter_count: usize = model.params.iter().map(|p| p.len).sum();
     println!(
-        "{:?} objective, {} levels, {parameter_count} parameters",
+        "{:?} objective, {:?} backbone, {} levels, {parameter_count} parameters",
         config.objective,
+        config.backbone,
         config.levels()
     );
     // What this shape would cost at a real output extent, so a configuration
     // can be ruled out before it is trained rather than after.
     println!(
-        "convolution cost: {:.1} GFLOP per 1080p frame",
+        "estimated arithmetic: {:.1} GFLOP per 1080p frame",
         config.flops(1920 * 1080)
     );
 
@@ -761,6 +801,7 @@ mod cli_tests {
             // without, so a new switch needs no entry here to stay covered.
             let candidates: Vec<Vec<&str>> = match flag.as_str() {
                 "--objective" => vec![vec!["--objective", "direct"]],
+                "--backbone" => vec![vec!["--backbone", "hybrid-window"]],
                 "--val-fraction" => vec![vec!["--val-fraction", "0.1"]],
                 _ => vec![vec![&flag, VALUE], vec![&flag]],
             };
@@ -792,7 +833,39 @@ mod cli_tests {
         assert_eq!(args.levels, 3);
         assert_eq!(args.blocks_per_level, 1);
         assert_eq!(args.batch, 8);
+        assert_eq!(args.backbone, Backbone::Conv);
         assert!(!args.allow_filtered_input);
+    }
+
+    #[test]
+    fn attention_flags_select_the_hybrid_backbone() {
+        for argv in [
+            [
+                "--backbone",
+                "hybrid-window",
+                "--attention-window",
+                "4",
+                "--attention-head-dim",
+                "8",
+            ],
+            [
+                "--attention-head-dim",
+                "8",
+                "--attention-window",
+                "4",
+                "--backbone",
+                "hybrid-window",
+            ],
+        ] {
+            let args = parse(&argv).unwrap();
+            assert_eq!(
+                args.backbone,
+                Backbone::HybridWindowAttention {
+                    window: 4,
+                    head_dim: 8,
+                }
+            );
+        }
     }
 
     #[test]

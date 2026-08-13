@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1120" height="410" viewBox="0 0 1120 410" role="img" aria-labelledby="title desc">
   <title id="title">Ommatidium reconstruction architecture</title>
-  <desc id="desc">A low-resolution path traced frame and G-buffer are packed into a low-resolution U-Net, whose sub-pixel residual is unpacked into a two-times larger output. A dashed future temporal path reprojects the previous output with motion and depth.</desc>
+  <desc id="desc">A low-resolution path traced frame and G-buffer are packed into a multi-scale reconstruction network, whose sub-pixel residual is unpacked into a two-times larger output. A dashed temporal feedback path reprojects and validates a compact learned feature state with host motion, depth, normals, and disocclusion data.</desc>
   <defs>
     <marker id="arrow" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto"><path d="M0,0 L9,3 L0,6 Z" fill="#59636e"/></marker>
     <style>
@@ -22,9 +22,9 @@
   <text x="378" y="148" text-anchor="middle" class="p">input resolution</text>
   <path d="M465 116 H525" class="line"/>
   <rect x="525" y="47" width="225" height="138" class="core"/>
-  <text x="638" y="83" text-anchor="middle" class="h">Meganeura U-Net</text>
-  <text x="638" y="111" text-anchor="middle" class="p">649k parameters · one pass</text>
-  <text x="638" y="135" text-anchor="middle" class="p">runs entirely at input size</text>
+  <text x="638" y="83" text-anchor="middle" class="h">Multi-scale reconstructor</text>
+  <text x="638" y="111" text-anchor="middle" class="p">631–649k parameters · one pass</text>
+  <text x="638" y="135" text-anchor="middle" class="p">conv · coarse attention candidate</text>
   <text x="638" y="159" text-anchor="middle" class="p">predicts 3 × scale² residuals</text>
   <path d="M750 116 H810" class="line"/>
   <rect x="810" y="60" width="150" height="112" class="box"/>
@@ -37,16 +37,16 @@
   <text x="1050" y="132" text-anchor="middle" class="p">HDR out</text>
 
   <text x="40" y="237" class="tag" style="fill:#9a6700">NEXT · TEMPORAL RECONSTRUCTION</text>
-  <rect x="190" y="267" width="210" height="100" class="future"/>
-  <text x="295" y="301" text-anchor="middle" class="h">Previous 2× output</text>
-  <text x="295" y="329" text-anchor="middle" class="p">double-buffered on device</text>
-  <text x="295" y="351" text-anchor="middle" class="p">no host readback</text>
+  <rect x="160" y="267" width="240" height="100" class="future"/>
+  <text x="280" y="301" text-anchor="middle" class="h">Learned feature state</text>
+  <text x="280" y="329" text-anchor="middle" class="p">1/4 input size · FP16 · ~6.2 MB</text>
+  <text x="280" y="351" text-anchor="middle" class="p">one recurrent frame on device</text>
   <path d="M400 317 H500" class="dash"/>
   <rect x="500" y="255" width="275" height="124" class="future"/>
   <text x="638" y="289" text-anchor="middle" class="h">Reproject + validate</text>
-  <text x="638" y="317" text-anchor="middle" class="p">motion vectors · depth · normal</text>
-  <text x="638" y="341" text-anchor="middle" class="p">history color + confidence</text>
-  <text x="638" y="363" text-anchor="middle" class="p">space-to-depth at input size</text>
+  <text x="638" y="317" text-anchor="middle" class="p">host motion · depth · normal</text>
+  <text x="638" y="341" text-anchor="middle" class="p">disocclusion · reactive confidence</text>
+  <text x="638" y="363" text-anchor="middle" class="p">coarse gated / attention fusion</text>
   <path d="M638 255 V203 H638 V185" class="dash"/>
-  <path d="M135 172 V317 H190" class="dash"/>
+  <path d="M590 185 V222 H280 V267" class="dash"/>
 </svg>
