@@ -27,6 +27,7 @@ pub fn reconstruct(
     sample: &Sample,
     layout: &Layout,
     crop: Crop,
+    guided: Option<&[f32]>,
     sampler_steps: usize,
     seed: u64,
 ) -> Vec<f32> {
@@ -78,11 +79,13 @@ pub fn reconstruct(
     let low = batch::crop_color(sample, layout, crop);
     batch::assemble(
         &low,
+        guided,
         &residual,
         crop.tile as usize,
         crop.tile as usize,
         config.scale as usize,
         config.residual_gain,
+        config.reconstruction_base,
     )
 }
 
@@ -212,6 +215,43 @@ pub fn nearest(low: &[f32], width: usize, height: usize, scale: usize) -> Vec<f3
     out
 }
 
+/// Bilinear upsampling of interleaved linear RGB, with texel centers aligned.
+///
+/// This is the conventional non-neural reconstruction baseline. Sampling is
+/// clamped at the image boundary, matching a GPU linear-filtered texture with
+/// clamp-to-edge addressing.
+pub fn bilinear(low: &[f32], width: usize, height: usize, scale: usize) -> Vec<f32> {
+    assert_eq!(low.len(), width * height * 3);
+    assert!(width > 0 && height > 0 && scale > 0);
+    let out_width = width * scale;
+    let out_height = height * scale;
+    let mut out = vec![0.0; out_width * out_height * 3];
+    for oy in 0..out_height {
+        let fy = (oy as f32 + 0.5) / scale as f32 - 0.5;
+        let y0 = fy.floor() as isize;
+        let ty = fy - y0 as f32;
+        let y0c = y0.clamp(0, height as isize - 1) as usize;
+        let y1c = (y0 + 1).clamp(0, height as isize - 1) as usize;
+        for ox in 0..out_width {
+            let fx = (ox as f32 + 0.5) / scale as f32 - 0.5;
+            let x0 = fx.floor() as isize;
+            let tx = fx - x0 as f32;
+            let x0c = x0.clamp(0, width as isize - 1) as usize;
+            let x1c = (x0 + 1).clamp(0, width as isize - 1) as usize;
+            for c in 0..3 {
+                let p00 = low[(y0c * width + x0c) * 3 + c];
+                let p10 = low[(y0c * width + x1c) * 3 + c];
+                let p01 = low[(y1c * width + x0c) * 3 + c];
+                let p11 = low[(y1c * width + x1c) * 3 + c];
+                let top = p00 + tx * (p10 - p00);
+                let bottom = p01 + tx * (p11 - p01);
+                out[(oy * out_width + ox) * 3 + c] = top + ty * (bottom - top);
+            }
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -231,6 +271,17 @@ mod tests {
             assert_eq!(&up[base + 6..base + 9], &[4.0, 5.0, 6.0]);
             assert_eq!(&up[base + 9..base + 12], &[4.0, 5.0, 6.0]);
         }
+    }
+
+    #[test]
+    fn bilinear_aligns_texel_centers_and_clamps_edges() {
+        let low = vec![
+            0.0, 0.0, 0.0, // left
+            4.0, 8.0, 12.0, // right
+        ];
+        let up = bilinear(&low, 2, 1, 2);
+        let red: Vec<_> = up.chunks_exact(3).map(|rgb| rgb[0]).collect();
+        assert_eq!(red, vec![0.0, 1.0, 3.0, 4.0, 0.0, 1.0, 3.0, 4.0]);
     }
 
     #[test]

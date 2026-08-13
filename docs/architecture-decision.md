@@ -12,21 +12,21 @@ quality milestone. Test attention as a **coarse-resolution fusion mechanism**,
 not as a wholesale replacement for the convolutional encoder, decoder, or
 sub-pixel output head.
 
-The first controlled candidate therefore replaces only the two 1/4-resolution
+The first controlled candidate replaced only the two 1/4-resolution
 bottleneck residual blocks with 8×8 shifted-window attention and a
 convolutional feed-forward path. It has 630,768 parameters and an estimated
 104.5 GFLOP at 1920×1080 output, versus 649,200 parameters and 104.1 GFLOP for
-the convolutional baseline. It uses Meganeura's existing differentiable
+the convolutional baseline. It used Meganeura's existing differentiable
 attention implementation after a reversible NCHW-to-window permutation; it
-does not add an image-specific attention kernel or shader group. The pack and
-merge entry points extend Meganeura's existing transpose/rearrangement module.
+did not add an image-specific attention kernel or shader group. The pack and
+merge entry points extended Meganeura's transpose module for the experiment.
 
 This candidate is an experiment, not the new default. It must beat the
 convolutional checkpoint on the same bytes, crop order, seed, optimizer
 schedule, held-out scenes, PSNR, and SSIM. Frame time and memory are veto
-metrics. If static quality is tied, the convolutional checkpoint remains the
-spatial default and the attention block is retained only as a candidate for
-temporal fusion.
+metrics. A static quality tie keeps the convolutional checkpoint and does not
+justify retaining the attention-specific graph surface for a possible future
+temporal experiment.
 
 ### Controlled result (2026-08-13)
 
@@ -47,12 +47,13 @@ model-only RX 7900 XT benchmark at 960×540 input measured 19.877 ms median
 7.5% slower, with 104 dispatches instead of 84. It does not include texture
 packing or unpacking.
 
-The convolutional U-Net therefore remains the spatial default. The generic
-window permutation and attention option are worth retaining for the temporal
-fusion ablation, where distant/reprojected evidence gives attention a job that
-local convolution does not already perform. We should not spend model or
-kernel complexity on further static transformer scaling before that data path
-exists.
+The convolutional U-Net therefore remains the spatial path. The experimental
+window option was removed again: retaining roughly 440 lines of Meganeura
+graph, autodiff, compiler, shader, and test surface for a slower quality tie is
+the wrong complexity trade. If temporal fusion later demonstrates an attention
+win, its dataflow should justify the smallest generic primitive needed then.
+We should not spend model or kernel complexity on static transformer scaling
+before that evidence exists.
 
 ## Why not DINOv3
 
@@ -104,9 +105,12 @@ gated-convolution block. A model-family label is not an ablation.
 
 ## Temporal evidence matters more than the spatial block
 
-The current one-frame model gains only 0.22 dB at 1 spp and 0.08 dB on the
-favorable four-static-sample proxy. That is signal starvation, not a failure
-to make the spatial receptive field large enough. Two relevant production
+The original nearest-base one-frame model gained only 0.22 dB at 1 spp and
+0.08 dB on the four-sample spatial set. The renderer-guided base fixes the
+static denoising failure, reaching 34.08 dB / 0.9473 SSIM before the network;
+the learned b8 residual adds only 0.04 dB. History is still the missing evidence
+for lower sample counts, sub-pixel detail across motion, and temporal stability,
+not a reason to enlarge the static receptive field. Two relevant production
 research results agree:
 
 - [Neural Temporal Adaptive Sampling and Denoising](https://research.nvidia.com/publication/2020-05_neural-temporal-adaptive-sampling-and-denoising)

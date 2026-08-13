@@ -6,12 +6,16 @@ performance on the table. A renderer already paid for motion vectors, and a
 previous reconstructed frame contains roughly three quarters of the output
 samples that a 2× spatial model is otherwise asked to invent again.
 
-The first path-tracing experiment makes this a measured requirement rather
-than a roadmap guess. On a separate held-out set, the current spatial model
-improves a 1-spp path input by only 0.22 dB and slightly reduces SSIM; even a
-favorable four-static-sample input gains only 0.08 dB. Doubling independent
-samples buys roughly two dB, but multiplies tracing cost. Full numbers and the
-ReSTIR+SVGF control are in
+The first path-tracing experiment exposed a weak nearest-neighbor base rather
+than a transformer deficit. On 76 crops from a separate 128-scene 4-spp
+validation set, bilinear scores 26.46 dB / 0.5864 SSIM, while the current
+depth/normal/albedo-guided spatial base scores 34.08 dB / 0.9473 and the b8
+learned correction reaches 34.12 dB / 0.9474. The b24 arm reaches 34.15 dB /
+0.9476 but takes 20.71 ms instead of b8's 7.76 ms.
+That makes the spatial release credible, but it does not recover sub-pixel
+samples across motion or address 1-spp flicker. History remains the next
+quality source for lower ray budgets and temporal stability. The superseded
+nearest-base result remains recorded in
 [`results/path-trace-spatial-b24-2026-08-12.md`](results/path-trace-spatial-b24-2026-08-12.md).
 
 The first temporal model should keep reprojection outside the learned network.

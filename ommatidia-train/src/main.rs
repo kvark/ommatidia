@@ -13,11 +13,11 @@ mod eval;
 
 use std::path::PathBuf;
 
-use ommatidia::batch::Crop;
+use ommatidia::batch::{self, Crop};
 use ommatidia::checkpoint;
 use ommatidia::dataset::Reader;
 use ommatidia::diffusion::Schedule;
-use ommatidia::model::{self, Backbone, ModelConfig, Objective};
+use ommatidia::model::{self, ModelConfig, Objective};
 
 /// How a dataset is divided between fitting and scoring.
 ///
@@ -67,7 +67,6 @@ struct Args {
     levels: usize,
     blocks_per_level: usize,
     num_groups: u32,
-    backbone: Backbone,
     timesteps: usize,
     sampler_steps: usize,
     objective: Objective,
@@ -95,11 +94,10 @@ impl Default for Args {
             learning_rate: 2e-4,
             learning_rate_final: None,
             grad_clip: 1.0,
-            base_channels: 24,
+            base_channels: 8,
             levels: 3,
             blocks_per_level: 1,
             num_groups: 8,
-            backbone: Backbone::Conv,
             timesteps: 1000,
             sampler_steps: 20,
             objective: Objective::Direct,
@@ -133,13 +131,10 @@ usage: ommatidia-train [options]
                        Worth setting on a long run: a rate that was right for
                        the first hour is too coarse to settle in the last one
   --grad-clip F        clip the gradient norm to this, 0 to disable  [1.0]
-  --base-channels N    channel width of the first level  [24]
+  --base-channels N    channel width of the first level  [8]
   --levels N           U-Net levels  [3]
   --blocks N           residual blocks per level  [1]
   --num-groups N       GroupNorm groups; must divide every level width  [8]
-  --backbone KIND      conv or hybrid-window  [conv]
-  --attention-window N local attention window at the bottleneck  [8]
-  --attention-head-dim channels in each attention head  [16]
   --timesteps N        diffusion schedule length  [1000]
   --sampler-steps N    DDIM steps used when evaluating  [20]
   --objective KIND     direct or diffusion  [direct]
@@ -204,39 +199,6 @@ fn parse_from(argv: impl Iterator<Item = String>) -> Result<Args, String> {
             }
             "--num-groups" => {
                 args.num_groups = value()?.parse().map_err(|e| format!("--num-groups: {e}"))?
-            }
-            "--backbone" => {
-                args.backbone = match value()?.as_str() {
-                    "conv" => Backbone::Conv,
-                    "hybrid-window" => match args.backbone {
-                        Backbone::Conv => Backbone::HybridWindowAttention {
-                            window: 8,
-                            head_dim: 16,
-                        },
-                        configured @ Backbone::HybridWindowAttention { .. } => configured,
-                    },
-                    other => return Err(format!("unknown backbone {other:?}")),
-                }
-            }
-            "--attention-window" => {
-                let window = value()?
-                    .parse()
-                    .map_err(|e| format!("--attention-window: {e}"))?;
-                let head_dim = match args.backbone {
-                    Backbone::Conv => 16,
-                    Backbone::HybridWindowAttention { head_dim, .. } => head_dim,
-                };
-                args.backbone = Backbone::HybridWindowAttention { window, head_dim };
-            }
-            "--attention-head-dim" => {
-                let head_dim = value()?
-                    .parse()
-                    .map_err(|e| format!("--attention-head-dim: {e}"))?;
-                let window = match args.backbone {
-                    Backbone::Conv => 8,
-                    Backbone::HybridWindowAttention { window, .. } => window,
-                };
-                args.backbone = Backbone::HybridWindowAttention { window, head_dim };
             }
             "--timesteps" => {
                 args.timesteps = value()?.parse().map_err(|e| format!("--timesteps: {e}"))?
@@ -342,21 +304,34 @@ fn main() {
             layout.lr_width, layout.lr_height
         );
     }
+    let reconstruction_base = if args.eval_only {
+        checkpoint::load_config(&args.out)
+            .map(|(config, _)| config.reconstruction_base)
+            .unwrap_or_else(|_| ModelConfig::default().reconstruction_base)
+    } else if args.color_only {
+        ommatidia::model::ReconstructionBase::Bilinear
+    } else {
+        ModelConfig::default().reconstruction_base
+    };
 
     // The residual is small, and how small depends on the content and the
     // scale factor, so it is measured rather than assumed. Without this the
     // diffusion objective trains to a low loss and samples to pure noise.
     let probe = GAIN_PROBE_SAMPLES.min(reader.len());
-    let gain = {
+    let gain = if args.eval_only {
+        1.0
+    } else {
         let samples: Vec<_> = (0..probe)
             .filter_map(|i| reader.sample(i * reader.len() / probe.max(1)).ok())
             .collect();
-        ommatidia::batch::estimate_gain(samples, &layout)
+        ommatidia::batch::estimate_gain(samples, &layout, reconstruction_base)
     };
-    println!(
-        "residual gain {gain:.2} (standard deviation {:.4}), measured over {probe} samples",
-        1.0 / gain
-    );
+    if !args.eval_only {
+        println!(
+            "residual gain {gain:.2} (standard deviation {:.4}), measured over {probe} samples",
+            1.0 / gain
+        );
+    }
 
     // Everything about the data comes from the data, so the network cannot ask
     // for a plane the dataset does not carry or upscale by the wrong factor.
@@ -376,9 +351,9 @@ fn main() {
         level_multipliers: (0..args.levels).map(|i| 1 << i).collect(),
         blocks_per_level: args.blocks_per_level,
         num_groups: args.num_groups,
-        backbone: args.backbone,
         residual_gain: gain,
         objective: args.objective,
+        reconstruction_base,
         ..ModelConfig::default()
     };
     if let Err(message) = config.validate() {
@@ -460,9 +435,8 @@ fn main() {
     );
     let parameter_count: usize = model.params.iter().map(|p| p.len).sum();
     println!(
-        "{:?} objective, {:?} backbone, {} levels, {parameter_count} parameters",
+        "{:?} objective, {} levels, {parameter_count} parameters",
         config.objective,
-        config.backbone,
         config.levels()
     );
     // What this shape would cost at a real output extent, so a configuration
@@ -655,7 +629,7 @@ impl Evaluator {
         }
     }
 
-    /// Reconstruct the held-out samples and report against nearest upsampling.
+    /// Reconstruct the held-out samples and report against deterministic bases.
     ///
     /// Over a grid of crops across every validation sample, not one crop of one
     /// training sample: a single tile is far too small and too lucky to
@@ -678,9 +652,20 @@ impl Evaluator {
         }
 
         let mut baseline_total = 0.0f64;
+        let mut bilinear_total = 0.0f64;
         let mut network_total = 0.0f64;
         let mut baseline_ssim_total = 0.0f64;
+        let mut bilinear_ssim_total = 0.0f64;
         let mut network_ssim_total = 0.0f64;
+        let mut guided_total = 0.0f64;
+        let mut guided_ssim_total = 0.0f64;
+        let has_guides = [
+            ommatidia::Plane::Depth,
+            ommatidia::Plane::Normal,
+            ommatidia::Plane::DiffuseAlbedo,
+        ]
+        .into_iter()
+        .all(|plane| layout.lr_planes.contains(plane));
         let mut counted = 0usize;
         let started = std::time::Instant::now();
 
@@ -696,6 +681,7 @@ impl Evaluator {
                 if counted >= args.eval_crops {
                     break 'outer;
                 }
+                let guided = has_guides.then(|| batch::guided_base(&sample, &layout, crop));
                 let predicted = eval::reconstruct(
                     &mut self.session,
                     &self.config,
@@ -703,6 +689,7 @@ impl Evaluator {
                     &sample,
                     &layout,
                     crop,
+                    guided.as_deref(),
                     args.sampler_steps,
                     // Vary the sampler noise per crop, so the score is not one
                     // lucky or unlucky draw repeated.
@@ -716,12 +703,23 @@ impl Evaluator {
                     crop.tile as usize,
                     self.config.scale as usize,
                 );
-
+                let bilinear = eval::bilinear(
+                    &low,
+                    crop.tile as usize,
+                    crop.tile as usize,
+                    self.config.scale as usize,
+                );
                 baseline_total += eval::error(&baseline, &reference) as f64;
+                bilinear_total += eval::error(&bilinear, &reference) as f64;
                 network_total += eval::error(&predicted, &reference) as f64;
                 let extent = (crop.tile * self.config.scale) as usize;
                 baseline_ssim_total += eval::ssim(&baseline, &reference, extent, extent) as f64;
+                bilinear_ssim_total += eval::ssim(&bilinear, &reference, extent, extent) as f64;
                 network_ssim_total += eval::ssim(&predicted, &reference, extent, extent) as f64;
+                if let Some(guided) = &guided {
+                    guided_total += eval::error(guided, &reference) as f64;
+                    guided_ssim_total += eval::ssim(guided, &reference, extent, extent) as f64;
+                }
 
                 // The first crop also goes out as images, for eyeballing.
                 if counted == 0
@@ -731,11 +729,18 @@ impl Evaluator {
                     for (name, image, width) in [
                         ("input", &low, crop.tile),
                         ("nearest", &baseline, hr_extent),
+                        ("bilinear", &bilinear, hr_extent),
                         ("predicted", &predicted, hr_extent),
                         ("reference", &reference, hr_extent),
                     ] {
                         let path = dir.join(format!("{name}.png"));
                         if let Err(e) = eval::write_png(&path, image, width, width) {
+                            eprintln!("cannot write {}: {e}", path.display());
+                        }
+                    }
+                    if let Some(guided) = &guided {
+                        let path = dir.join("guided.png");
+                        if let Err(e) = eval::write_png(&path, guided, hr_extent, hr_extent) {
                             eprintln!("cannot write {}: {e}", path.display());
                         }
                     }
@@ -750,21 +755,44 @@ impl Evaluator {
         }
         let baseline_error = baseline_total / counted as f64;
         let network_error = network_total / counted as f64;
+        let bilinear_error = bilinear_total / counted as f64;
         let baseline_psnr = -10.0 * baseline_error.log10();
         let network_psnr = -10.0 * network_error.log10();
+        let bilinear_psnr = -10.0 * bilinear_error.log10();
         let baseline_ssim = baseline_ssim_total / counted as f64;
         let network_ssim = network_ssim_total / counted as f64;
+        let bilinear_ssim = bilinear_ssim_total / counted as f64;
+        let guided = has_guides.then(|| {
+            let error = guided_total / counted as f64;
+            let psnr = -10.0 * error.log10();
+            let ssim = guided_ssim_total / counted as f64;
+            (error, psnr, ssim)
+        });
+        let (base_name, base_error) = match self.config.reconstruction_base {
+            ommatidia::model::ReconstructionBase::Nearest => ("nearest", baseline_error),
+            ommatidia::model::ReconstructionBase::Bilinear => ("bilinear", bilinear_error),
+            ommatidia::model::ReconstructionBase::GuidedBilinear => (
+                "guided",
+                guided.expect("guided models require guide planes").0,
+            ),
+        };
         let gain = if network_error > 0.0 {
-            10.0 * (baseline_error / network_error).log10()
+            10.0 * (base_error / network_error).log10()
         } else {
             f64::INFINITY
         };
         println!(
             "  held-out over {counted} crops in {:.1}s:\n  \
              nearest  MSE {baseline_error:.6}, PSNR {baseline_psnr:.2} dB, SSIM {baseline_ssim:.4}\n  \
-             network  MSE {network_error:.6}, PSNR {network_psnr:.2} dB, SSIM {network_ssim:.4} \
-             ({gain:+.2} dB PSNR gain)",
+             bilinear MSE {bilinear_error:.6}, PSNR {bilinear_psnr:.2} dB, SSIM {bilinear_ssim:.4}",
             started.elapsed().as_secs_f32()
+        );
+        if let Some((error, psnr, ssim)) = guided {
+            println!("  guided   MSE {error:.6}, PSNR {psnr:.2} dB, SSIM {ssim:.4}");
+        }
+        println!(
+            "  network  MSE {network_error:.6}, PSNR {network_psnr:.2} dB, SSIM {network_ssim:.4} \
+             ({gain:+.2} dB versus {base_name})"
         );
         Some(gain as f32)
     }
@@ -801,7 +829,6 @@ mod cli_tests {
             // without, so a new switch needs no entry here to stay covered.
             let candidates: Vec<Vec<&str>> = match flag.as_str() {
                 "--objective" => vec![vec!["--objective", "direct"]],
-                "--backbone" => vec![vec!["--backbone", "hybrid-window"]],
                 "--val-fraction" => vec![vec!["--val-fraction", "0.1"]],
                 _ => vec![vec![&flag, VALUE], vec![&flag]],
             };
@@ -829,43 +856,11 @@ mod cli_tests {
     fn defaults_select_the_semi_realtime_direct_model() {
         let args = parse(&[]).unwrap();
         assert_eq!(args.objective, Objective::Direct);
-        assert_eq!(args.base_channels, 24);
+        assert_eq!(args.base_channels, 8);
         assert_eq!(args.levels, 3);
         assert_eq!(args.blocks_per_level, 1);
         assert_eq!(args.batch, 8);
-        assert_eq!(args.backbone, Backbone::Conv);
         assert!(!args.allow_filtered_input);
-    }
-
-    #[test]
-    fn attention_flags_select_the_hybrid_backbone() {
-        for argv in [
-            [
-                "--backbone",
-                "hybrid-window",
-                "--attention-window",
-                "4",
-                "--attention-head-dim",
-                "8",
-            ],
-            [
-                "--attention-head-dim",
-                "8",
-                "--attention-window",
-                "4",
-                "--backbone",
-                "hybrid-window",
-            ],
-        ] {
-            let args = parse(&argv).unwrap();
-            assert_eq!(
-                args.backbone,
-                Backbone::HybridWindowAttention {
-                    window: 4,
-                    head_dim: 8,
-                }
-            );
-        }
     }
 
     #[test]

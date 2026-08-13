@@ -25,15 +25,9 @@ target
 # files that only exist in one developer's ignored worktree.
 /data
 /runs/*
-!/runs/restir-energy-comparison/
-!/runs/restir-energy-comparison/*.png
-!/runs/live-energy-fixed/
-!/runs/live-energy-fixed/*.png
-!/runs/eval-validation-energy-fixed/
-/runs/eval-validation-energy-fixed/*
-!/runs/eval-validation-energy-fixed/nearest.png
-!/runs/eval-validation-energy-fixed/predicted.png
-!/runs/eval-validation-energy-fixed/reference.png
-!/runs/eval-validation-svgf-energy-fixed/
-/runs/eval-validation-svgf-energy-fixed/*
-!/runs/eval-validation-svgf-energy-fixed/nearest.png
+/publish/huggingface/model/model.safetensors
+!/runs/eval-path-trace-4spp-guided-validation/
+!/runs/eval-path-trace-4spp-guided-validation/*.png
+!/runs/eval-path-control-svgf/
+/runs/eval-path-control-svgf/*
+!/runs/eval-path-control-svgf/bilinear.png

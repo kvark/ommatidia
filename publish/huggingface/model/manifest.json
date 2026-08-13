@@ -1,10 +1,10 @@
 {
   "schema_version": 1,
   "project": "ommatidia",
-  "variant": "b24-2x-spatial-v0",
+  "variant": "guided-b8-2x-spatial-v0.2",
   "objective": "direct",
   "scale_factor": 2,
-  "parameters": 649200,
+  "parameters": 73808,
   "input_contract": {
     "name": "ommatidia-render-planes-v1",
     "planes": [
@@ -19,19 +19,19 @@
   "files": {
     "weights": {
       "path": "model.safetensors",
-      "bytes": 7804448,
-      "sha256": "5272c28bd13e15cfcf67d0aed6b366362161522c880ea6ed62c09dba19379e9d"
+      "bytes": 899336,
+      "sha256": "92c8d55e067b3da55ae16b7866a1b577c4af8276400972d846a9d17244a4964e"
     },
     "config": {
       "path": "config.ron",
-      "bytes": 323,
-      "sha256": "247a0d40a72ca14d83d57bcb31332c2639e370080d328242c9b0e6918c09fef6"
+      "bytes": 361,
+      "sha256": "5d8d89c6dfced27a638085597e476363c18a4339a3c42e20a70b7091af7063d4"
     }
   },
   "dataset": {
     "repository": "mad-bot/ommatidia",
-    "revision": "v0.1.0",
-    "source": "blade-restir"
+    "revision": "v0.2.0",
+    "source": "path-trace-4spp-static"
   },
   "source": {
     "repository": "https://github.com/kvark/ommatidia",

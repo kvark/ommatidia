@@ -2,7 +2,7 @@
 //!
 //! Everything here operates on the sub-pixel residual described in
 //! `docs/design.md`: the quantity being diffused is the difference between the
-//! reference frame and nearest-neighbour upsampling of the input, rearranged
+//! reference frame and the checkpoint's deterministic upsampling base, rearranged
 //! so that a scale-`S` upscale becomes `3 * S^2` channels at input resolution.
 //!
 //! # Parameterization

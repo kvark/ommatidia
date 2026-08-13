@@ -13,7 +13,7 @@
 //!    conditioning tensor, applying the transforms in [`crate::transform`].
 //! 2. **Step.** The network, once per sampler step.
 //! 3. **Unpack.** One dispatch scatters the sub-pixel output into the target,
-//!    adding the nearest-neighbour base back.
+//!    adding the checkpoint's deterministic reconstruction base back.
 //!
 //! # Ordering
 //!
@@ -42,6 +42,7 @@ struct PackData {
     t_albedo: gpu::TextureView,
     t_specular: gpu::TextureView,
     cond: gpu::BufferPiece,
+    base: gpu::BufferPiece,
 }
 
 #[repr(C)]
@@ -53,18 +54,14 @@ struct PackParams {
     planes: u32,
     compose_blade_radiance: u32,
     decode_blade_gbuffer: u32,
-    _pad0: u32,
+    reconstruction_base: u32,
     _pad1: u32,
 }
 
 #[derive(blade_macros::ShaderData)]
 struct UnpackData {
     params: UnpackParams,
-    t_color: gpu::TextureView,
-    t_diffuse_radiance: gpu::TextureView,
-    t_specular_radiance: gpu::TextureView,
-    t_emissive: gpu::TextureView,
-    t_albedo: gpu::TextureView,
+    base_pixels: gpu::BufferPiece,
     residual: gpu::BufferPiece,
     output: gpu::TextureView,
 }
@@ -76,7 +73,7 @@ struct UnpackParams {
     height: u32,
     scale: u32,
     inverse_gain: f32,
-    compose_blade_radiance: u32,
+    reconstruction_base: u32,
     _pad0: u32,
     _pad1: u32,
     _pad2: u32,
@@ -126,6 +123,32 @@ impl FrameInputs {
             normal: placeholder,
             albedo: placeholder,
             specular: placeholder,
+            compose_blade_radiance: false,
+            decode_blade_gbuffer: false,
+        }
+    }
+
+    /// Read caller-owned linear colour and unpacked G-buffer textures.
+    ///
+    /// `normal` contains world-space XYZ. `specular` contains RGB F0 and
+    /// roughness in alpha. This is the native integration path for renderers
+    /// that do not use Blade's packed G-buffer conventions.
+    pub fn from_textures(
+        color: gpu::TextureView,
+        depth: gpu::TextureView,
+        normal: gpu::TextureView,
+        albedo: gpu::TextureView,
+        specular: gpu::TextureView,
+    ) -> Self {
+        Self {
+            color,
+            diffuse_radiance: color,
+            specular_radiance: color,
+            emissive: color,
+            depth,
+            normal,
+            albedo,
+            specular,
             compose_blade_radiance: false,
             decode_blade_gbuffer: false,
         }
@@ -220,6 +243,8 @@ pub struct Upscaler {
     /// Device copy of the host-side diffusion sampler result. Direct
     /// checkpoints bind Meganeura's pinned graph output instead.
     residual_buffer: Option<gpu::Buffer>,
+    /// Linear RGB reconstruction base produced during packing.
+    base_buffer: gpu::Buffer,
     seed: u64,
 }
 
@@ -311,6 +336,11 @@ impl Upscaler {
                 memory: gpu::Memory::Shared,
             })
         });
+        let base_buffer = context.create_buffer(gpu::BufferDesc {
+            name: "ommatidia-reconstruction-base",
+            size: (input_extent[0] * input_extent[1] * 3) as u64 * 4,
+            memory: gpu::Memory::Device,
+        });
 
         let host_scratch_len = if config.objective == Objective::Diffusion {
             per_slot
@@ -329,6 +359,7 @@ impl Upscaler {
             x: vec![0.0; host_scratch_len],
             next: vec![0.0; host_scratch_len],
             residual_buffer,
+            base_buffer,
             seed: 0,
         })
     }
@@ -377,7 +408,7 @@ impl Upscaler {
                     planes: self.config.cond_planes.bits(),
                     compose_blade_radiance: inputs.compose_blade_radiance as u32,
                     decode_blade_gbuffer: inputs.decode_blade_gbuffer as u32,
-                    _pad0: 0,
+                    reconstruction_base: self.config.reconstruction_base as u32,
                     _pad1: 0,
                 },
                 t_color: inputs.color,
@@ -389,6 +420,7 @@ impl Upscaler {
                 t_albedo: inputs.albedo,
                 t_specular: inputs.specular,
                 cond,
+                base: self.base_buffer.into(),
             },
         );
         commands.dispatch([width.div_ceil(8), height.div_ceil(8), 1]);
@@ -442,7 +474,7 @@ impl Upscaler {
     pub fn unpack(
         &mut self,
         encoder: &mut gpu::CommandEncoder,
-        inputs: &FrameInputs,
+        _inputs: &FrameInputs,
         output: gpu::TextureView,
     ) {
         let residual = match self.config.objective {
@@ -478,16 +510,12 @@ impl Upscaler {
                     height,
                     scale: self.config.scale,
                     inverse_gain: 1.0 / self.config.residual_gain,
-                    compose_blade_radiance: inputs.compose_blade_radiance as u32,
+                    reconstruction_base: self.config.reconstruction_base as u32,
                     _pad0: 0,
                     _pad1: 0,
                     _pad2: 0,
                 },
-                t_color: inputs.color,
-                t_diffuse_radiance: inputs.diffuse_radiance,
-                t_specular_radiance: inputs.specular_radiance,
-                t_emissive: inputs.emissive,
-                t_albedo: inputs.albedo,
+                base_pixels: self.base_buffer.into(),
                 residual,
                 output,
             },
@@ -567,6 +595,7 @@ impl Upscaler {
         if let Some(buffer) = self.residual_buffer.take() {
             self.context.destroy_buffer(buffer);
         }
+        self.context.destroy_buffer(self.base_buffer);
         self.context
             .destroy_compute_pipeline(&mut self.pack_pipeline);
         self.context

@@ -3,7 +3,7 @@
     tile: 64,
     batch: 8,
     cond_planes: (63),
-    base_channels: 24,
+    base_channels: 8,
     level_multipliers: [
         1,
         2,
@@ -14,6 +14,7 @@
     gn_eps: 0.00001,
     time_input_dim: 64,
     time_embed_dim: 256,
-    residual_gain: 12.969844,
+    residual_gain: 46.9258,
     objective: Direct,
+    reconstruction_base: GuidedBilinear,
 )
