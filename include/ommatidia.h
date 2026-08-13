@@ -21,7 +21,7 @@ extern "C" {
 #endif
 
 #define OMMATIDIA_API_VERSION_MAJOR 1u
-#define OMMATIDIA_API_VERSION_MINOR 0u
+#define OMMATIDIA_API_VERSION_MINOR 1u
 #define OMMATIDIA_MAKE_VERSION(major, minor) (((major) << 16u) | (minor))
 #define OMMATIDIA_API_VERSION \
     OMMATIDIA_MAKE_VERSION(OMMATIDIA_API_VERSION_MAJOR, OMMATIDIA_API_VERSION_MINOR)
@@ -46,6 +46,23 @@ typedef enum OmmatidiumBackbone {
     OMMATIDIA_BACKBONE_HYBRID_WINDOW_ATTENTION = 2
 } OmmatidiumBackbone;
 
+typedef enum OmmatidiumReconstructionBase {
+    OMMATIDIA_RECONSTRUCTION_NEAREST = 0,
+    OMMATIDIA_RECONSTRUCTION_BILINEAR = 1,
+    OMMATIDIA_RECONSTRUCTION_GUIDED_BILINEAR = 2,
+    OMMATIDIA_RECONSTRUCTION_HIGH_RESOLUTION_GUIDED = 3
+} OmmatidiumReconstructionBase;
+
+typedef enum OmmatidiumPlaneBits {
+    OMMATIDIA_PLANE_COLOR = 1u << 0u,
+    OMMATIDIA_PLANE_DEPTH = 1u << 1u,
+    OMMATIDIA_PLANE_NORMAL = 1u << 2u,
+    OMMATIDIA_PLANE_DIFFUSE_ALBEDO = 1u << 3u,
+    OMMATIDIA_PLANE_SPECULAR_F0 = 1u << 4u,
+    OMMATIDIA_PLANE_ROUGHNESS = 1u << 5u,
+    OMMATIDIA_PLANE_MOTION = 1u << 6u
+} OmmatidiumPlaneBits;
+
 typedef struct OmmatidiumModelInfo {
     /* Set to sizeof(OmmatidiumModelInfo) before calling. */
     uint32_t struct_size;
@@ -61,7 +78,9 @@ typedef struct OmmatidiumModelInfo {
     uint32_t attention_window;
     uint32_t attention_head_dim;
     uint64_t parameter_count;
-    uint32_t reserved[8];
+    uint32_t reconstruction_base;
+    uint32_t required_hr_plane_mask;
+    uint32_t reserved[6];
 } OmmatidiumModelInfo;
 
 OMMATIDIA_API uint32_t ommatidia_api_version(void);
@@ -78,7 +97,7 @@ OMMATIDIA_API OmmatidiumStatus ommatidia_model_inspect(
     size_t error_message_capacity);
 
 /*
- * Vulkan execution is intentionally not exposed in ABI 1.0 yet. The native
+ * Vulkan execution is intentionally not exposed in ABI 1.1 yet. The native
  * path will borrow the host-selected VkDevice/queue and record into a supplied
  * command buffer; it will not accept a device ID or enumerate adapters.
  */

@@ -5,9 +5,9 @@ resolution one. It is a portable DLSS replacement: the network runs through
 [meganeura](https://github.com/kvark/meganeura) on Vulkan and Metal, so it has
 no dependency on CUDA, on a vendor SDK, or on a specific GPU generation.
 
-The shipped v0.1 milestone is deliberately narrow: **spatial upscaling of a
-single frame, no temporal context**. The concrete history/reprojection design
-is now in [`temporal.md`](temporal.md).
+The current milestone is deliberately narrow: **spatial upscaling of a single
+frame, no temporal context**. The concrete history/reprojection design is in
+[`temporal.md`](temporal.md).
 
 ## Why diffusion, and what it costs
 
@@ -100,8 +100,9 @@ high resolution image `Y` of shape `[3, S*H, S*W]` is rearranged into
 `(y, x)` becomes channel `c*S^2 + dy*S + dx`. This is a pure reindexing, no
 interpolation and no information lost.
 
-The network predicts a **residual** over a renderer-guided low-resolution
-prefilter followed by texel-center-aligned bilinear upsampling:
+The network predicts a **residual** over a renderer-guided deterministic base.
+The v0.2 base is a low-resolution joint bilateral prefilter followed by
+texel-center-aligned bilinear upsampling:
 
 ```
 target[c, dy, dx, y, x] = Y[c, S*y + dy, S*x + dx] - bilinear(guided(LR, G), S*y + dy, S*x + dx)
@@ -114,6 +115,15 @@ reproduced by the CPU trainer. This is not a cosmetic baseline choice: on 76
 crops from a separate 128-scene 4-spp validation set, bilinear alone scores
 26.46 dB / 0.5864 SSIM while the guided base scores 34.08 dB / 0.9473 before
 the learned correction runs.
+
+The v0.3 path optionally consumes output-resolution depth, normal, and diffuse
+albedo. Unpack then uses the exact primary surface at each output pixel to
+joint-bilaterally gather a 5×5 window from the filtered low-resolution color.
+On the same validation set this raises the deterministic base to 34.75 dB /
+0.9545 SSIM. It puts silhouettes at output resolution without moving the
+network itself out of low resolution. The checkpoint records this requirement;
+a host cannot accidentally run an HR-guided checkpoint without the three
+views.
 Version 0.1 checkpoints retain their historical nearest-neighbour base, and
 the controlled bilinear checkpoint retains plain bilinear, through the sidecar
 contract.
@@ -125,7 +135,7 @@ Three things fall out of this:
   same low-resolution spatial shape.
 - The output head is a free reindex. The unpack shader writes sub-pixel
   channel `c*S^2 + dy*S + dx` to high resolution texel `(S*x + dx, S*y + dy)`,
-  adding the guided bilinear reconstruction back as it goes.
+  adding the checkpoint-selected deterministic reconstruction back as it goes.
 
 It also puts the learned correction where the uncertainty actually is. The low
 frequency content is already determined by the input; only denoising and
@@ -182,8 +192,9 @@ normal-mapped detail survives; a ray that hit nothing is recorded as a very
 large depth and a zero normal, which is not a direction any surface can have
 and so marks the sky unambiguously.
 
-Only the input side carries a G-buffer. The reference is what the network has
-to reach, and it is reached in colour.
+The network itself only consumes the input-resolution G-buffer. The optional
+output-resolution depth, normal, and albedo go directly to reconstruction in
+unpack; they do not inflate the learned tensor or its arithmetic.
 
 ### It measurably helps
 
@@ -220,16 +231,21 @@ nearest baseline scores 0.0009 against the 0.0033 it scores across the held-out
 set. Hence `Split`, and hence scoring over a grid of crops. It is worth being
 suspicious of any number produced before that was in place.
 
-### What is not done yet
+### Output-resolution primary surfaces
 
-The reference render also fills a G-buffer, at output resolution, and that is
-the more interesting half. A depth and normal prepass at full resolution costs
-far less than shading at full resolution, so a deployed renderer could supply
-high resolution geometry for nearly nothing — and the sub-pixel formulation has
-a natural place to put it, since space-to-depth turns a high resolution plane
-into `scale^2` channels at input resolution, exactly the shape the network
-already consumes. That is the next thing to try after the input-side G-buffer
-is shown to earn its keep.
+The first experiment uses output-resolution depth, normal, and diffuse albedo
+as a deterministic reconstruction guide. A 7×7 gather gives the best measured
+spatial score (34.84 dB / 0.9556 SSIM) but costs 1.74 ms in unpack. A 5×5
+gather retains all but 0.09 dB and 0.0011 SSIM while reducing unpack to 0.89
+ms, so it is the selected point. A 3×3 control falls to 34.54 dB / 0.9515.
+
+This input is not free in every renderer. Deferred/raster hybrids often already
+own output-resolution primary surfaces; a pure low-resolution path tracer may
+need an additional primary-ray pass. The reported Ommatidium runtime excludes
+that application-side pass, just as it excludes sparse shading. The C ABI
+therefore reports the required high-resolution plane mask before resource
+allocation, and the low-resolution guided checkpoint remains valid for hosts
+that cannot supply it.
 
 ## Data generation
 
@@ -331,8 +347,8 @@ Per frame:
    texture formats.
 2. **Step.** `Session::step()`, once per sampler step.
 3. **Unpack.** One compute dispatch scatters the sub-pixel output to the high
-   resolution target, bilinearly reconstructing the guided base and undoing
-   the range compression.
+   resolution target, reconstructs the checkpoint-selected base (bilinear or
+   output-resolution geometry-aware), and undoes the range compression.
 
 Pack and unpack are ommatidia's own WGSL, dispatched onto the caller's command
 encoder, so the whole thing is one recorded sequence with no CPU roundtrip.
@@ -366,6 +382,13 @@ on an otherwise idle RX 7900 XT: **7.76 ms median and 7.94 ms p90** end to end,
 including pack, the model, unpack, and queue submissions. Its isolated stages
 are 0.76 ms guided pack, 6.99 ms model, and 0.12 ms unpack. It stays within
 0.03 dB and 0.0002 SSIM of guided b24 while taking 37% of its frame time.
+
+The v0.3 output-resolution guide changes only unpack. Across repeated final
+runs, the full path spans 8.46–9.30 ms median; isolated unpack is consistently
+0.89–0.90 ms, versus 0.12 ms for the v0.2 bilinear unpack. The amdgpu busy
+counter was intermittently unreadable during those runs, so a range is more
+honest than selecting one median and labelling it idle. The profiler now prints
+an explicit “load unavailable” state instead of silently omitting validation.
 
 | shape | params | GFLOP | ms @1080p, start | ms now | held-out dB |
 |---|---|---|---|---|---|

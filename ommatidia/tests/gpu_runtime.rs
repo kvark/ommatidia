@@ -82,6 +82,13 @@ fn guided_config() -> ModelConfig {
     }
 }
 
+fn hr_guided_config() -> ModelConfig {
+    ModelConfig {
+        reconstruction_base: ReconstructionBase::HighResolutionGuided,
+        ..guided_config()
+    }
+}
+
 /// An untrained checkpoint is enough: the question is whether the two paths
 /// agree, not whether the weights are any good.
 fn write_checkpoint(config: &ModelConfig, stem: &std::path::Path, context: Arc<gpu::Context>) {
@@ -352,7 +359,7 @@ fn read_input(upscaler: &mut Upscaler, name: &str, len: usize) -> Vec<f32> {
 #[ignore = "requires a GPU"]
 fn upscale_matches_the_cpu_path() {
     let Some(context) = context() else { return };
-    let config = guided_config();
+    let config = hr_guided_config();
     let dir = std::env::temp_dir().join("ommatidia-gpu-runtime-upscale");
     std::fs::create_dir_all(&dir).unwrap();
     let stem = dir.join("model");
@@ -384,6 +391,23 @@ fn upscale_matches_the_cpu_path() {
             albedos[index * 3..index * 3 + 3].copy_from_slice(&albedo);
         }
     }
+    let hr_texels = (TILE * SCALE * TILE * SCALE) as usize;
+    let mut hr_depths = vec![0.0f32; hr_texels * 3];
+    let mut hr_normals = vec![0.0f32; hr_texels * 3];
+    let mut hr_albedos = vec![0.0f32; hr_texels * 3];
+    for y in 0..(TILE * SCALE) as usize {
+        for x in 0..(TILE * SCALE) as usize {
+            let source_x = x / SCALE as usize;
+            let source_y = y / SCALE as usize;
+            let source = source_y * TILE as usize + source_x;
+            let destination = y * (TILE * SCALE) as usize + x;
+            hr_depths[destination * 3] = depths[source * 3];
+            hr_normals[destination * 3..destination * 3 + 3]
+                .copy_from_slice(&normals[source * 3..source * 3 + 3]);
+            hr_albedos[destination * 3..destination * 3 + 3]
+                .copy_from_slice(&albedos[source * 3..source * 3 + 3]);
+        }
+    }
 
     let mut encoder = context.create_command_encoder(gpu::CommandEncoderDesc {
         name: "upscale-test",
@@ -400,6 +424,27 @@ fn upscale_matches_the_cpu_path() {
         color_texture(&context, &mut encoder, &albedos, TILE, TILE);
     let (specular_texture, specular_view, specular_staging) =
         color_texture(&context, &mut encoder, &specular, TILE, TILE);
+    let (hr_depth_texture, hr_depth_view, hr_depth_staging) = color_texture(
+        &context,
+        &mut encoder,
+        &hr_depths,
+        TILE * SCALE,
+        TILE * SCALE,
+    );
+    let (hr_normal_texture, hr_normal_view, hr_normal_staging) = color_texture(
+        &context,
+        &mut encoder,
+        &hr_normals,
+        TILE * SCALE,
+        TILE * SCALE,
+    );
+    let (hr_albedo_texture, hr_albedo_view, hr_albedo_staging) = color_texture(
+        &context,
+        &mut encoder,
+        &hr_albedos,
+        TILE * SCALE,
+        TILE * SCALE,
+    );
 
     let format = Upscaler::OUTPUT_FORMAT;
     let out_size = gpu::Extent {
@@ -431,7 +476,8 @@ fn upscale_matches_the_cpu_path() {
 
     upscaler.upscale(
         &mut encoder,
-        &FrameInputs::from_textures(view, depth_view, normal_view, albedo_view, specular_view),
+        &FrameInputs::from_textures(view, depth_view, normal_view, albedo_view, specular_view)
+            .with_high_resolution_gbuffer(hr_depth_view, hr_normal_view, hr_albedo_view),
         output_view,
     );
 
@@ -463,7 +509,11 @@ fn upscale_matches_the_cpu_path() {
         lr_height: TILE,
         lr_source: ommatidia::dataset::InputSource::PathTrace,
         lr_planes: config.cond_planes,
-        hr_planes: PlaneSet::new().with(Plane::Color),
+        hr_planes: PlaneSet::new()
+            .with(Plane::Color)
+            .with(Plane::Depth)
+            .with(Plane::Normal)
+            .with(Plane::DiffuseAlbedo),
     };
     let mut planar = vec![f16::ZERO; layout.lr_len()];
     for (plane, values) in [
@@ -486,11 +536,25 @@ fn upscale_matches_the_cpu_path() {
         planar[depth_base * texels + index] = f16::from_f32(depths[index * 3]);
         planar[roughness_base * texels + index] = f16::ONE;
     }
-    let sample = Sample {
-        lr: planar,
-        hr: vec![f16::ZERO; layout.hr_len()],
-    };
-    let guided = batch::guided_base(
+    let mut hr = vec![f16::ZERO; layout.hr_len()];
+    for (plane, values) in [
+        (Plane::Normal, hr_normals.as_slice()),
+        (Plane::DiffuseAlbedo, hr_albedos.as_slice()),
+    ] {
+        let base = layout.hr_planes.channel_offset(plane).unwrap();
+        for component in 0..3 {
+            for index in 0..hr_texels {
+                hr[(base + component) * hr_texels + index] =
+                    f16::from_f32(values[index * 3 + component]);
+            }
+        }
+    }
+    let hr_depth_base = layout.hr_planes.channel_offset(Plane::Depth).unwrap();
+    for index in 0..hr_texels {
+        hr[hr_depth_base * hr_texels + index] = f16::from_f32(hr_depths[index * 3]);
+    }
+    let sample = Sample { lr: planar, hr };
+    let guided = batch::high_resolution_guided_base(
         &sample,
         &layout,
         Crop {
@@ -503,8 +567,7 @@ fn upscale_matches_the_cpu_path() {
         &colors,
         Some(&guided),
         &residual,
-        TILE as usize,
-        TILE as usize,
+        [TILE as usize; 2],
         SCALE as usize,
         config.residual_gain,
         config.reconstruction_base,
@@ -544,6 +607,9 @@ fn upscale_matches_the_cpu_path() {
     context.destroy_buffer(normal_staging);
     context.destroy_buffer(albedo_staging);
     context.destroy_buffer(specular_staging);
+    context.destroy_buffer(hr_depth_staging);
+    context.destroy_buffer(hr_normal_staging);
+    context.destroy_buffer(hr_albedo_staging);
     context.destroy_texture_view(output_view);
     context.destroy_texture(output);
     context.destroy_texture_view(view);
@@ -551,10 +617,16 @@ fn upscale_matches_the_cpu_path() {
     context.destroy_texture_view(normal_view);
     context.destroy_texture_view(albedo_view);
     context.destroy_texture_view(specular_view);
+    context.destroy_texture_view(hr_depth_view);
+    context.destroy_texture_view(hr_normal_view);
+    context.destroy_texture_view(hr_albedo_view);
     context.destroy_texture(texture);
     context.destroy_texture(depth_texture);
     context.destroy_texture(normal_texture);
     context.destroy_texture(albedo_texture);
     context.destroy_texture(specular_texture);
+    context.destroy_texture(hr_depth_texture);
+    context.destroy_texture(hr_normal_texture);
+    context.destroy_texture(hr_albedo_texture);
     context.destroy_command_encoder(&mut encoder);
 }

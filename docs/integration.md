@@ -40,6 +40,14 @@ sizes/version fields, status returns, and caller-provided logging callbacks.
 No Rust types, exceptions, allocator ownership, environment variables, or
 process-global device selection cross the boundary.
 
+Checkpoint inspection also exposes whether reconstruction needs
+output-resolution depth, world normal, and diffuse albedo. These are borrowed
+read-only image views just like the low-resolution inputs. A raster/deferred
+host may already own them; a pure low-resolution ray tracer may need a separate
+primary-surface pass. That pass is deliberately host-owned and visible to its
+profiler rather than hidden inside Ommatidium. Checkpoints using the older
+low-resolution guide require no output-resolution planes.
+
 ## Release shape
 
 A tagged GitHub release should eventually contain one archive per supported
@@ -59,11 +67,14 @@ revision and verifies its checksum rather than creating architecture-specific
 repository names. The GitHub release and HF model card cross-link the same
 semantic version.
 
-The `ommatidia-capi` crate now establishes ABI 1.0 for version negotiation,
+The `ommatidia-capi` crate now establishes ABI 1.1 for version negotiation,
 panic-free status/error handling, and checkpoint discovery. Its
 [`examples/c/inspect.c`](../examples/c/inspect.c) consumer compiles and links
 as C, and can query the model's scale, planes, alignment, backbone, and
-parameter count without touching a GPU. This is useful release groundwork,
+parameter count without touching a GPU. ABI 1.1 also reports the deterministic
+reconstruction mode and the exact high-resolution plane mask it requires, so a
+host can reject an incompatible checkpoint before allocating frame resources.
+This is useful release groundwork,
 but it is deliberately not presented as native inference. The public header
 states that Vulkan execution is unavailable until the borrowed-device and
 host-command-buffer prerequisites below land.

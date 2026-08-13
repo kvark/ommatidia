@@ -17,15 +17,31 @@ struct UnpackParams {
     // is the last thing that happens before it is added to the base.
     inverse_gain: f32,
     reconstruction_base: u32,
-    _pad0: u32,
-    _pad1: u32,
+    decode_blade_gbuffer: u32,
+    decode_hr_blade_gbuffer: u32,
     _pad2: u32,
 }
 
 var<uniform> params: UnpackParams;
 var<storage, read> base_pixels: array<f32>;
 var<storage, read> residual: array<f32>;
+var t_depth: texture_2d<f32>;
+var t_normal: texture_2d<f32>;
+var t_albedo: texture_2d<f32>;
+var t_hr_depth: texture_2d<f32>;
+var t_hr_normal: texture_2d<f32>;
+var t_hr_albedo: texture_2d<f32>;
 var output: texture_storage_2d<rgba16float, write>;
+
+const SKY_DEPTH: f32 = 1.0e6;
+
+fn qrot(q: vec4<f32>, v: vec3<f32>) -> vec3<f32> {
+    return v + 2.0 * cross(q.xyz, cross(q.xyz, v) + q.w * v);
+}
+
+fn encode_depth(d: f32) -> f32 {
+    return 1.0 / (1.0 + max(d, 0.0));
+}
 
 fn compress(x: f32) -> f32 {
     let v = max(x, 0.0);
@@ -51,9 +67,114 @@ fn load_base(texel_unclamped: vec2<i32>) -> vec3<f32> {
     );
 }
 
+fn clamp_low(texel: vec2<i32>) -> vec2<i32> {
+    return clamp(
+        texel,
+        vec2<i32>(0),
+        vec2<i32>(i32(params.width) - 1, i32(params.height) - 1),
+    );
+}
+
+fn load_low_depth(texel_unclamped: vec2<i32>) -> f32 {
+    let raw = textureLoad(t_depth, clamp_low(texel_unclamped), 0).x;
+    let depth = select(
+        raw,
+        select(SKY_DEPTH, raw, raw > 0.0),
+        params.decode_blade_gbuffer != 0u,
+    );
+    return encode_depth(depth);
+}
+
+fn load_low_normal(texel_unclamped: vec2<i32>) -> vec3<f32> {
+    let texel = clamp_low(texel_unclamped);
+    let encoded = textureLoad(t_normal, texel, 0);
+    if params.decode_blade_gbuffer != 0u {
+        let hit = textureLoad(t_depth, texel, 0).x > 0.0;
+        return select(vec3<f32>(0.0), qrot(encoded, vec3<f32>(0.0, 0.0, 1.0)), hit);
+    }
+    return encoded.xyz;
+}
+
+fn load_hr_depth(texel: vec2<i32>) -> f32 {
+    let raw = textureLoad(t_hr_depth, texel, 0).x;
+    let depth = select(
+        raw,
+        select(SKY_DEPTH, raw, raw > 0.0),
+        params.decode_hr_blade_gbuffer != 0u,
+    );
+    return encode_depth(depth);
+}
+
+fn load_hr_normal(texel: vec2<i32>) -> vec3<f32> {
+    let encoded = textureLoad(t_hr_normal, texel, 0);
+    if params.decode_hr_blade_gbuffer != 0u {
+        let hit = textureLoad(t_hr_depth, texel, 0).x > 0.0;
+        return select(vec3<f32>(0.0), qrot(encoded, vec3<f32>(0.0, 0.0, 1.0)), hit);
+    }
+    return encoded.xyz;
+}
+
+fn guide_similarity(
+    center_depth: f32,
+    center_normal: vec3<f32>,
+    center_albedo: vec3<f32>,
+    depth: f32,
+    normal: vec3<f32>,
+    albedo: vec3<f32>,
+) -> f32 {
+    let depth_delta = depth - center_depth;
+    var weight = exp(-(depth_delta * depth_delta) / 0.005);
+    let center_normal_len2 = dot(center_normal, center_normal);
+    let normal_len2 = dot(normal, normal);
+    var normal_weight = 0.0;
+    if center_normal_len2 < 0.25 {
+        normal_weight = select(0.0, 1.0, normal_len2 < 0.25);
+    } else if normal_len2 >= 0.25 {
+        let cosine = max(
+            dot(normal, center_normal) * inverseSqrt(normal_len2 * center_normal_len2),
+            0.0,
+        );
+        normal_weight = pow(cosine, 32.0);
+    }
+    let albedo_delta = albedo - center_albedo;
+    return weight * normal_weight * exp(-dot(albedo_delta, albedo_delta) / 0.02);
+}
+
+fn high_resolution_guided_base(destination: vec2<u32>) -> vec3<f32> {
+    let hr_texel = vec2<i32>(destination);
+    let center_depth = load_hr_depth(hr_texel);
+    let center_normal = load_hr_normal(hr_texel);
+    let center_albedo = textureLoad(t_hr_albedo, hr_texel, 0).xyz;
+    let position = (vec2<f32>(destination) + 0.5) / f32(params.scale) - 0.5;
+    let lower = vec2<i32>(floor(position));
+    var sum = vec3<f32>(0.0);
+    var weight_sum = 0.0;
+    for (var dy = -2; dy <= 2; dy += 1) {
+        for (var dx = -2; dx <= 2; dx += 1) {
+            let texel = clamp_low(lower + vec2<i32>(dx, dy));
+            let delta = vec2<f32>(texel) - position;
+            var weight = exp(-dot(delta, delta) / 4.5);
+            weight *= guide_similarity(
+                center_depth,
+                center_normal,
+                center_albedo,
+                load_low_depth(texel),
+                load_low_normal(texel),
+                textureLoad(t_albedo, texel, 0).xyz,
+            );
+            sum += weight * load_base(texel);
+            weight_sum += weight;
+        }
+    }
+    return sum / max(weight_sum, 1.0e-12);
+}
+
 fn reconstruction_base(destination: vec2<u32>, source: vec2<i32>) -> vec3<f32> {
     if params.reconstruction_base == 0u {
         return load_base(source);
+    }
+    if params.reconstruction_base == 3u {
+        return high_resolution_guided_base(destination);
     }
     let position = (vec2<f32>(destination) + 0.5) / f32(params.scale) - 0.5;
     let lower_f = floor(position);

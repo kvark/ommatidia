@@ -46,6 +46,34 @@ at 2,000, and 33.12 at both 3,000 and 4,000. B24 reached 33.13 at step 2,000,
 33.15 at 4,000, and 33.16 at 6,000. Both had plateaued; the 0.03 dB external
 validation difference does not justify b24's 2.67× end-to-end latency.
 
+## Output-resolution geometry result
+
+The low-resolution guide cannot know where a silhouette falls between its
+texel centres. A second controlled set therefore retains the same sparse color
+and canonical target while adding output-resolution depth, world normal, and
+diffuse albedo from a primary-surface pass. These planes guide reconstruction
+in unpack; they are not fed through the network.
+
+| HR gather | MSE | PSNR | SSIM | unpack @1080p |
+|---|---:|---:|---:|---:|
+| none (low-resolution guide) | 0.000391 | 34.08 dB | 0.9473 | 0.12 ms |
+| 3×3 | 0.000352 | 34.54 dB | 0.9515 | 0.39 ms |
+| **5×5** | **0.000335** | **34.75 dB** | **0.9545** | **0.89 ms** |
+| 7×7 | 0.000328 | 34.84 dB | 0.9556 | 1.74 ms |
+| selected 5×5 + learned b8 residual | 0.000334 | **34.77 dB** | **0.9545** | 0.89 ms |
+
+The selected 5×5 point retains all but 0.09 dB of the largest gather while
+halving its unpack cost. It requires no Meganeura operation, graph primitive,
+or shader group: the existing Ommatidium unpack dispatch owns the entire
+reconstruction. The application-side cost of producing the three primary
+surface textures is excluded from these timings and depends on whether the
+host already has an output-resolution G-buffer.
+
+The exact-base b8 run plateaued after 2,000 steps and adds 0.01 dB on the
+separate validation set. It remains in the deployment path as the learned
+spatial checkpoint, but the result is a strong signal not to spend more
+training or backbone complexity on a single-frame residual.
+
 ## ReSTIR+SVGF control
 
 The matched ReSTIR+SVGF dataset is scored only as a comparison input, never as
@@ -74,6 +102,14 @@ checkpoint. The next major quality experiment should add valid reprojected
 history rather than another static backbone family; a filter-only mode remains
 a useful lower bound when applications prefer 0.76 ms to a 0.04 dB learned
 gain.
+
+With the selected output-resolution 5×5 guide, repeated b8 runs measure
+8.46–9.30 ms median. The isolated ranges are 0.77–0.80 ms pack, 7.01–7.28 ms
+model, and 0.89–0.90 ms unpack. The stable incremental cost is therefore about
+0.8 ms in unpack for 0.67 dB and 0.0072 SSIM in deterministic spatial
+reconstruction. The amdgpu load counter was intermittently unavailable, so no
+single run is labelled “idle”; the harness now reports that state explicitly.
+The primary-surface pass itself remains an application cost outside the trace.
 
 ## Energy interpretation
 

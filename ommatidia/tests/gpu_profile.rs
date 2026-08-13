@@ -21,7 +21,7 @@
 
 use ommatidia::model::{ModelConfig, Objective, build};
 use ommatidia::rng::Rng;
-use ommatidia::{FrameInputs, Plane, PlaneSet, Upscaler};
+use ommatidia::{FrameInputs, Plane, PlaneSet, ReconstructionBase, Upscaler};
 
 fn context(timing: bool) -> std::sync::Arc<blade_graphics::Context> {
     let value = std::env::var("OMMATIDIA_TEST_DEVICE_ID").expect(
@@ -307,6 +307,26 @@ fn end_to_end_1080p_runtime_cost() {
             subresources: &blade_graphics::TextureSubresources::default(),
         },
     );
+    let hr_input_texture = context.create_texture(blade_graphics::TextureDesc {
+        name: "profile-hr-input",
+        format: blade_graphics::TextureFormat::Rgba32Float,
+        size: output_size,
+        dimension: blade_graphics::TextureDimension::D2,
+        array_layer_count: 1,
+        mip_level_count: 1,
+        usage: blade_graphics::TextureUsage::RESOURCE | blade_graphics::TextureUsage::COPY,
+        sample_count: 1,
+        external: None,
+    });
+    let hr_input_view = context.create_texture_view(
+        hr_input_texture,
+        blade_graphics::TextureViewDesc {
+            name: "profile-hr-input",
+            format: blade_graphics::TextureFormat::Rgba32Float,
+            dimension: blade_graphics::ViewDimension::D2,
+            subresources: &blade_graphics::TextureSubresources::default(),
+        },
+    );
     let output_texture = context.create_texture(blade_graphics::TextureDesc {
         name: "profile-output",
         format: Upscaler::OUTPUT_FORMAT,
@@ -327,7 +347,10 @@ fn end_to_end_1080p_runtime_cost() {
             subresources: &blade_graphics::TextureSubresources::default(),
         },
     );
-    let inputs = FrameInputs::color_only(input_view, input_view);
+    let mut inputs = FrameInputs::color_only(input_view, input_view);
+    if upscaler.config().reconstruction_base == ReconstructionBase::HighResolutionGuided {
+        inputs = inputs.with_high_resolution_gbuffer(hr_input_view, hr_input_view, hr_input_view);
+    }
     let mut encoder = context.create_command_encoder(blade_graphics::CommandEncoderDesc {
         name: "ommatidia-end-to-end-profile",
         buffer_count: 2,
@@ -335,6 +358,7 @@ fn end_to_end_1080p_runtime_cost() {
     });
     encoder.start();
     encoder.init_texture(input_texture);
+    encoder.init_texture(hr_input_texture);
     encoder.init_texture(output_texture);
     let initialized = context.submit(&mut encoder);
     assert!(context.wait_for(&initialized, 30_000).unwrap());
@@ -451,6 +475,8 @@ fn end_to_end_1080p_runtime_cost() {
     context.destroy_texture(output_texture);
     context.destroy_texture_view(input_view);
     context.destroy_texture(input_texture);
+    context.destroy_texture_view(hr_input_view);
+    context.destroy_texture(hr_input_texture);
     context.destroy_command_encoder(&mut encoder);
 }
 
