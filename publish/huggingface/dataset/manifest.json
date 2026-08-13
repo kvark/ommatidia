@@ -51,6 +51,32 @@
       "bytes": 109051968,
       "sha256": "1b500cd78d9cb232d85523500c4ac75c549fff561c60fd8b70cf0893b1b8e0f4"
     },
+    "path-trace-4spp-hr-gbuffer": {
+      "path": "data/blade-path-trace/4spp-hr-gbuffer-train.omd",
+      "samples": 2400,
+      "train_samples": 2040,
+      "held_out_samples": 360,
+      "input_extent": [128, 128],
+      "reference_extent": [256, 256],
+      "input_source": "path-trace",
+      "input_spp": 4,
+      "reference_spp": 4096,
+      "high_resolution_planes": ["color", "depth", "normal", "diffuse_albedo", "specular_f0", "roughness"],
+      "bytes": 5505024064,
+      "sha256": "670071f6cad92125e0b39b82e61b7077573fe116dfa7b1727b16dd181d2c188c"
+    },
+    "path-trace-4spp-hr-gbuffer-validation": {
+      "path": "benchmarks/path-trace-4spp-hr-gbuffer-validation.omd",
+      "samples": 128,
+      "input_extent": [128, 128],
+      "reference_extent": [256, 256],
+      "input_source": "path-trace",
+      "input_spp": 4,
+      "reference_spp": 4096,
+      "high_resolution_planes": ["color", "depth", "normal", "diffuse_albedo", "specular_f0", "roughness"],
+      "bytes": 293601344,
+      "sha256": "561c1da125250052f891b8d66126f6570bff2de30735c3588dfe120b01aaa8ad"
+    },
     "path-trace-4spp-static": {
       "path": "ablations/path-trace-4spp-static-train.omd",
       "samples": 2400,
@@ -85,13 +111,13 @@
   "model_repository": "mad-bot/ommatidia",
   "source": {
     "repository": "https://github.com/kvark/ommatidia",
-    "revision": "db0e4300ced954be1dded85dcfa1ac95d8eb1976",
+    "revision": "d416f7abdf01e761b7601d597dd0eacfec7a8157",
     "blade_revision": "101c3abd283ddcff858671f3405f041e8d87b782",
     "meganeura_revision": "c3159e830d84be920fc41ecf13b690973e8732a6"
   },
   "path_trace_source": {
     "repository": "https://github.com/kvark/ommatidia",
-    "revision": "db0e4300ced954be1dded85dcfa1ac95d8eb1976",
+    "revision": "d416f7abdf01e761b7601d597dd0eacfec7a8157",
     "blade_revision": "101c3abd283ddcff858671f3405f041e8d87b782",
     "meganeura_revision": "c3159e830d84be920fc41ecf13b690973e8732a6",
     "train_seed": 0,

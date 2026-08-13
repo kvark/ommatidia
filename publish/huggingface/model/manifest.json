@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "project": "ommatidia",
-  "variant": "guided-b8-2x-spatial-v0.2",
+  "variant": "hr-guided-b8-2x-spatial-v0.3",
   "objective": "direct",
   "scale_factor": 2,
   "parameters": 73808,
@@ -14,28 +14,33 @@
       "diffuse_albedo",
       "specular_f0",
       "roughness"
+    ],
+    "high_resolution_planes": [
+      "depth",
+      "normal",
+      "diffuse_albedo"
     ]
   },
   "files": {
     "weights": {
       "path": "model.safetensors",
       "bytes": 899336,
-      "sha256": "92c8d55e067b3da55ae16b7866a1b577c4af8276400972d846a9d17244a4964e"
+      "sha256": "75a28b1dd6ed7facb52dcf4437a72e846a9a6e8340c9e3df3448f88e253e01e2"
     },
     "config": {
       "path": "config.ron",
-      "bytes": 361,
-      "sha256": "5d8d89c6dfced27a638085597e476363c18a4339a3c42e20a70b7091af7063d4"
+      "bytes": 369,
+      "sha256": "6902751041f64a66e0647d3ba9ba8ff6c4881e70c7b676bea5e20e375c68a34b"
     }
   },
   "dataset": {
     "repository": "mad-bot/ommatidia",
-    "revision": "v0.2.0",
-    "source": "path-trace-4spp-static"
+    "revision": "v0.3.0",
+    "source": "path-trace-4spp-hr-gbuffer"
   },
   "source": {
     "repository": "https://github.com/kvark/ommatidia",
-    "revision": "db0e4300ced954be1dded85dcfa1ac95d8eb1976"
+    "revision": "d416f7abdf01e761b7601d597dd0eacfec7a8157"
   },
   "compatibility": {
     "meganeura_revision": "c3159e830d84be920fc41ecf13b690973e8732a6",
