@@ -11,9 +11,9 @@ a sparse low-resolution path trace provides the primary input and a converged
 high-resolution path trace provides ground truth. ReSTIR+SVGF is a comparison
 control only; the product does not assume sample reuse or a prior denoiser.
 
-> **Status:** early. The published v0.1 checkpoint is historical and was
-> trained on raw ReSTIR. The current path is trained from independent sparse
-> paths and uses no sample reuse. Temporal history is designed but not yet
+> **Status:** early. The current v0.2 checkpoint is trained from independent
+> sparse paths and uses no sample reuse. The v0.1 raw-ReSTIR checkpoint remains
+> available as historical provenance. Temporal history is designed but not yet
 > implemented; see [`docs/temporal.md`](docs/temporal.md).
 
 ![Ommatidium architecture: sparse path trace and G-buffer through GPU packing, a multi-scale low-resolution reconstructor, sub-pixel unpacking, and future compact temporal feature feedback](docs/architecture.svg)
@@ -24,9 +24,8 @@ documented in [`docs/architecture-decision.md`](docs/architecture-decision.md).
 [Download the checkpoint](https://huggingface.co/mad-bot/ommatidia) ·
 [Training and validation data](https://huggingface.co/datasets/mad-bot/ommatidia)
 
-The Hugging Face v0.1 checkpoint is retained for release provenance; it predates
-the independent-path training contract and is not the checkpoint used for the
-results below. The current guided b8 checkpoint reconstructs an actual
+The Hugging Face `v0.2.0` revision contains the guided b8 checkpoint used for
+the results below; `v0.1.0` is retained for release provenance. It reconstructs an actual
 960×540 → 1920×1080 frame in 7.76 ms median (7.94 ms p90) on an idle Radeon
 RX 7900 XT, including pack, model, unpack, and submissions but excluding ray
 tracing and display post-processing. An isolated trace attributes 0.76 ms to
