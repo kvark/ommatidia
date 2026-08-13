@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["ommatidia", "ommatidia-data", "ommatidia-train"]
+members = ["ommatidia", "ommatidia-capi", "ommatidia-data", "ommatidia-train"]
 
 [workspace.package]
 version = "0.1.0"

@@ -28,5 +28,5 @@ pub mod transform;
 
 pub use dataset::{InputSource, Layout, Plane, PlaneSet, Sample};
 pub use diffusion::{Schedule, timestep_embedding};
-pub use model::{Model, ModelConfig, Objective};
+pub use model::{Backbone, Model, ModelConfig, Objective};
 pub use runtime::{FrameInputs, Upscaler, UpscalerError};

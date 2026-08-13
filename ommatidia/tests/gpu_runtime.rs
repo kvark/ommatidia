@@ -16,7 +16,7 @@ use blade_graphics as gpu;
 use half::f16;
 use ommatidia::batch::{self, Crop};
 use ommatidia::dataset::{Layout, Plane, PlaneSet, Sample};
-use ommatidia::model::{ModelConfig, Objective};
+use ommatidia::model::{Backbone, ModelConfig, Objective};
 use ommatidia::rng::Rng;
 use ommatidia::runtime::{FrameInputs, Upscaler};
 
@@ -63,6 +63,7 @@ fn config() -> ModelConfig {
         // Deliberately not 1, so a runtime that ignored the gain would show up.
         residual_gain: 7.5,
         gn_eps: 1e-5,
+        backbone: Backbone::Conv,
         objective: Objective::Direct,
     }
 }

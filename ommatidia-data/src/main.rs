@@ -26,6 +26,7 @@ struct Args {
     lr_height: u32,
     scale: u32,
     canonical_frames: usize,
+    canonical_bounces: u32,
     input_frames: usize,
     seed: u64,
     preview: Option<PathBuf>,
@@ -47,6 +48,7 @@ impl Default for Args {
             lr_height: 128,
             scale: 2,
             canonical_frames: 1024,
+            canonical_bounces: render::REFERENCE_MAX_BOUNCES,
             input_frames: 1,
             seed: 0,
             preview: None,
@@ -71,6 +73,7 @@ usage: ommatidia-data [options]
   --lr WxH                  low resolution extent  [128x128]
   --scale S                 high resolution is low times this  [2]
   --canonical-frames N      accumulated reference frames, 4 spp each [1024]
+  --canonical-bounces N     maximum reference path depth [8]
   --input-frames N          sparse path-traced input samples per pixel [1]
   --seed N                  base seed for scenes and cameras  [0]
   --device-id ID            adapter ID for this standalone process (hex or decimal)
@@ -115,6 +118,11 @@ fn parse_args() -> Result<Args, String> {
                 args.canonical_frames = value()?
                     .parse()
                     .map_err(|e| format!("--canonical-frames: {e}"))?
+            }
+            "--canonical-bounces" => {
+                args.canonical_bounces = value()?
+                    .parse()
+                    .map_err(|e| format!("--canonical-bounces: {e}"))?
             }
             "--input-frames" => {
                 args.input_frames = value()?
@@ -554,6 +562,7 @@ fn main() {
                     &camera,
                     render::Pass::Canonical {
                         frames: args.canonical_frames,
+                        max_bounces: args.canonical_bounces,
                     },
                     false,
                     None,

@@ -25,8 +25,8 @@ Recording into the host command buffer is the preferred end state: it avoids
 hidden queue submissions and makes barriers and profiler scopes visible to the
 application. Meganeura currently owns and submits its encoder, while
 blade-graphics can create a device but cannot wrap externally owned Vulkan
-handles. Those are the two prerequisites before a truthful C example can be
-shipped.
+handles. Those are the two prerequisites before a truthful C *inference*
+example can be shipped.
 
 This should begin as an ordinary exported API over core Vulkan handles. A
 private Vulkan extension would require a layer or driver implementation and
@@ -59,9 +59,14 @@ revision and verifies its checksum rather than creating architecture-specific
 repository names. The GitHub release and HF model card cross-link the same
 semantic version.
 
-The first release workflow should be added only with the ABI crate: publishing
-an `rlib` or a Rust `cdylib` with no stable C surface would look deployable but
-would not be safely consumable.
+The `ommatidia-capi` crate now establishes ABI 1.0 for version negotiation,
+panic-free status/error handling, and checkpoint discovery. Its
+[`examples/c/inspect.c`](../examples/c/inspect.c) consumer compiles and links
+as C, and can query the model's scale, planes, alignment, backbone, and
+parameter count without touching a GPU. This is useful release groundwork,
+but it is deliberately not presented as native inference. The public header
+states that Vulkan execution is unavailable until the borrowed-device and
+host-command-buffer prerequisites below land.
 
 ## Groundwork sequence
 
@@ -69,7 +74,8 @@ would not be safely consumable.
    without enumerating adapters or destroying host handles.
 2. Let Meganeura record a prepared session into a caller-provided encoder or
    command buffer, with no implicit submission.
-3. Freeze the resource, synchronization, and error contract in a small C ABI
-   crate and land the C example as its conformance test.
+3. Extend the existing C ABI and C conformance example with the resource and
+   synchronization contract. Do not add a device-ID field: creation borrows
+   the handles the host supplies.
 4. Add release archives and provenance only after that example builds and runs
    against an installed archive rather than the Rust workspace.

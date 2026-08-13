@@ -88,7 +88,7 @@ pub fn load_config(stem: impl AsRef<Path>) -> Result<(ModelConfig, Paths), Error
 mod tests {
     use super::*;
     use crate::dataset::{Plane, PlaneSet};
-    use crate::model::Objective;
+    use crate::model::{Backbone, Objective};
 
     #[test]
     fn paths_share_a_stem() {
@@ -142,5 +142,15 @@ mod tests {
             load_config("/nonexistent/ommatidia/checkpoint"),
             Err(Error::Io(_))
         ));
+    }
+
+    #[test]
+    fn pre_attention_sidecars_default_to_the_convolutional_backbone() {
+        let text = ron::ser::to_string(&ModelConfig::default()).unwrap();
+        let marker = "backbone:Conv,";
+        assert!(text.contains(marker), "unexpected RON shape: {text}");
+        let old_text = text.replace(marker, "");
+        let config: ModelConfig = ron::from_str(&old_text).unwrap();
+        assert_eq!(config.backbone, Backbone::Conv);
     }
 }

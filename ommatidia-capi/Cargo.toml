@@ -1,0 +1,19 @@
+[package]
+name = "ommatidia-capi"
+description = "Stable C ABI for Ommatidia model discovery"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lib]
+name = "ommatidia_native"
+crate-type = ["cdylib", "staticlib", "rlib"]
+
+[dependencies]
+ommatidia.workspace = true
+
+[dev-dependencies]
+ron.workspace = true
