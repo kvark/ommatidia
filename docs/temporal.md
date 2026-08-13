@@ -10,9 +10,9 @@ The first path-tracing experiment exposed a weak nearest-neighbor base rather
 than a transformer deficit. On 76 crops from a separate 128-scene 4-spp
 validation set, bilinear scores 26.46 dB / 0.5864 SSIM. Low-resolution
 depth/normal/albedo guidance reaches 34.08 dB / 0.9473; supplying the exact
-output-resolution primary surfaces raises a 5×5 guided reconstruction to
-34.75 dB / 0.9545 before the learned correction runs. The spatial network adds
-only about 0.02 dB to that base.
+output-resolution primary surfaces plus a held-out guide tuning raises the
+current 128-crop release score to 34.72 dB / 0.9574 before the learned
+correction runs. The spatial network reaches 34.74 dB / 0.9575.
 
 This makes geometry-aware spatial reconstruction credible, but it also makes
 the remaining limitation unambiguous: a larger static network cannot recover

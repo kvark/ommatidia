@@ -52,21 +52,22 @@ the network. A host with no output-resolution primary surfaces should pin
 
 ## Results
 
-On 76 crops from a separate 128-scene, seed-10000 validation set with 4-spp
+On 128 non-overlapping crops from a separate 128-scene, seed-10000 validation set with 4-spp
 128×128 independent path inputs and 4,096-spp 256×256 canonical references:
 
 | Reconstruction | MSE | PSNR | SSIM |
 |---|---:|---:|---:|
-| nearest 2× | 0.004385 | 23.58 dB | 0.4593 |
-| bilinear 2× | 0.002261 | 26.46 dB | 0.5864 |
-| low-resolution guided 2×, no network | 0.000391 | 34.08 dB | 0.9473 |
-| HR-guided 5×5, no network | 0.000335 | 34.75 dB | 0.9545 |
-| HR-guided + b8 residual | **0.000334** | **34.77 dB** | **0.9545** |
+| nearest 2× | 0.004367 | 23.60 dB | 0.4466 |
+| bilinear 2× | 0.002233 | 26.51 dB | 0.5776 |
+| v0.3 HR-guided 5×5, no network | 0.000346 | 34.61 dB | 0.9543 |
+| tuned HR-guided 5×5, no network | 0.000337 | 34.72 dB | 0.9574 |
+| tuned HR-guided + b8 residual | **0.000335** | **34.74 dB** | **0.9575** |
 
-The HR guide contributes 0.67 dB and 0.0072 SSIM; the exact-base b8 residual
-adds 0.01 dB after 2,000 steps. Repeated 960×540 → 1920×1080 runs on a Radeon
-RX 7900 XT span 8.46–9.30 ms median. The isolated stage ranges are 0.77–0.80 ms
-pack, 7.01–7.28 ms network, and 0.89–0.90 ms unpack. Ray tracing, the optional
+The fixed-cost coefficient tuning adds 0.11 dB and 0.0031 SSIM over the v0.3
+base; the matching b8 residual adds 0.02 dB after 2,000 steps. A
+960×540 → 1920×1080 trace on a Radeon RX 7900 XT measured 8.83 ms median and
+8.90 ms p90. Its isolated stages are 0.79 ms pack, 7.22 ms network, and
+0.88 ms unpack. Ray tracing, the optional
 output-resolution primary-surface pass, and display post-processing are
 excluded.
 
@@ -85,7 +86,7 @@ distribution. It has no motion vectors or temporal history, cannot recover
 disoccluded samples from prior frames, and should not be described as DLSS-like
 quality yet.
 
-Pin the `v0.3.0` Hub revision, or its exact commit, in applications. Do not
+Pin the `v0.3.1` Hub revision, or its exact commit, in applications. Do not
 download mutable `main` for a shipped build.
 
 The weights are released under the MIT license.

@@ -14,7 +14,13 @@
     gn_eps: 0.00001,
     time_input_dim: 64,
     time_embed_dim: 256,
-    residual_gain: 51.941494,
+    residual_gain: 52.381493,
     objective: Direct,
     reconstruction_base: HighResolutionGuided,
+    guide: (
+        spatial_sigma: 4.5,
+        depth_sigma: 0.01,
+        normal_power: 24.0,
+        albedo_sigma: 0.2,
+    ),
 )

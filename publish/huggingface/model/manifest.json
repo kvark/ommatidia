@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "project": "ommatidia",
-  "variant": "hr-guided-b8-2x-spatial-v0.3",
+  "variant": "hr-guided-b8-2x-spatial-v0.3.1",
   "objective": "direct",
   "scale_factor": 2,
   "parameters": 73808,
@@ -25,12 +25,12 @@
     "weights": {
       "path": "model.safetensors",
       "bytes": 899336,
-      "sha256": "75a28b1dd6ed7facb52dcf4437a72e846a9a6e8340c9e3df3448f88e253e01e2"
+      "sha256": "26c912bcc7ed22ae5475038326e39e21e63d5aa3a4dd8cd24810fb844cda56c9"
     },
     "config": {
       "path": "config.ron",
-      "bytes": 369,
-      "sha256": "6902751041f64a66e0647d3ba9ba8ff6c4881e70c7b676bea5e20e375c68a34b"
+      "bytes": 499,
+      "sha256": "aceca7ce724abd28fbdc4a309c55302db9864bb0a6145bb22896a9f59c34febd"
     }
   },
   "dataset": {
@@ -40,10 +40,10 @@
   },
   "source": {
     "repository": "https://github.com/kvark/ommatidia",
-    "revision": "d416f7abdf01e761b7601d597dd0eacfec7a8157"
+    "revision": "a43c14882a132781d6c5213c1cd7ef1ff983ae8f"
   },
   "compatibility": {
-    "meganeura_revision": "c3159e830d84be920fc41ecf13b690973e8732a6",
+    "meganeura_revision": "f7653f8012ebde866fa29cf98779aa9cc705a719",
     "blade_revision": "101c3abd283ddcff858671f3405f041e8d87b782"
   }
 }
