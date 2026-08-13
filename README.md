@@ -8,37 +8,29 @@ The network runs through [meganeura](https://github.com/kvark/meganeura) on
 Vulkan and Metal, so there is no CUDA, no vendor SDK, and no Python anywhere in
 the pipeline. Training data comes from [blade](https://github.com/kvark/blade):
 a sparse low-resolution path trace provides the primary input and a converged
-high-resolution path trace provides ground truth. Raw ReSTIR and ReSTIR+SVGF
-remain comparison baselines; the product does not assume either one upstream.
+high-resolution path trace provides ground truth. ReSTIR+SVGF is a comparison
+control only; the product does not assume sample reuse or a prior denoiser.
 
-> **Status:** early. The published v0.1 checkpoint is the first single-frame
-> Blade integration and was trained on raw ReSTIR. The generator on `main` is
-> path-tracing-first for the next checkpoint. Temporal history is designed but
-> not implemented; see [`docs/temporal.md`](docs/temporal.md).
+> **Status:** early. The published v0.1 checkpoint is historical and was
+> trained on raw ReSTIR. The current path is trained from independent sparse
+> paths and uses no sample reuse. Temporal history is designed but not yet
+> implemented; see [`docs/temporal.md`](docs/temporal.md).
 
 ![Ommatidium architecture: sparse path trace and G-buffer through GPU packing, a multi-scale low-resolution reconstructor, sub-pixel unpacking, and future compact temporal feature feedback](docs/architecture.svg)
 
-The transformer investigation and the resulting hybrid/temporal decision are
+The transformer investigation and the resulting complexity/temporal decision are
 documented in [`docs/architecture-decision.md`](docs/architecture-decision.md).
 
 [Download the checkpoint](https://huggingface.co/mad-bot/ommatidia) ·
 [Training and validation data](https://huggingface.co/datasets/mad-bot/ommatidia)
 
-The v0.1 checkpoint was trained on 2,400 raw-ReSTIR/canonical pairs before the
-Blade energy fixes below, with 360 scenes held out. Its frozen historical
-capture improved over raw nearest upsampling by **2.93 dB** and beat the old
-SVGF capture by **1.73 dB**. That is release provenance, not a current
-replacement claim: on a new 128-scene capture from corrected Blade, the v0.1
-weights improve raw input by **1.84 dB** but score 24.12 dB versus current
-SVGF's 24.95 dB. The changed input distribution requires a retrain, and the
-next checkpoint targets sparse path tracing rather than ReSTIR. On an idle
-Radeon RX 7900 XT, a sustained end-to-end upscaler benchmark measures **about
-20 ms for an actual 960×540 → 1920×1080 2× reconstruction**, including texture
-pack, the 649k parameter model, unpack, and queue submissions. It excludes the
-ray tracer and display post-processing. Repeated sustained medians range from
-19.54 to 20.91 ms; the benchmark also reports p90 and range because a recent
-40-frame run had a 29.95 ms p90. This is not a claim that the full renderer
-runs at 20 ms—or that median throughput alone guarantees frame pacing.
+The Hugging Face v0.1 checkpoint is retained for release provenance; it predates
+the independent-path training contract and is not the checkpoint used for the
+results below. The current guided b8 checkpoint reconstructs an actual
+960×540 → 1920×1080 frame in 7.76 ms median (7.94 ms p90) on an idle Radeon
+RX 7900 XT, including pack, model, unpack, and submissions but excluding ray
+tracing and display post-processing. An isolated trace attributes 0.76 ms to
+the guided pack, 6.99 ms to the network, and 0.12 ms to unpacking.
 
 Upscaling is real today, but narrowly scoped: the published checkpoint and the
 current training recipe are **2×**. Runtime frames may be rectangular (the
@@ -49,80 +41,46 @@ head has the corresponding `3 × scale²` channels.
 
 ## Results
 
-The path-tracing-first data path now produces an unbiased one-path input and a
-4,096-spp reference. This pair is the target for the next checkpoint; it does
-not run the v0.1 ReSTIR-trained weights on an out-of-distribution input.
+The path-tracing-first data path produces independent sparse paths and a
+4,096-spp reference. It does not run historical weights on an
+out-of-distribution input.
 
-| Sparse path trace (1 spp, 128×128) | Converged target (4,096 spp, 256×256) |
-|---|---|
-| ![A one-sample-per-pixel low-resolution Blade path trace](runs/path-trace-smoke/000-lr.png) | ![A clean high-resolution Blade path-traced reference](runs/path-trace-smoke/000-hr.png) |
+The original model was evaluated against the wrong deterministic base. On 76
+crops from a separate 128-scene validation set, texel-aligned bilinear scores
+26.46 dB / 0.5864 SSIM. A depth/normal/albedo-guided prefilter at input
+resolution raises the zero-network reconstruction to 34.08 dB / 0.9473; the
+b8 learned residual reaches 34.12 dB / 0.9474. A b24 control reaches 34.15 dB /
+0.9476 but costs 2.67× as much end-to-end time. The filter is part of
+Ommatidium's reconstruction contract and runs inside the existing pack
+stage—there is still no ReSTIR or SVGF upstream.
+The complete controlled setup and trace are recorded in the
+[`independent-path result`](docs/results/path-trace-guided-2026-08-13.md).
 
-The first matched spatial training run is an important negative result: at 1
-spp the network improves a separate held-out set from 19.22 to only 19.44 dB
-and slightly lowers SSIM. A favorable four-static-sample proxy improves from
-23.58 to only 23.66 dB. By contrast, ReSTIR+SVGF reaches a similar 23.61 dB but
-0.8776 SSIM versus 0.4595 for the 4-spp network. PSNR alone hides that large
-structural difference, and more single-frame training does not create missing
-evidence. The next checkpoint therefore needs the temporal contract described
-in [`docs/temporal.md`](docs/temporal.md); the full controlled result is
-[`documented here`](docs/results/path-trace-spatial-b24-2026-08-12.md).
+A compute-matched shifted-window transformer tied the convolutional network in
+quality and ran 7.5% slower. Its experimental Meganeura window primitive was
+removed again, deleting roughly 440 lines rather than carrying unused graph,
+autodiff, compiler, and shader surface. The evidence and future temporal gate
+are in the [`architecture decision`](docs/architecture-decision.md).
 
-A compute-matched shifted-window transformer bottleneck also reaches 23.66 dB
-and effectively identical SSIM, while taking 21.36 ms model-only versus 19.88
-ms for convolution on the RX 7900 XT. The spatial default therefore stays
-convolutional; coarse attention remains available for the future temporal
-fusion ablation. The controls and reasoning are in the
-[`architecture decision`](docs/architecture-decision.md).
+The primary comparison is now ordered by the actual product path. Every image
+is a matched 2× reconstruction of the same held-out scene; ReSTIR+SVGF is a
+separate control, not Ommatidium's input.
 
-| ReSTIR+SVGF | Sparse path (1 spp) | Spatial Ommatidium | Canonical reference |
-|---|---|---|---|
-| ![Blade ReSTIR plus SVGF](runs/eval-path-reference-svgf/nearest.png) | ![One-sample sparse path input](runs/eval-path-trace-validation/nearest.png) | ![The current spatial path reconstruction](runs/eval-path-trace-validation/predicted.png) | ![The matched canonical reference](runs/eval-path-trace-validation/reference.png) |
+| Sparse paths (4 spp, 64×64 crop) | Bilinear 2× | Ommatidium 2× | ReSTIR+SVGF control, bilinear 2× | Canonical (4,096 spp, 128×128 crop) |
+|---|---|---|---|---|
+| ![Independent sparse path input](runs/eval-path-trace-4spp-guided-validation/input.png) | ![Bilinear sparse path upsampling](runs/eval-path-trace-4spp-guided-validation/bilinear.png) | ![Ommatidium guided neural reconstruction](runs/eval-path-trace-4spp-guided-validation/predicted.png) | ![Matched Blade ReSTIR plus SVGF control](runs/eval-path-control-svgf/bilinear.png) | ![Matched converged canonical path trace](runs/eval-path-trace-4spp-guided-validation/reference.png) |
 
-The Raw ReSTIR screenshot exposed an invalid comparison as well as real Blade
-bugs. The corrected capture below puts the same raw frame beside a
-transport-matched canonical direct reference and the eight-bounce training
-target:
+### Why the ReSTIR control is darker
 
-| Corrected Raw ReSTIR (128×128) | Matched direct reference (256×256) | Full canonical target (256×256) |
-|---|---|---|
-| ![Corrected noisy low-resolution Blade ReSTIR render](runs/restir-energy-comparison/000-lr.png) | ![Canonical reference restricted to the transport ReSTIR estimates](runs/restir-energy-comparison/000-hr.png) | ![The full multi-bounce canonical path-traced reference](runs/live-energy-fixed/000-hr.png) |
-
-In a linear-HDR white-furnace regression, the canonical ReSTIR candidates
-carry 99.1% of matched reference energy and pairwise neighbor reuse carries
-99.0%. The cheap non-pairwise approximation carried only 88.5%, so Ommatidia's
-Blade captures now use pairwise MIS. Blade also no longer discards dim
-candidates by an absolute cutoff, and a visibility ray that first hits an
-emissive mesh now returns that emission instead of treating the light as a
-black occluder. A black-environment test pins the latter behavior.
-
-The remaining dark occluded faces appear in the matched direct reference too;
-the clean eight-bounce image fills them with indirect transport that
-`RenderMode::RealTime` does not estimate. Raw ReSTIR versus the full reference
-is therefore useful as an end-to-end error measurement, but not as proof of
-its direct-light energy. Ommatidia's product input remains sparse path tracing,
-not ReSTIR.
-
-The v0.1 shared-context checkpoint, re-run through Blade's corrected pairwise
-ReSTIR path:
-
-| Raw ReSTIR input (128×128) | Ommatidium (2×, 256×256) | Canonical path trace (256×256) |
-|---|---|---|
-| ![A noisy low-resolution Blade ReSTIR render](runs/live-energy-fixed/000-lr.png) | ![The Ommatidium reconstruction](runs/live-energy-fixed/000-predicted.png) | ![The canonical path-traced reference](runs/live-energy-fixed/000-hr.png) |
-
-The current energy-correct validation capture below uses the same scene and a
-byte-identical canonical reference for both Blade inputs. Images are
-64×64 held-out crops reconstructed or nearest-upscaled for a like-for-like 2×,
-128×128 comparison.
-
-| Raw ReSTIR | Blade SVGF | Ommatidium | Canonical reference |
-|---|---|---|---|
-| ![Raw ReSTIR validation crop](runs/eval-validation-energy-fixed/nearest.png) | ![Blade SVGF validation crop](runs/eval-validation-svgf-energy-fixed/nearest.png) | ![Ommatidium validation crop](runs/eval-validation-energy-fixed/predicted.png) | ![Canonical validation crop](runs/eval-validation-energy-fixed/reference.png) |
-
-Over all 76 held-out crops, raw nearest is 22.28 dB / 0.4969 SSIM, v0.1 is
-24.12 dB / 0.5103, and SVGF is 24.95 dB / 0.8706. This revalidation is a more
-useful architecture signal than the old headline: a spatial network trained
-on one biased estimator neither generalizes to a corrected estimator nor
-recovers the structural evidence that temporal filtering supplies.
+Blade's linear-HDR regression shows that no-reuse ReSTIR carries 99.1% and
+pairwise reuse 99.0% of a **transport-matched direct** canonical reference.
+The remaining dark faces are not a reservoir normalization loss: Blade's
+real-time mode stops at the first non-emissive hit, while the clean canonical
+target traces secondary paths that bring indirect fill back from the floor and
+neighboring objects. NVIDIA likewise treats multi-bounce reuse as a separate
+[ReSTIR GI](https://research.nvidia.com/publication/2021-06_restir-gi-path-resampling-real-time-path-tracing)
+algorithm. The table above therefore labels ReSTIR+SVGF as a direct-light
+comparison control and never presents raw ReSTIR as Ommatidium source data.
 
 The checked-in July experiments below used SVGF-filtered inputs. They found the
 architecture and kernel optimizations, but their quality figures describe an
@@ -143,9 +101,9 @@ further:
   in meganeura — parallelising GroupNorm over the image, and making the
   Winograd transforms read contiguously — were worth 5.4x with the weights
   untouched. The rest was not needing the large network at all: a 649k
-  parameter model matches the 6.5M one once it is trained out. It now reaches
-  roughly 50 fps at 960×540 → 1920×1080; see the latency section of the design doc for the
-  work required to reach a dedicated-upscaler budget.
+  parameter model matches the 6.5M one once it is trained out. With the much
+  stronger guided base, a 74k-parameter b8 model stays within 0.03 dB of b24
+  and runs in 7.76 ms end to end at 960×540 → 1920×1080.
 - **Compare shapes at convergence, not at a fixed step count.** A sweep that
   gave every shape 5000 steps ranked them almost exactly wrong, because the
   large ones were the undertrained ones.
@@ -211,21 +169,15 @@ the other arm of that ablation without regenerating anything.
 ## Using it from Blade
 
 Render at the model's input resolution, then hand Ommatidium the input textures
-and the graphics context the application already owns. The v0.1 convenience
-example below uses Blade's raw ReSTIR views because that is what its published
-weights were trained on; new path-traced checkpoints use
-`FrameInputs::from_color_and_blade_gbuffer`.
-The network executes on the same device and queue — no second context, external
-memory import, cross-device copy, or direct-model CPU readback.
+and the graphics context the application already owns. The primary integration
+uses the application's independent sparse ray/path colour plus Blade's primary
+surface G-buffer. The network executes on the same device and queue—no second
+context, external-memory import, cross-device copy, or direct-model CPU
+readback.
 
 ```rust
-renderer.render(
-    &mut encoder,
-    blade_render::RenderMode::RealTime,
-    debug_config,
-    ray_config,
-    None, // Ommatidium replaces SVGF.
-);
+path_tracer.render_sparse(&mut encoder, sparse_path_color);
+renderer.fill_gbuffer(&mut encoder, debug_config);
 
 let low = renderer.get_surface_size();
 let mut upscaler = ommatidia::Upscaler::from_checkpoint_for_extent(
@@ -238,7 +190,10 @@ let mut upscaler = ommatidia::Upscaler::from_checkpoint_for_extent(
 
 upscaler.upscale(
     &mut encoder,
-    &ommatidia::FrameInputs::from_blade(&renderer),
+    &ommatidia::FrameInputs::from_color_and_blade_gbuffer(
+        sparse_path_color,
+        renderer.view_gbuffer(),
+    ),
     output_view, // Rgba16Float, at upscaler.output_extent()
 );
 

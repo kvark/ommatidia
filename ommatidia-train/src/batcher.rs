@@ -130,6 +130,7 @@ impl Batcher {
                 crop,
                 0,
                 config.residual_gain,
+                config.reconstruction_base,
                 &mut self.residual,
             );
 
@@ -204,6 +205,7 @@ mod tests {
             cond_planes: PlaneSet::new().with(Plane::Color),
             time_input_dim: 16,
             objective,
+            reconstruction_base: ommatidia::model::ReconstructionBase::Bilinear,
             ..ModelConfig::default()
         }
     }

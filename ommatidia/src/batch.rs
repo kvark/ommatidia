@@ -23,16 +23,18 @@
 //! [`crate::transform`]. The residual is
 //!
 //! ```text
-//! residual = compress(HR[sub-pixel]) - compress(LR[pixel])
+//! residual = compress(HR[sub-pixel]) - compress(reconstruct(LR, sub-pixel))
 //! ```
 //!
-//! which is bounded in `(-1, 1)` and centred near zero, and the base it is
-//! taken over is nearest-neighbour rather than bilinear so the shader can
-//! reproduce it with no edge convention to get wrong.
+//! which is bounded in `(-1, 1)` and centred near zero. New checkpoints use an
+//! explicitly specified renderer-guided, texel-center-aligned bilinear base;
+//! the historical nearest and controlled plain-bilinear bases remain in the
+//! sidecar contract so old and ablation weights are interpreted correctly.
 
 use half::f16;
 
 use crate::dataset::{Layout, Plane, PlaneSet, Sample};
+use crate::model::ReconstructionBase;
 use crate::transform;
 
 /// A rectangular crop of one sample, in low resolution pixels.
@@ -122,6 +124,146 @@ pub fn write_conditioning(
     }
 }
 
+const GUIDE_SPATIAL_SIGMA: f32 = 3.0;
+const GUIDE_DEPTH_SIGMA: f32 = 0.05;
+const GUIDE_NORMAL_POWER: f32 = 32.0;
+const GUIDE_ALBEDO_SIGMA: f32 = 0.1;
+const GUIDE_RADIUS: i32 = 6;
+
+fn plane_value(
+    sample: &Sample,
+    layout: &Layout,
+    plane: Plane,
+    component: usize,
+    x: usize,
+    y: usize,
+) -> f32 {
+    let channel = layout
+        .lr_planes
+        .channel_offset(plane)
+        .unwrap_or_else(|| panic!("dataset has no {plane:?} plane"))
+        + component;
+    sample.lr[channel * layout.lr_texels() + y * layout.lr_width as usize + x].to_f32()
+}
+
+fn guided_texel(sample: &Sample, layout: &Layout, center_x: i32, center_y: i32) -> [f32; 3] {
+    let width = layout.lr_width as i32;
+    let height = layout.lr_height as i32;
+    let cx = center_x.clamp(0, width - 1) as usize;
+    let cy = center_y.clamp(0, height - 1) as usize;
+    let center_depth =
+        transform::encode_depth(plane_value(sample, layout, Plane::Depth, 0, cx, cy));
+    let center_normal = [
+        plane_value(sample, layout, Plane::Normal, 0, cx, cy),
+        plane_value(sample, layout, Plane::Normal, 1, cx, cy),
+        plane_value(sample, layout, Plane::Normal, 2, cx, cy),
+    ];
+    let center_albedo = [
+        plane_value(sample, layout, Plane::DiffuseAlbedo, 0, cx, cy),
+        plane_value(sample, layout, Plane::DiffuseAlbedo, 1, cx, cy),
+        plane_value(sample, layout, Plane::DiffuseAlbedo, 2, cx, cy),
+    ];
+    let center_normal_len2 = center_normal.iter().map(|v| v * v).sum::<f32>();
+    let spatial_denominator = 2.0 * GUIDE_SPATIAL_SIGMA * GUIDE_SPATIAL_SIGMA;
+    let depth_denominator = 2.0 * GUIDE_DEPTH_SIGMA * GUIDE_DEPTH_SIGMA;
+    let albedo_denominator = 2.0 * GUIDE_ALBEDO_SIGMA * GUIDE_ALBEDO_SIGMA;
+    let mut sum = [0.0f32; 3];
+    let mut weight_sum = 0.0f32;
+
+    for dy in -GUIDE_RADIUS..=GUIDE_RADIUS {
+        let y = (center_y + dy).clamp(0, height - 1) as usize;
+        for dx in -GUIDE_RADIUS..=GUIDE_RADIUS {
+            let x = (center_x + dx).clamp(0, width - 1) as usize;
+            let distance2 = (dx * dx + dy * dy) as f32;
+            let mut weight = (-distance2 / spatial_denominator).exp();
+            let depth = transform::encode_depth(plane_value(sample, layout, Plane::Depth, 0, x, y));
+            weight *= (-(depth - center_depth).powi(2) / depth_denominator).exp();
+
+            let normal = [
+                plane_value(sample, layout, Plane::Normal, 0, x, y),
+                plane_value(sample, layout, Plane::Normal, 1, x, y),
+                plane_value(sample, layout, Plane::Normal, 2, x, y),
+            ];
+            let normal_len2 = normal.iter().map(|v| v * v).sum::<f32>();
+            let normal_weight = if center_normal_len2 < 0.25 {
+                (normal_len2 < 0.25) as u8 as f32
+            } else if normal_len2 < 0.25 {
+                0.0
+            } else {
+                let dot = normal
+                    .iter()
+                    .zip(center_normal)
+                    .map(|(a, b)| a * b)
+                    .sum::<f32>()
+                    / (normal_len2 * center_normal_len2).sqrt();
+                dot.max(0.0).powf(GUIDE_NORMAL_POWER)
+            };
+            weight *= normal_weight;
+
+            let albedo_delta2 = (0..3)
+                .map(|component| {
+                    (plane_value(sample, layout, Plane::DiffuseAlbedo, component, x, y)
+                        - center_albedo[component])
+                        .powi(2)
+                })
+                .sum::<f32>();
+            weight *= (-albedo_delta2 / albedo_denominator).exp();
+
+            for (component, value) in sum.iter_mut().enumerate() {
+                *value += weight * plane_value(sample, layout, Plane::Color, component, x, y);
+            }
+            weight_sum += weight;
+        }
+    }
+    for value in &mut sum {
+        *value /= weight_sum.max(1e-12);
+    }
+    sum
+}
+
+/// Geometry-guided denoising at input resolution followed by exact bilinear
+/// reconstruction of one crop. The filter reads beyond crop boundaries, just
+/// as the full-frame GPU path does.
+pub fn guided_base(sample: &Sample, layout: &Layout, crop: Crop) -> Vec<f32> {
+    let tile = crop.tile as usize;
+    let padded_width = tile + 2;
+    let origin_x = crop.x as i32 - 1;
+    let origin_y = crop.y as i32 - 1;
+    let mut padded = vec![0.0f32; padded_width * padded_width * 3];
+    for y in 0..padded_width {
+        for x in 0..padded_width {
+            let color = guided_texel(sample, layout, origin_x + x as i32, origin_y + y as i32);
+            padded[(y * padded_width + x) * 3..(y * padded_width + x) * 3 + 3]
+                .copy_from_slice(&color);
+        }
+    }
+
+    let scale = layout.scale as usize;
+    let out_width = tile * scale;
+    let mut out = vec![0.0f32; out_width * out_width * 3];
+    for oy in 0..out_width {
+        let global_y = crop.y as usize * scale + oy;
+        let (y0, y1, ty) = bilinear_axis(global_y, layout.lr_height as usize, scale);
+        for ox in 0..out_width {
+            let global_x = crop.x as usize * scale + ox;
+            let (x0, x1, tx) = bilinear_axis(global_x, layout.lr_width as usize, scale);
+            let local = |x: usize, y: usize, component: usize| {
+                let px = (x as i32 - origin_x) as usize;
+                let py = (y as i32 - origin_y) as usize;
+                padded[(py * padded_width + px) * 3 + component]
+            };
+            for component in 0..3 {
+                let top = local(x0, y0, component)
+                    + tx * (local(x1, y0, component) - local(x0, y0, component));
+                let bottom = local(x0, y1, component)
+                    + tx * (local(x1, y1, component) - local(x0, y1, component));
+                out[(oy * out_width + ox) * 3 + component] = top + ty * (bottom - top);
+            }
+        }
+    }
+    out
+}
+
 /// Write the sub-pixel residual target of one crop into `out` at `slot`,
 /// multiplied by `gain`.
 ///
@@ -145,6 +287,7 @@ pub fn write_residual(
     crop: Crop,
     slot: usize,
     gain: f32,
+    reconstruction_base: ReconstructionBase,
     out: &mut [f32],
 ) {
     let scale = layout.scale as usize;
@@ -168,6 +311,8 @@ pub fn write_residual(
     let hr_texels = layout.hr_texels();
     let lr_stride = layout.lr_width as usize;
     let hr_stride = layout.hr_width() as usize;
+    let guided = (reconstruction_base == ReconstructionBase::GuidedBilinear)
+        .then(|| guided_base(sample, layout, crop));
 
     for c in 0..3 {
         let low = &sample.lr[(lr_base + c) * lr_texels..(lr_base + c + 1) * lr_texels];
@@ -176,9 +321,24 @@ pub fn write_residual(
             let source_y = crop.y as usize + y;
             for x in 0..tile {
                 let source_x = crop.x as usize + x;
-                let base = transform::compress(low[source_y * lr_stride + source_x].to_f32());
                 for dy in 0..scale {
                     for dx in 0..scale {
+                        let base = match reconstruction_base {
+                            ReconstructionBase::Nearest => {
+                                low[source_y * lr_stride + source_x].to_f32()
+                            }
+                            ReconstructionBase::Bilinear => sample_bilinear_planar(
+                                low,
+                                layout.lr_width as usize,
+                                layout.lr_height as usize,
+                                source_x * scale + dx,
+                                source_y * scale + dy,
+                                scale,
+                            ),
+                            ReconstructionBase::GuidedBilinear => guided.as_ref().unwrap()
+                                [((y * scale + dy) * tile * scale + x * scale + dx) * 3 + c],
+                        };
+                        let base = transform::compress(base);
                         let hy = source_y * scale + dy;
                         let hx = source_x * scale + dx;
                         let reference = transform::compress(high[hy * hr_stride + hx].to_f32());
@@ -201,11 +361,13 @@ pub fn write_residual(
 /// the unpack shader writes into the output texture.
 pub fn assemble(
     low: &[f32],
+    guided: Option<&[f32]>,
     residual: &[f32],
     width: usize,
     height: usize,
     scale: usize,
     gain: f32,
+    reconstruction_base: ReconstructionBase,
 ) -> Vec<f32> {
     assert_eq!(low.len(), width * height * 3);
     let sub = scale * scale;
@@ -223,9 +385,24 @@ pub fn assemble(
     for y in 0..height {
         for x in 0..width {
             for c in 0..3 {
-                let base = transform::compress(low[(y * width + x) * 3 + c]);
                 for dy in 0..scale {
                     for dx in 0..scale {
+                        let base = match reconstruction_base {
+                            ReconstructionBase::Nearest => low[(y * width + x) * 3 + c],
+                            ReconstructionBase::Bilinear => sample_bilinear_interleaved(
+                                low,
+                                width,
+                                height,
+                                x * scale + dx,
+                                y * scale + dy,
+                                scale,
+                                c,
+                            ),
+                            ReconstructionBase::GuidedBilinear => guided
+                                .expect("guided reconstruction needs a prefiltered base")
+                                [((y * scale + dy) * out_width + x * scale + dx) * 3 + c],
+                        };
+                        let base = transform::compress(base);
                         let channel = c * sub + dy * scale + dx;
                         let delta = residual[(channel * height + y) * width + x] * inverse_gain;
                         let value = transform::decompress(base + delta);
@@ -249,7 +426,11 @@ pub fn assemble(
 /// Measuring rather than hardcoding matters because the right value depends on
 /// the scale factor, the renderer, and the content: a set of mostly flat walls
 /// and one of foliage differ by an order of magnitude.
-pub fn estimate_gain(samples: impl IntoIterator<Item = Sample>, layout: &Layout) -> f32 {
+pub fn estimate_gain(
+    samples: impl IntoIterator<Item = Sample>,
+    layout: &Layout,
+    reconstruction_base: ReconstructionBase,
+) -> f32 {
     let tile = layout.lr_width.min(layout.lr_height);
     let sub = (layout.scale * layout.scale) as usize;
     let mut scratch = vec![0.0; 3 * sub * (tile * tile) as usize];
@@ -258,7 +439,15 @@ pub fn estimate_gain(samples: impl IntoIterator<Item = Sample>, layout: &Layout)
     let mut count = 0usize;
     for sample in samples {
         let crop = Crop { x: 0, y: 0, tile };
-        write_residual(&sample, layout, crop, 0, 1.0, &mut scratch);
+        write_residual(
+            &sample,
+            layout,
+            crop,
+            0,
+            1.0,
+            reconstruction_base,
+            &mut scratch,
+        );
         // The residual is centred on zero by construction, so the mean square
         // is the variance and there is no mean to subtract.
         sum += scratch
@@ -277,6 +466,51 @@ pub fn estimate_gain(samples: impl IntoIterator<Item = Sample>, layout: &Layout)
     } else {
         1.0
     }
+}
+
+fn bilinear_axis(output: usize, input_extent: usize, scale: usize) -> (usize, usize, f32) {
+    let position = (output as f32 + 0.5) / scale as f32 - 0.5;
+    let lower = position.floor() as isize;
+    let fraction = position - lower as f32;
+    let a = lower.clamp(0, input_extent as isize - 1) as usize;
+    let b = (lower + 1).clamp(0, input_extent as isize - 1) as usize;
+    (a, b, fraction)
+}
+
+fn sample_bilinear_planar(
+    image: &[f16],
+    width: usize,
+    height: usize,
+    output_x: usize,
+    output_y: usize,
+    scale: usize,
+) -> f32 {
+    let (x0, x1, tx) = bilinear_axis(output_x, width, scale);
+    let (y0, y1, ty) = bilinear_axis(output_y, height, scale);
+    let p00 = image[y0 * width + x0].to_f32();
+    let p10 = image[y0 * width + x1].to_f32();
+    let p01 = image[y1 * width + x0].to_f32();
+    let p11 = image[y1 * width + x1].to_f32();
+    let top = p00 + tx * (p10 - p00);
+    let bottom = p01 + tx * (p11 - p01);
+    top + ty * (bottom - top)
+}
+
+fn sample_bilinear_interleaved(
+    image: &[f32],
+    width: usize,
+    height: usize,
+    output_x: usize,
+    output_y: usize,
+    scale: usize,
+    channel: usize,
+) -> f32 {
+    let (x0, x1, tx) = bilinear_axis(output_x, width, scale);
+    let (y0, y1, ty) = bilinear_axis(output_y, height, scale);
+    let at = |x, y| image[(y * width + x) * 3 + channel];
+    let top = at(x0, y0) + tx * (at(x1, y0) - at(x0, y0));
+    let bottom = at(x0, y1) + tx * (at(x1, y1) - at(x0, y1));
+    top + ty * (bottom - top)
 }
 
 /// Extract one crop's low resolution colour as interleaved linear RGB.
@@ -372,10 +606,27 @@ mod tests {
             };
 
             let mut residual = vec![0.0; 3 * (scale * scale * 64) as usize];
-            write_residual(&s, &l, crop, 0, 1.0, &mut residual);
+            write_residual(
+                &s,
+                &l,
+                crop,
+                0,
+                1.0,
+                ReconstructionBase::Bilinear,
+                &mut residual,
+            );
 
             let low = crop_color(&s, &l, crop);
-            let rebuilt = assemble(&low, &residual, 8, 8, scale as usize, 1.0);
+            let rebuilt = assemble(
+                &low,
+                None,
+                &residual,
+                8,
+                8,
+                scale as usize,
+                1.0,
+                ReconstructionBase::Bilinear,
+            );
             let reference = crop_reference(&s, &l, crop);
 
             assert_eq!(rebuilt.len(), reference.len());
@@ -385,6 +636,44 @@ mod tests {
                     "scale {scale}, element {i}: {a} vs {b}"
                 );
             }
+        }
+    }
+
+    #[test]
+    fn guided_residual_round_trip_recovers_the_reference() {
+        let mut l = layout(2, 8, 8);
+        l.lr_planes = l.lr_planes.with(Plane::Normal).with(Plane::DiffuseAlbedo);
+        let s = sample(&l, 7);
+        let crop = Crop {
+            x: 1,
+            y: 1,
+            tile: 6,
+        };
+        let guided = guided_base(&s, &l, crop);
+        let mut residual = vec![0.0; 3 * 4 * 36];
+        write_residual(
+            &s,
+            &l,
+            crop,
+            0,
+            1.0,
+            ReconstructionBase::GuidedBilinear,
+            &mut residual,
+        );
+        let low = crop_color(&s, &l, crop);
+        let rebuilt = assemble(
+            &low,
+            Some(&guided),
+            &residual,
+            6,
+            6,
+            2,
+            1.0,
+            ReconstructionBase::GuidedBilinear,
+        );
+        let reference = crop_reference(&s, &l, crop);
+        for (actual, expected) in rebuilt.iter().zip(reference) {
+            assert!((actual - expected).abs() < 1e-3);
         }
     }
 
@@ -400,7 +689,16 @@ mod tests {
             tile: 4,
         };
         let low = crop_color(&s, &l, crop);
-        let rebuilt = assemble(&low, &vec![0.0; 3 * 4 * 16], 4, 4, 2, 1.0);
+        let rebuilt = assemble(
+            &low,
+            None,
+            &vec![0.0; 3 * 4 * 16],
+            4,
+            4,
+            2,
+            1.0,
+            ReconstructionBase::Nearest,
+        );
 
         for y in 0..4 {
             for x in 0..4 {
@@ -508,6 +806,7 @@ mod tests {
             },
             0,
             1.0,
+            ReconstructionBase::Bilinear,
             &mut residual,
         );
         assert!(

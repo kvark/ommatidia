@@ -89,10 +89,6 @@ fn inspect_model(stem: &Path) -> Result<ModelInfo, (Status, String)> {
         .map_err(|message| (Status::UnsupportedModel, message))?;
     let model = ommatidia::model::build(&config, false)
         .map_err(|message| (Status::UnsupportedModel, message))?;
-    let (backbone, attention_window, attention_head_dim) = match config.backbone {
-        ommatidia::Backbone::Conv => (1, 0, 0),
-        ommatidia::Backbone::HybridWindowAttention { window, head_dim } => (2, window, head_dim),
-    };
     let objective = match config.objective {
         ommatidia::Objective::Direct => 1,
         ommatidia::Objective::Diffusion => 2,
@@ -105,9 +101,9 @@ fn inspect_model(stem: &Path) -> Result<ModelInfo, (Status, String)> {
         input_channel_count: config.cond_channels(),
         output_channel_count: config.target_channels(),
         objective,
-        backbone,
-        attention_window,
-        attention_head_dim,
+        backbone: 1,
+        attention_window: 0,
+        attention_head_dim: 0,
         parameter_count: model
             .params
             .iter()
@@ -242,7 +238,7 @@ mod tests {
         assert_eq!(info.scale, 2);
         assert_eq!(info.input_plane_mask, config.cond_planes.bits());
         assert_eq!(info.backbone, 1);
-        assert_eq!(info.parameter_count, 649_200);
+        assert_eq!(info.parameter_count, 73_808);
         std::fs::remove_file(stem.to_str().unwrap().to_owned() + ".ron").unwrap();
     }
 

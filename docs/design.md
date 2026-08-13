@@ -100,15 +100,23 @@ high resolution image `Y` of shape `[3, S*H, S*W]` is rearranged into
 `(y, x)` becomes channel `c*S^2 + dy*S + dx`. This is a pure reindexing, no
 interpolation and no information lost.
 
-The network then predicts a **residual** over nearest-neighbour upsampling:
+The network predicts a **residual** over a renderer-guided low-resolution
+prefilter followed by texel-center-aligned bilinear upsampling:
 
 ```
-target[c, dy, dx, y, x] = Y[c, S*y + dy, S*x + dx] - LR[c, y, x]
+target[c, dy, dx, y, x] = Y[c, S*y + dy, S*x + dx] - bilinear(guided(LR, G), S*y + dy, S*x + dx)
 ```
 
-Nearest is chosen over bilinear as the base because it is exactly reproducible
-between the trainer and the shader that reassembles the output, with no edge
-convention to get wrong.
+`guided` is a joint bilateral filter over depth, world normal, and diffuse
+albedo. It runs once at input resolution inside the existing pack stage; the
+unpack stage bilinearly reconstructs its RGB buffer. Both stages are exactly
+reproduced by the CPU trainer. This is not a cosmetic baseline choice: on 76
+crops from a separate 128-scene 4-spp validation set, bilinear alone scores
+26.46 dB / 0.5864 SSIM while the guided base scores 34.08 dB / 0.9473 before
+the learned correction runs.
+Version 0.1 checkpoints retain their historical nearest-neighbour base, and
+the controlled bilinear checkpoint retains plain bilinear, through the sidecar
+contract.
 
 Three things fall out of this:
 
@@ -117,7 +125,7 @@ Three things fall out of this:
   same low-resolution spatial shape.
 - The output head is a free reindex. The unpack shader writes sub-pixel
   channel `c*S^2 + dy*S + dx` to high resolution texel `(S*x + dx, S*y + dy)`,
-  adding the low resolution pixel back as it goes.
+  adding the guided bilinear reconstruction back as it goes.
 
 It also puts the learned correction where the uncertainty actually is. The low
 frequency content is already determined by the input; only denoising and
@@ -239,8 +247,9 @@ both halves of the primary pair already:
 
 The `.omd` header records which renderer path produced the input. Version-1
 files are identified as SVGF because they predate provenance tracking, and the
-trainer rejects pre-denoised input by default. Sparse path and raw ReSTIR are
-both valid sources; they are never silently mixed.
+trainer rejects pre-denoised input by default. Sparse paths are the product
+source; raw ReSTIR remains tagged only for explicit historical experiments.
+Sources are never silently mixed.
 
 Both are driven headless. For each sample the generator builds a fresh
 procedural scene, picks a camera pose, renders the low resolution input, then
@@ -316,14 +325,14 @@ crate, which the workspace `[patch]` section enforces.
 Per frame:
 
 1. **Pack.** One compute dispatch reads the host's colour and G-buffer texture
-   views and writes an interleaved-to-planar `f32` tensor into the session's
-   input buffer, applying the range compression above. Format conversion,
-   normalisation, and layout change all happen here, so the host is free to
-   hand over whatever texture formats it already has.
+   views, writes the model's planar `f32` input, and computes the guided
+   low-resolution RGB base. Format conversion, range compression, denoising,
+   and layout change happen here, so the host is free to hand over its native
+   texture formats.
 2. **Step.** `Session::step()`, once per sampler step.
 3. **Unpack.** One compute dispatch scatters the sub-pixel output to the high
-   resolution target, adding the nearest-neighbour base and undoing the range
-   compression.
+   resolution target, bilinearly reconstructing the guided base and undoing
+   the range compression.
 
 Pack and unpack are ommatidia's own WGSL, dispatched onto the caller's command
 encoder, so the whole thing is one recorded sequence with no CPU roundtrip.
@@ -351,15 +360,12 @@ cadence so a crash costs one interval rather than everything.
 
 ## The latency problem
 
-The historical shape sweep below used a 720×720 input proxy. The deployment
-path is now measured at an actual 960×540 input and 1920×1080 output on an
-otherwise idle RX 7900 XT: **about 20 ms** sustained end to end, including
-pack, the model, unpack, and queue submissions. Repeated sustained medians are
-19.54 to 20.91 ms; isolated pack and unpack medians stay below 0.12 ms, with
-the model accounting for effectively all of the rest. A separate detailed
-timestamp trace measured the model at 20.13 ms. The 19.5–20.9 ms range is a
-better statement of precision than selecting the best run or printing extra
-decimal places.
+The historical shape sweep below used a 720×720 input proxy. The current guided
+b8 deployment path is measured at an actual 960×540 input and 1920×1080 output
+on an otherwise idle RX 7900 XT: **7.76 ms median and 7.94 ms p90** end to end,
+including pack, the model, unpack, and queue submissions. Its isolated stages
+are 0.76 ms guided pack, 6.99 ms model, and 0.12 ms unpack. It stays within
+0.03 dB and 0.0002 SSIM of guided b24 while taking 37% of its frame time.
 
 | shape | params | GFLOP | ms @1080p, start | ms now | held-out dB |
 |---|---|---|---|---|---|
@@ -377,10 +383,10 @@ which gave every shape 5000 steps and so compared undertrained large networks
 against nearly-converged small ones. It read +4.10 for base 24 and +2.92 for
 base 16; trained out they are +5.04 and +4.30.
 
-Taken together with the kernel work, the deployment shape went from 656 ms to
-20.13 ms at equal historical quality. The most recent figure is an actual
-rectangular 960×540 input rather than the equal-pixel square proxy used during
-the earlier optimization work.
+Taken together with the kernel and reconstruction work, the deployment shape
+went from 656 ms to 7.76 ms while substantially improving independent-path
+quality. The most recent figure is an actual rectangular 960×540 input rather
+than the equal-pixel square proxy used during the earlier optimization work.
 
 The two kernel fixes below account for 5.4x of that on the reference shape and
 2.3x at the small end, with the weights untouched: a checkpoint trained before

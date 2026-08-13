@@ -88,7 +88,7 @@ pub fn load_config(stem: impl AsRef<Path>) -> Result<(ModelConfig, Paths), Error
 mod tests {
     use super::*;
     use crate::dataset::{Plane, PlaneSet};
-    use crate::model::{Backbone, Objective};
+    use crate::model::{Objective, ReconstructionBase};
 
     #[test]
     fn paths_share_a_stem() {
@@ -145,12 +145,12 @@ mod tests {
     }
 
     #[test]
-    fn pre_attention_sidecars_default_to_the_convolutional_backbone() {
+    fn old_sidecars_keep_the_nearest_reconstruction_their_weights_expect() {
         let text = ron::ser::to_string(&ModelConfig::default()).unwrap();
-        let marker = "backbone:Conv,";
+        let marker = ",reconstruction_base:GuidedBilinear";
         assert!(text.contains(marker), "unexpected RON shape: {text}");
         let old_text = text.replace(marker, "");
         let config: ModelConfig = ron::from_str(&old_text).unwrap();
-        assert_eq!(config.backbone, Backbone::Conv);
+        assert_eq!(config.reconstruction_base, ReconstructionBase::Nearest);
     }
 }

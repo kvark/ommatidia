@@ -20,7 +20,7 @@ struct PackParams {
     planes: u32,
     compose_blade_radiance: u32,
     decode_blade_gbuffer: u32,
-    _pad0: u32,
+    reconstruction_base: u32,
     _pad1: u32,
 }
 
@@ -42,6 +42,7 @@ var t_normal: texture_2d<f32>;
 var t_albedo: texture_2d<f32>;
 var t_specular: texture_2d<f32>;
 var<storage, read_write> cond: array<f32>;
+var<storage, read_write> base: array<f32>;
 
 const SKY_DEPTH: f32 = 1.0e6;
 
@@ -61,6 +62,80 @@ fn encode_depth(d: f32) -> f32 {
     return 1.0 / (1.0 + max(d, 0.0));
 }
 
+fn clamp_texel(texel: vec2<i32>) -> vec2<i32> {
+    return clamp(texel, vec2<i32>(0), vec2<i32>(i32(params.width) - 1, i32(params.height) - 1));
+}
+
+fn load_color(texel_unclamped: vec2<i32>) -> vec3<f32> {
+    let texel = clamp_texel(texel_unclamped);
+    if params.compose_blade_radiance != 0u {
+        let albedo = textureLoad(t_albedo, texel, 0).xyz;
+        let diffuse = textureLoad(t_diffuse_radiance, texel, 0).xyz;
+        let specular = textureLoad(t_specular_radiance, texel, 0).xyz;
+        let emissive = textureLoad(t_emissive, texel, 0).xyz;
+        return albedo * diffuse + specular + emissive;
+    }
+    return textureLoad(t_color, texel, 0).xyz;
+}
+
+fn load_depth(texel_unclamped: vec2<i32>) -> f32 {
+    let raw = textureLoad(t_depth, clamp_texel(texel_unclamped), 0).x;
+    let depth = select(
+        raw,
+        select(SKY_DEPTH, raw, raw > 0.0),
+        params.decode_blade_gbuffer != 0u,
+    );
+    return encode_depth(depth);
+}
+
+fn load_normal(texel_unclamped: vec2<i32>) -> vec3<f32> {
+    let texel = clamp_texel(texel_unclamped);
+    let encoded = textureLoad(t_normal, texel, 0);
+    if params.decode_blade_gbuffer != 0u {
+        let hit = textureLoad(t_depth, texel, 0).x > 0.0;
+        return select(vec3<f32>(0.0), qrot(encoded, vec3<f32>(0.0, 0.0, 1.0)), hit);
+    }
+    return encoded.xyz;
+}
+
+// Measured on held-out sparse-path data. Filtering once at input resolution
+// and bilinearly reconstructing it is both better and four times cheaper than
+// evaluating the same guide separately for every 2x output sample.
+fn guided_color(center: vec2<i32>) -> vec3<f32> {
+    let center_depth = load_depth(center);
+    let center_normal = load_normal(center);
+    let center_albedo = textureLoad(t_albedo, clamp_texel(center), 0).xyz;
+    let center_normal_len2 = dot(center_normal, center_normal);
+    var sum = vec3<f32>(0.0);
+    var weight_sum = 0.0;
+    for (var dy = -6; dy <= 6; dy += 1) {
+        for (var dx = -6; dx <= 6; dx += 1) {
+            let texel = center + vec2<i32>(dx, dy);
+            let distance2 = f32(dx * dx + dy * dy);
+            var weight = exp(-distance2 / 18.0);
+            let depth_delta = load_depth(texel) - center_depth;
+            weight *= exp(-(depth_delta * depth_delta) / 0.005);
+
+            let normal = load_normal(texel);
+            let normal_len2 = dot(normal, normal);
+            var normal_weight = 0.0;
+            if center_normal_len2 < 0.25 {
+                normal_weight = select(0.0, 1.0, normal_len2 < 0.25);
+            } else if normal_len2 >= 0.25 {
+                let cosine = max(dot(normal, center_normal) * inverseSqrt(normal_len2 * center_normal_len2), 0.0);
+                normal_weight = pow(cosine, 32.0);
+            }
+            weight *= normal_weight;
+
+            let albedo_delta = textureLoad(t_albedo, clamp_texel(texel), 0).xyz - center_albedo;
+            weight *= exp(-dot(albedo_delta, albedo_delta) / 0.02);
+            sum += weight * load_color(texel);
+            weight_sum += weight;
+        }
+    }
+    return sum / max(weight_sum, 1.0e-12);
+}
+
 @compute @workgroup_size(8, 8, 1)
 fn pack(@builtin(global_invocation_id) id: vec3<u32>) {
     if id.x >= params.width || id.y >= params.height {
@@ -75,38 +150,18 @@ fn pack(@builtin(global_invocation_id) id: vec3<u32>) {
     var channel = 0u;
 
     if (params.planes & PLANE_COLOR) != 0u {
-        var color: vec3<f32>;
-        if params.compose_blade_radiance != 0u {
-            let albedo = textureLoad(t_albedo, texel, 0).xyz;
-            let diffuse = textureLoad(t_diffuse_radiance, texel, 0).xyz;
-            let specular = textureLoad(t_specular_radiance, texel, 0).xyz;
-            let emissive = textureLoad(t_emissive, texel, 0).xyz;
-            color = albedo * diffuse + specular + emissive;
-        } else {
-            color = textureLoad(t_color, texel, 0).xyz;
-        }
+        let color = load_color(texel);
         cond[(channel + 0u) * plane_stride + offset] = compress(color.x);
         cond[(channel + 1u) * plane_stride + offset] = compress(color.y);
         cond[(channel + 2u) * plane_stride + offset] = compress(color.z);
         channel += 3u;
     }
     if (params.planes & PLANE_DEPTH) != 0u {
-        let raw_depth = textureLoad(t_depth, texel, 0).x;
-        let depth = select(
-            raw_depth,
-            select(SKY_DEPTH, raw_depth, raw_depth > 0.0),
-            params.decode_blade_gbuffer != 0u,
-        );
-        cond[channel * plane_stride + offset] = encode_depth(depth);
+        cond[channel * plane_stride + offset] = load_depth(texel);
         channel += 1u;
     }
     if (params.planes & PLANE_NORMAL) != 0u {
-        let encoded = textureLoad(t_normal, texel, 0);
-        var normal = encoded.xyz;
-        if params.decode_blade_gbuffer != 0u {
-            let hit = textureLoad(t_depth, texel, 0).x > 0.0;
-            normal = select(vec3<f32>(0.0), qrot(encoded, vec3<f32>(0.0, 0.0, 1.0)), hit);
-        }
+        let normal = load_normal(texel);
         cond[(channel + 0u) * plane_stride + offset] = normal.x;
         cond[(channel + 1u) * plane_stride + offset] = normal.y;
         cond[(channel + 2u) * plane_stride + offset] = normal.z;
@@ -132,4 +187,12 @@ fn pack(@builtin(global_invocation_id) id: vec3<u32>) {
         cond[channel * plane_stride + offset] = specular.w;
         channel += 1u;
     }
+
+    var base_color = load_color(texel);
+    if params.reconstruction_base == 2u {
+        base_color = guided_color(texel);
+    }
+    base[0u * plane_stride + offset] = base_color.x;
+    base[1u * plane_stride + offset] = base_color.y;
+    base[2u * plane_stride + offset] = base_color.z;
 }
