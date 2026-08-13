@@ -114,6 +114,12 @@ is therefore the missing evidence for lower sample counts, sub-pixel detail
 across motion, and temporal stability—not a reason to enlarge the static
 receptive field. Two relevant production research results agree:
 
+A matched lower-ray-budget gate reaches the same conclusion. At 1 spp,
+bilinear scores 22.46 dB / 0.4293 SSIM and the 5×5 HR guide reaches 31.74 dB /
+0.9215. A b8 network trained specifically on those 1-spp records adds less than
+0.005 dB after 2,000 steps. More stochastic error does not make a static
+residual more learnable; it makes time-domain evidence more valuable.
+
 - [Neural Temporal Adaptive Sampling and Denoising](https://research.nvidia.com/publication/2020-05_neural-temporal-adaptive-sampling-and-denoising)
   reports that reprojected temporal feedback raises the effective sample count
   and improves both fidelity and stability.

@@ -56,6 +56,10 @@ output-resolution primary surfaces raises a selected 5×5 reconstruction to
 network still runs wholly at low resolution; the extra guide is contained in
 Ommatidium's existing unpack dispatch, with no ReSTIR or SVGF upstream and no
 new Meganeura graph operation or shader group.
+A matched 1-spp arm reaches 31.74 dB / 0.9215 SSIM with the HR guide, but a b8
+network trained specifically on that distribution adds less than 0.005 dB.
+That closes the “larger static network” branch: temporal history must supply
+new samples before more model capacity is justified.
 The complete controlled setup and trace are recorded in the
 [`independent-path result`](docs/results/path-trace-guided-2026-08-13.md).
 
