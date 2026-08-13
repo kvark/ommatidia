@@ -25,10 +25,10 @@ documented in [`docs/architecture-decision.md`](docs/architecture-decision.md).
 [Training and validation data](https://huggingface.co/datasets/mad-bot/ommatidia)
 
 The Hugging Face `v0.2.0` revision contains the guided b8 checkpoint used for
-the results below; `v0.1.0` is retained for release provenance. It reconstructs an actual
-960×540 → 1920×1080 frame in 7.76 ms median (7.94 ms p90) on an idle Radeon
-RX 7900 XT, including pack, model, unpack, and submissions but excluding ray
-tracing and display post-processing. An isolated trace attributes 0.76 ms to
+the results below; `v0.1.0` is retained for release provenance. It reconstructs
+an actual 960×540 → 1920×1080 frame in 7.76 ms median (7.94 ms p90) on an idle
+Radeon RX 7900 XT, including pack, model, unpack, and submissions but excluding
+ray tracing and display post-processing. An isolated trace attributes 0.76 ms to
 the guided pack, 6.99 ms to the network, and 0.12 ms to unpacking.
 
 Upscaling is real today, but narrowly scoped: the published checkpoint and the
