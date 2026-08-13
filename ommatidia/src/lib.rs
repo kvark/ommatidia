@@ -21,6 +21,7 @@ pub mod checkpoint;
 pub mod dataset;
 pub mod diffusion;
 pub mod gpu;
+pub mod metrics;
 pub mod model;
 pub mod rng;
 pub mod runtime;

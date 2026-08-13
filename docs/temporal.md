@@ -51,6 +51,25 @@ leaking neighboring frames across its train/validation split. The first frame
 of each sequence is an explicit history reset; object motion, disocclusions,
 and randomized trajectories remain the next data expansion.
 
+The first moving-camera oracle uses 32 four-frame sequences, one independent
+path per input pixel, 256 accumulated canonical frames per target, and a 0.05
+world-unit camera translation per frame. It caps history at four samples and
+compares motion-only reprojection with a depth/normal/albedo consistency gate:
+
+| reconstruction over frames 2–4 | MSE | PSNR | SSIM |
+|---|---:|---:|---:|
+| single-frame tuned HR guide | 0.000763 | 31.17 dB | 0.9119 |
+| motion-only history | 0.001233 | 29.09 dB | 0.9238 |
+| surface-rejected history | **0.000584** | **32.33 dB** | **0.9301** |
+
+Motion alone ghosts: it loses 2.08 dB even while SSIM rises, a concrete example
+of why SSIM cannot be the only release metric. Rejecting only 2.7% of pixels
+turns that into a 1.16 dB and 0.0182 SSIM gain over the current single-frame
+base. This establishes reprojection validity as a first-class, observable
+stage before learned fusion. The reproducible CPU experiment is
+`cargo run --release -p ommatidia-train --bin temporal-oracle -- DATA.omd`;
+it adds no Meganeura graph operation or shipping shader.
+
 The first temporal model should keep reprojection outside the learned network.
 The GPU pack stage will sample the previous high-resolution output at
 `current_pixel + motion`, reject history using depth and normal disagreement,

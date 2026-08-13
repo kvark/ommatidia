@@ -68,6 +68,11 @@ that value concrete: the tuned guide rises from 32.17 dB at one accumulated
 sample to 33.76 at two, 34.72 at four, 35.50 at eight, and 35.89 at sixteen.
 Four aligned 1-spp frames are worth +2.55 dB before motion and rejection
 losses—over one hundred times the b8 static residual's gain.
+The first moving-camera oracle then measures the important failure mode:
+motion-only accumulation ghosts and falls from 31.17 to 29.09 dB, whereas
+depth/normal/albedo rejection reaches 32.33 dB / 0.9301 SSIM. Only 2.7% of
+history pixels are rejected. Validity is therefore an explicit input to the
+next temporal model, not something a larger backbone should have to infer.
 The complete controlled setup and trace are recorded in the
 [`independent-path result`](docs/results/path-trace-guided-2026-08-13.md).
 
