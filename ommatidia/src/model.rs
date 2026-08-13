@@ -46,6 +46,52 @@ fn legacy_reconstruction_base() -> ReconstructionBase {
     ReconstructionBase::Nearest
 }
 
+/// Parameters of the deterministic joint bilateral reconstruction.
+///
+/// They live in the checkpoint rather than only in WGSL so an updated runtime
+/// cannot silently reinterpret older weights against a different base.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct GuideConfig {
+    pub spatial_sigma: f32,
+    pub depth_sigma: f32,
+    pub normal_power: f32,
+    pub albedo_sigma: f32,
+}
+
+impl GuideConfig {
+    /// The filter used by the published v0.2 and v0.3 checkpoints.
+    pub const LEGACY: Self = Self {
+        spatial_sigma: 3.0,
+        depth_sigma: 0.05,
+        normal_power: 32.0,
+        albedo_sigma: 0.1,
+    };
+
+    /// Held-out-selected parameters with the same tap count and dispatches.
+    pub const TUNED: Self = Self {
+        spatial_sigma: 4.5,
+        depth_sigma: 0.01,
+        normal_power: 24.0,
+        albedo_sigma: 0.2,
+    };
+
+    pub(crate) fn spatial_denominator(self) -> f32 {
+        2.0 * self.spatial_sigma * self.spatial_sigma
+    }
+
+    pub(crate) fn depth_denominator(self) -> f32 {
+        2.0 * self.depth_sigma * self.depth_sigma
+    }
+
+    pub(crate) fn albedo_denominator(self) -> f32 {
+        2.0 * self.albedo_sigma * self.albedo_sigma
+    }
+}
+
+fn legacy_guide_config() -> GuideConfig {
+    GuideConfig::LEGACY
+}
+
 /// How a parameter should be filled before training starts.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum InitKind {
@@ -103,6 +149,9 @@ pub struct ModelConfig {
     /// Missing in v0.1 sidecars, whose weights were trained against nearest.
     #[serde(default = "legacy_reconstruction_base")]
     pub reconstruction_base: ReconstructionBase,
+    /// Exact coefficients used by the CPU trainer and GPU reconstruction.
+    #[serde(default = "legacy_guide_config")]
+    pub guide: GuideConfig,
 }
 
 impl Default for ModelConfig {
@@ -131,6 +180,7 @@ impl Default for ModelConfig {
             residual_gain: 1.0,
             objective: Objective::Direct,
             reconstruction_base: ReconstructionBase::GuidedBilinear,
+            guide: GuideConfig::TUNED,
         }
     }
 }
@@ -307,6 +357,16 @@ impl ModelConfig {
                 "residual_gain {} must be finite and positive",
                 self.residual_gain
             ));
+        }
+        for (name, value) in [
+            ("spatial_sigma", self.guide.spatial_sigma),
+            ("depth_sigma", self.guide.depth_sigma),
+            ("normal_power", self.guide.normal_power),
+            ("albedo_sigma", self.guide.albedo_sigma),
+        ] {
+            if !value.is_finite() || value <= 0.0 {
+                return Err(format!("guide {name} {value} must be finite and positive"));
+            }
         }
         Ok(())
     }
@@ -805,6 +865,10 @@ mod tests {
         c = small();
         c.cond_planes = PlaneSet::new();
         assert!(c.validate().unwrap_err().contains("empty"));
+
+        c = small();
+        c.guide.depth_sigma = 0.0;
+        assert!(c.validate().unwrap_err().contains("depth_sigma"));
     }
 
     #[test]

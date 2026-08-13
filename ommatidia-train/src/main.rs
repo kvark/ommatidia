@@ -339,28 +339,9 @@ fn main() {
         }
     }
 
-    // The residual is small, and how small depends on the content and the
-    // scale factor, so it is measured rather than assumed. Without this the
-    // diffusion objective trains to a low loss and samples to pure noise.
-    let probe = GAIN_PROBE_SAMPLES.min(reader.len());
-    let gain = if args.eval_only {
-        1.0
-    } else {
-        let samples: Vec<_> = (0..probe)
-            .filter_map(|i| reader.sample(i * reader.len() / probe.max(1)).ok())
-            .collect();
-        ommatidia::batch::estimate_gain(samples, &layout, reconstruction_base)
-    };
-    if !args.eval_only {
-        println!(
-            "residual gain {gain:.2} (standard deviation {:.4}), measured over {probe} samples",
-            1.0 / gain
-        );
-    }
-
     // Everything about the data comes from the data, so the network cannot ask
     // for a plane the dataset does not carry or upscale by the wrong factor.
-    let config = ModelConfig {
+    let mut config = ModelConfig {
         scale: layout.scale,
         tile,
         batch: args.batch,
@@ -376,11 +357,26 @@ fn main() {
         level_multipliers: (0..args.levels).map(|i| 1 << i).collect(),
         blocks_per_level: args.blocks_per_level,
         num_groups: args.num_groups,
-        residual_gain: gain,
+        residual_gain: 1.0,
         objective: args.objective,
         reconstruction_base,
         ..ModelConfig::default()
     };
+    // The residual is small, and how small depends on the content and the
+    // scale factor, so it is measured rather than assumed. Without this the
+    // diffusion objective trains to a low loss and samples to pure noise.
+    let probe = GAIN_PROBE_SAMPLES.min(reader.len());
+    if !args.eval_only {
+        let samples: Vec<_> = (0..probe)
+            .filter_map(|i| reader.sample(i * reader.len() / probe.max(1)).ok())
+            .collect();
+        config.residual_gain = ommatidia::batch::estimate_gain(samples, &layout, &config);
+        println!(
+            "residual gain {:.2} (standard deviation {:.4}), measured over {probe} samples",
+            config.residual_gain,
+            1.0 / config.residual_gain
+        );
+    }
     if let Err(message) = config.validate() {
         eprintln!("model configuration is invalid: {message}");
         std::process::exit(1);
@@ -715,9 +711,11 @@ impl Evaluator {
                 if counted >= args.eval_crops {
                     break 'outer;
                 }
-                let guided = has_guides.then(|| batch::guided_base(&sample, &layout, crop));
-                let hr_guided = has_hr_guides
-                    .then(|| batch::high_resolution_guided_base(&sample, &layout, crop));
+                let guided = has_guides
+                    .then(|| batch::guided_base(&sample, &layout, crop, self.config.guide));
+                let hr_guided = has_hr_guides.then(|| {
+                    batch::high_resolution_guided_base(&sample, &layout, crop, self.config.guide)
+                });
                 let model_base = match self.config.reconstruction_base {
                     ReconstructionBase::GuidedBilinear => guided.as_deref(),
                     ReconstructionBase::HighResolutionGuided => hr_guided.as_deref(),

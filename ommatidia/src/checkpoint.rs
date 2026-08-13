@@ -88,7 +88,7 @@ pub fn load_config(stem: impl AsRef<Path>) -> Result<(ModelConfig, Paths), Error
 mod tests {
     use super::*;
     use crate::dataset::{Plane, PlaneSet};
-    use crate::model::{Objective, ReconstructionBase};
+    use crate::model::{GuideConfig, Objective, ReconstructionBase};
 
     #[test]
     fn paths_share_a_stem() {
@@ -129,6 +129,7 @@ mod tests {
         assert_eq!(back.cond_planes, config.cond_planes);
         assert_eq!(back.level_multipliers, config.level_multipliers);
         assert_eq!(back.objective, config.objective);
+        assert_eq!(back.guide, GuideConfig::TUNED);
         // The derived quantities the graph builder relies on must match too.
         assert_eq!(back.in_channels(), config.in_channels());
         assert_eq!(back.target_len(), config.target_len());
@@ -152,5 +153,14 @@ mod tests {
         let old_text = text.replace(marker, "");
         let config: ModelConfig = ron::from_str(&old_text).unwrap();
         assert_eq!(config.reconstruction_base, ReconstructionBase::Nearest);
+    }
+
+    #[test]
+    fn old_sidecars_keep_the_guide_their_weights_expect() {
+        let text = ron::ser::to_string(&ModelConfig::default()).unwrap();
+        let marker = text.rfind(",guide:").expect("serialized guide field");
+        let old_text = format!("{})", &text[..marker]);
+        let config: ModelConfig = ron::from_str(&old_text).unwrap();
+        assert_eq!(config.guide, GuideConfig::LEGACY);
     }
 }

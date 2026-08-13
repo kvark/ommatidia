@@ -20,6 +20,10 @@ struct UnpackParams {
     decode_blade_gbuffer: u32,
     decode_hr_blade_gbuffer: u32,
     _pad2: u32,
+    guide_spatial_denominator: f32,
+    guide_depth_denominator: f32,
+    guide_normal_power: f32,
+    guide_albedo_denominator: f32,
 }
 
 var<uniform> params: UnpackParams;
@@ -123,7 +127,7 @@ fn guide_similarity(
     albedo: vec3<f32>,
 ) -> f32 {
     let depth_delta = depth - center_depth;
-    var weight = exp(-(depth_delta * depth_delta) / 0.005);
+    var weight = exp(-(depth_delta * depth_delta) / params.guide_depth_denominator);
     let center_normal_len2 = dot(center_normal, center_normal);
     let normal_len2 = dot(normal, normal);
     var normal_weight = 0.0;
@@ -134,10 +138,10 @@ fn guide_similarity(
             dot(normal, center_normal) * inverseSqrt(normal_len2 * center_normal_len2),
             0.0,
         );
-        normal_weight = pow(cosine, 32.0);
+        normal_weight = pow(cosine, params.guide_normal_power);
     }
     let albedo_delta = albedo - center_albedo;
-    return weight * normal_weight * exp(-dot(albedo_delta, albedo_delta) / 0.02);
+    return weight * normal_weight * exp(-dot(albedo_delta, albedo_delta) / params.guide_albedo_denominator);
 }
 
 fn high_resolution_guided_base(destination: vec2<u32>) -> vec3<f32> {

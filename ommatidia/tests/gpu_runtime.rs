@@ -65,6 +65,7 @@ fn config() -> ModelConfig {
         gn_eps: 1e-5,
         objective: Objective::Direct,
         reconstruction_base: ReconstructionBase::Bilinear,
+        guide: ommatidia::model::GuideConfig::TUNED,
     }
 }
 
@@ -562,15 +563,14 @@ fn upscale_matches_the_cpu_path() {
             y: 0,
             tile: TILE,
         },
+        config.guide,
     );
     let expected = batch::assemble(
         &colors,
         Some(&guided),
         &residual,
         [TILE as usize; 2],
-        SCALE as usize,
-        config.residual_gain,
-        config.reconstruction_base,
+        &config,
     );
 
     let mut worst = 0.0f32;

@@ -22,6 +22,10 @@ struct PackParams {
     decode_blade_gbuffer: u32,
     reconstruction_base: u32,
     _pad1: u32,
+    guide_spatial_denominator: f32,
+    guide_depth_denominator: f32,
+    guide_normal_power: f32,
+    guide_albedo_denominator: f32,
 }
 
 // Bits of `ommatidia::dataset::Plane`, in storage order.
@@ -112,9 +116,9 @@ fn guided_color(center: vec2<i32>) -> vec3<f32> {
         for (var dx = -6; dx <= 6; dx += 1) {
             let texel = center + vec2<i32>(dx, dy);
             let distance2 = f32(dx * dx + dy * dy);
-            var weight = exp(-distance2 / 18.0);
+            var weight = exp(-distance2 / params.guide_spatial_denominator);
             let depth_delta = load_depth(texel) - center_depth;
-            weight *= exp(-(depth_delta * depth_delta) / 0.005);
+            weight *= exp(-(depth_delta * depth_delta) / params.guide_depth_denominator);
 
             let normal = load_normal(texel);
             let normal_len2 = dot(normal, normal);
@@ -123,12 +127,12 @@ fn guided_color(center: vec2<i32>) -> vec3<f32> {
                 normal_weight = select(0.0, 1.0, normal_len2 < 0.25);
             } else if normal_len2 >= 0.25 {
                 let cosine = max(dot(normal, center_normal) * inverseSqrt(normal_len2 * center_normal_len2), 0.0);
-                normal_weight = pow(cosine, 32.0);
+                normal_weight = pow(cosine, params.guide_normal_power);
             }
             weight *= normal_weight;
 
             let albedo_delta = textureLoad(t_albedo, clamp_texel(texel), 0).xyz - center_albedo;
-            weight *= exp(-dot(albedo_delta, albedo_delta) / 0.02);
+            weight *= exp(-dot(albedo_delta, albedo_delta) / params.guide_albedo_denominator);
             sum += weight * load_color(texel);
             weight_sum += weight;
         }
