@@ -77,7 +77,8 @@ pub enum Plane {
     SpecularF0 = 4,
     /// Surface roughness, in `[0, 1]`.
     Roughness = 5,
-    /// Screen-space motion since the previous frame, in pixels.
+    /// Current-to-previous screen-space motion in pixels: add it to the
+    /// current pixel centre to locate the same surface in the prior frame.
     ///
     /// Unused by the static model; reserved so that adding temporal context
     /// does not invalidate datasets generated before it.
@@ -123,6 +124,11 @@ impl PlaneSet {
     /// Add a plane. Idempotent.
     pub const fn with(self, plane: Plane) -> Self {
         Self(self.0 | plane.bit())
+    }
+
+    /// Remove a plane. Idempotent.
+    pub const fn without(self, plane: Plane) -> Self {
+        Self(self.0 & !plane.bit())
     }
 
     /// Is this plane present?

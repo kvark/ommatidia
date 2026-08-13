@@ -29,6 +29,7 @@ struct Args {
     canonical_bounces: u32,
     input_frames: usize,
     sequence_frames: usize,
+    camera_motion: f32,
     seed: u64,
     preview: Option<PathBuf>,
     gbuffer: bool,
@@ -53,6 +54,7 @@ impl Default for Args {
             canonical_bounces: render::REFERENCE_MAX_BOUNCES,
             input_frames: 1,
             sequence_frames: 1,
+            camera_motion: 0.0,
             seed: 0,
             preview: None,
             gbuffer: true,
@@ -80,6 +82,7 @@ usage: ommatidia-data [options]
   --canonical-bounces N     maximum reference path depth [8]
   --input-frames N          sparse path-traced input samples per pixel [1]
   --sequence-frames N       independent frames per static scene/camera [1]
+  --camera-motion F         world-X camera translation per sequence frame [0]
   --seed N                  base seed for scenes and cameras  [0]
   --device-id ID            adapter ID for this standalone process (hex or decimal)
   --shader-dir PATH         blade-render shader directory [../blade/blade-render/code]
@@ -141,6 +144,11 @@ fn parse_args() -> Result<Args, String> {
                     .parse()
                     .map_err(|e| format!("--sequence-frames: {e}"))?
             }
+            "--camera-motion" => {
+                args.camera_motion = value()?
+                    .parse()
+                    .map_err(|e| format!("--camera-motion: {e}"))?
+            }
             "--seed" => args.seed = value()?.parse().map_err(|e| format!("--seed: {e}"))?,
             "--device-id" => args.device_id = Some(ommatidia::gpu::parse_device_id(&value()?)?),
             "--shader-dir" => args.shader_dir = Some(PathBuf::from(value()?)),
@@ -166,8 +174,14 @@ fn parse_args() -> Result<Args, String> {
     if args.sequence_frames == 0 {
         return Err("--sequence-frames must be positive".into());
     }
-    if args.sequence_frames > 1 && args.reference_from.is_none() {
-        return Err("--sequence-frames above one currently needs --reference-from".into());
+    if !args.camera_motion.is_finite() {
+        return Err("--camera-motion must be finite".into());
+    }
+    if args.camera_motion != 0.0 && args.sequence_frames == 1 {
+        return Err("--camera-motion needs --sequence-frames above one".into());
+    }
+    if args.camera_motion != 0.0 && args.reference_from.is_some() {
+        return Err("--camera-motion cannot reuse static references".into());
     }
     if args.svgf_input && args.restir_input {
         return Err("--svgf-input and --restir-input are mutually exclusive".into());
@@ -319,7 +333,12 @@ fn from_planes(rgb: &[f16], texels: usize) -> Vec<f32> {
 fn to_record(frame: &render::Frame, texels: usize) -> Vec<f16> {
     let mut out = to_planes(&frame.color, texels);
     if let Some(ref planes) = frame.gbuffer {
-        assert_eq!(planes.len(), gbuffer::channels() * texels);
+        assert!(
+            [gbuffer::channels(false), gbuffer::channels(true)]
+                .into_iter()
+                .any(|channels| planes.len() == channels * texels),
+            "unexpected G-buffer plane count"
+        );
         out.reserve(planes.len());
         // Depth is the one channel that can exceed the f16 range, since a miss
         // is recorded as a very large distance.
@@ -412,7 +431,7 @@ fn main() {
     // primary-surface pass in an application, but may recover silhouettes that
     // no low-resolution signal can locate.
     let lr_planes = if args.gbuffer {
-        gbuffer::plane_set().with(Plane::Color)
+        gbuffer::plane_set(args.sequence_frames > 1).with(Plane::Color)
     } else {
         PlaneSet::new().with(Plane::Color)
     };
@@ -429,7 +448,7 @@ fn main() {
         },
         lr_planes,
         hr_planes: if args.hr_gbuffer {
-            gbuffer::plane_set().with(Plane::Color)
+            gbuffer::plane_set(false).with(Plane::Color)
         } else {
             PlaneSet::new().with(Plane::Color)
         },
@@ -457,7 +476,8 @@ fn main() {
             "reference height differs"
         );
         assert_eq!(
-            source.lr_planes, layout.lr_planes,
+            source.lr_planes,
+            layout.lr_planes.without(Plane::Motion),
             "reference input planes differ"
         );
         assert!(
@@ -504,10 +524,12 @@ fn main() {
         )
         .unwrap_or_else(|e| panic!("cannot load {}: {e}", stem.display()))
     });
-    let lr_probe = args.gbuffer.then(|| gbuffer::Probe::new(&context, lr_size));
+    let lr_probe = args
+        .gbuffer
+        .then(|| gbuffer::Probe::new(&context, lr_size, args.sequence_frames > 1));
     let hr_probe = args
         .hr_gbuffer
-        .then(|| gbuffer::Probe::new(&context, hr_size));
+        .then(|| gbuffer::Probe::new(&context, hr_size, false));
     let sync_point = context.submit(&mut encoder);
     assert!(
         context.wait_for(&sync_point, 30_000).unwrap(),
@@ -542,9 +564,9 @@ fn main() {
         let scene_index = index / args.sequence_frames;
         let sequence_frame = index % args.sequence_frames;
         if sequence_frame == 0 {
-            // A fresh scene per sequence. Frames inside it intentionally keep
-            // geometry and camera fixed while Blade advances its stochastic
-            // frame index, giving independent samples with exact reprojection.
+            // A fresh scene per sequence. Frames keep the same geometry and
+            // base camera while Blade advances its stochastic frame index;
+            // `camera_motion` optionally translates that camera over time.
             let geometries = scene::build(
                 &scene_config,
                 args.seed ^ (scene_index as u64).wrapping_mul(0x9E37_79B9),
@@ -560,7 +582,9 @@ fn main() {
                 scene::camera(&scene_config, &mut rng),
             ));
         }
-        let (objects, camera) = active_sequence.as_ref().expect("sequence was initialized");
+        let (objects, base_camera) = active_sequence.as_ref().expect("sequence was initialized");
+        let mut camera = *base_camera;
+        camera.pos.x += args.camera_motion * sequence_frame as f32;
 
         let input_pass = if args.svgf_input || args.restir_input {
             render::Pass::RealTime
@@ -576,7 +600,7 @@ fn main() {
             &mut encoder,
             &harness.asset_hub,
             objects,
-            camera,
+            &camera,
             input_pass,
             args.svgf_input,
             lr_probe.as_ref(),
@@ -595,7 +619,7 @@ fn main() {
                     &mut encoder,
                     &harness.asset_hub,
                     objects,
-                    camera,
+                    &camera,
                     render::Pass::PathTrace { frames: 1 },
                     false,
                     hr_probe.as_ref(),
@@ -620,7 +644,7 @@ fn main() {
                     &mut encoder,
                     &harness.asset_hub,
                     objects,
-                    camera,
+                    &camera,
                     render::Pass::Canonical {
                         frames: args.canonical_frames,
                         max_bounces: args.canonical_bounces,
@@ -688,8 +712,9 @@ fn main() {
         let record = to_record(&lr, layout.lr_texels());
         if let Some(reference_lr) = reference_lr {
             let gbuffer_start = Plane::Color.channels() * layout.lr_texels();
+            let comparable_end = reference_lr.len();
             assert_eq!(
-                record[gbuffer_start..],
+                record[gbuffer_start..comparable_end],
                 reference_lr[gbuffer_start..],
                 "reference sample {scene_index} describes a different scene or camera"
             );

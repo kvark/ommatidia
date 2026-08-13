@@ -11,10 +11,7 @@
 use blade_graphics as gpu;
 use ommatidia::dataset::{Plane, PlaneSet};
 
-/// Planes this probe produces, in the order it writes them.
-///
-/// Colour is absent because the post processing already produced it, and
-/// motion because it only means something once samples become trajectories.
+/// Geometry/material planes this probe always produces, in write order.
 pub const PLANES: [Plane; 5] = [
     Plane::Depth,
     Plane::Normal,
@@ -24,13 +21,18 @@ pub const PLANES: [Plane; 5] = [
 ];
 
 /// The plane set a dataset gains from this probe.
-pub fn plane_set() -> PlaneSet {
-    PLANES.into_iter().collect()
+pub fn plane_set(include_motion: bool) -> PlaneSet {
+    let set = PLANES.into_iter().collect::<PlaneSet>();
+    if include_motion {
+        set.with(Plane::Motion)
+    } else {
+        set
+    }
 }
 
 /// Channels the probe writes per pixel.
-pub fn channels() -> usize {
-    PLANES.iter().map(|p| p.channels()).sum()
+pub fn channels(include_motion: bool) -> usize {
+    plane_set(include_motion).channels()
 }
 
 #[derive(blade_macros::ShaderData)]
@@ -40,6 +42,7 @@ struct ProbeData {
     t_basis: gpu::TextureView,
     t_diffuse_albedo: gpu::TextureView,
     t_specular_f0: gpu::TextureView,
+    t_motion: gpu::TextureView,
     planes: gpu::BufferPiece,
 }
 
@@ -48,6 +51,8 @@ struct ProbeData {
 struct Params {
     width: u32,
     height: u32,
+    include_motion: u32,
+    _pad: u32,
 }
 
 /// Reads the renderer's G-buffer into a planar float buffer.
@@ -56,10 +61,11 @@ pub struct Probe {
     buffer: gpu::Buffer,
     size: gpu::Extent,
     len: usize,
+    include_motion: bool,
 }
 
 impl Probe {
-    pub fn new(context: &gpu::Context, size: gpu::Extent) -> Self {
+    pub fn new(context: &gpu::Context, size: gpu::Extent, include_motion: bool) -> Self {
         let shader = context.create_shader(gpu::ShaderDesc {
             source: include_str!("gbuffer.wgsl"),
             naga_module: None,
@@ -71,7 +77,7 @@ impl Probe {
             compute: shader.at("probe"),
         });
 
-        let len = channels() * (size.width * size.height) as usize;
+        let len = channels(include_motion) * (size.width * size.height) as usize;
         let buffer = context.create_buffer(gpu::BufferDesc {
             name: "gbuffer-planes",
             size: len as u64 * 4,
@@ -84,6 +90,7 @@ impl Probe {
             buffer,
             size,
             len,
+            include_motion,
         }
     }
 
@@ -97,11 +104,14 @@ impl Probe {
                 params: Params {
                     width: self.size.width,
                     height: self.size.height,
+                    include_motion: self.include_motion as u32,
+                    _pad: 0,
                 },
                 t_depth: views.depth,
                 t_basis: views.basis,
                 t_diffuse_albedo: views.diffuse_albedo,
                 t_specular_f0: views.specular_f0,
+                t_motion: views.motion,
                 planes: self.buffer.into(),
             },
         );
@@ -140,12 +150,14 @@ mod tests {
     fn the_probe_matches_the_dataset_plane_order() {
         // The generator concatenates colour and then these, so the shader's
         // write order has to be the order `PlaneSet::iter` walks.
-        let set = plane_set().with(Plane::Color);
+        let set = plane_set(false).with(Plane::Color);
         let walked: Vec<Plane> = set.iter().collect();
         assert_eq!(walked[0], Plane::Color);
         assert_eq!(&walked[1..], &PLANES);
-        assert_eq!(channels(), 11);
+        assert_eq!(channels(false), 11);
         assert_eq!(set.channels(), 14);
+        assert_eq!(channels(true), 13);
+        assert_eq!(plane_set(true).iter().last(), Some(Plane::Motion));
     }
 
     #[test]

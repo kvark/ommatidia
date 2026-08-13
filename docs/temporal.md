@@ -36,14 +36,20 @@ This is an upper bound rather than a temporal-model result, but it is over one
 hundred times the gain measured from the static learned residual.
 
 The dataset container now records a fixed sequence length in its reserved
-header and the generator can emit independent static-camera frames with
-`--sequence-frames N`. Geometry, camera, canonical target, and G-buffers stay
-byte-identical inside a sequence while Blade's stochastic frame index advances
-the sparse paths. Legacy files read as length one. Until the temporal batcher
-splits and shuffles whole sequences, the spatial trainer rejects length-above-
-one files instead of leaking neighboring frames across its train/validation
-split. This is deliberately only the static bring-up path; moving sequences
-and motion-vector conventions remain the next data change.
+header and the generator can emit independent frames with `--sequence-frames
+N`. Geometry and the base camera stay fixed while Blade's stochastic frame
+index advances the sparse paths; `--camera-motion F` optionally translates the
+camera in world X each frame and renders a matching canonical target. Sequence
+records include Blade's current-to-previous motion in pixels, decoded from its
+compact G-buffer representation. A static four-frame GPU smoke test produced
+different radiance with byte-identical geometry/targets and zero motion; the
+moving-camera test produced nonzero motion after the sequence boundary.
+
+Legacy files read as length one. Until the temporal batcher splits and shuffles
+whole sequences, the spatial trainer rejects length-above-one files instead of
+leaking neighboring frames across its train/validation split. The first frame
+of each sequence is an explicit history reset; object motion, disocclusions,
+and randomized trajectories remain the next data expansion.
 
 The first temporal model should keep reprojection outside the learned network.
 The GPU pack stage will sample the previous high-resolution output at
