@@ -35,10 +35,10 @@
   },
   "source": {
     "repository": "https://github.com/kvark/ommatidia",
-    "revision": "7f08f025a3150c355643af513bc2825d88441520"
+    "revision": "db0e4300ced954be1dded85dcfa1ac95d8eb1976"
   },
   "compatibility": {
-    "meganeura_revision": "256b906",
-    "blade_revision": "3a8895a"
+    "meganeura_revision": "c3159e830d84be920fc41ecf13b690973e8732a6",
+    "blade_revision": "101c3abd283ddcff858671f3405f041e8d87b782"
   }
 }
