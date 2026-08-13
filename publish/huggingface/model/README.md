@@ -29,8 +29,8 @@ roughness buffers. It does not require ReSTIR or an upstream denoiser.
 The release contains `model.safetensors`, `config.ron`, and a machine-readable
 `manifest.json`. This is a direct, single-frame b8 U-Net with three resolution
 levels, one residual block per level, 73,808 parameters, and a 2× output scale.
-It predicts a small sub-pixel residual over an input-resolution joint bilateral
-guide followed by exact texel-centre bilinear upsampling.
+It predicts a small sub-pixel residual over a joint bilateral reconstruction
+that uses output-resolution primary surfaces to place silhouettes exactly.
 
 The low-resolution input groups are:
 
@@ -45,6 +45,11 @@ Use the Ommatidium loader rather than constructing tensors manually. It applies
 the checkpoint's stored radiance transform, guided reconstruction, and residual
 gain and keeps the complete path on the host's GPU.
 
+This checkpoint additionally requires output-resolution depth, world normal,
+and diffuse albedo. They guide a 5×5 gather in unpack and are not fed through
+the network. A host with no output-resolution primary surfaces should pin
+`v0.2.0`, whose low-resolution-only reconstruction contract remains supported.
+
 ## Results
 
 On 76 crops from a separate 128-scene, seed-10000 validation set with 4-spp
@@ -54,14 +59,16 @@ On 76 crops from a separate 128-scene, seed-10000 validation set with 4-spp
 |---|---:|---:|---:|
 | nearest 2× | 0.004385 | 23.58 dB | 0.4593 |
 | bilinear 2× | 0.002261 | 26.46 dB | 0.5864 |
-| guided 2×, no network | 0.000391 | 34.08 dB | 0.9473 |
-| guided + b8 residual | **0.000387** | **34.12 dB** | **0.9474** |
+| low-resolution guided 2×, no network | 0.000391 | 34.08 dB | 0.9473 |
+| HR-guided 5×5, no network | 0.000335 | 34.75 dB | 0.9545 |
+| HR-guided + b8 residual | **0.000334** | **34.77 dB** | **0.9545** |
 
-The b24 control reaches 34.15 dB / 0.9476, only 0.03 dB higher. B8 is selected
-because it reconstructs 960×540 → 1920×1080 in 7.76 ms median and 7.94 ms p90
-on an idle Radeon RX 7900 XT with RADV, versus 20.71 ms for b24. The b8 trace
-splits into 0.76 ms pack/guide, 6.99 ms network, and 0.12 ms unpack. Ray tracing
-and display post-processing are excluded.
+The HR guide contributes 0.67 dB and 0.0072 SSIM; the exact-base b8 residual
+adds 0.01 dB after 2,000 steps. Repeated 960×540 → 1920×1080 runs on a Radeon
+RX 7900 XT span 8.46–9.30 ms median. The isolated stage ranges are 0.77–0.80 ms
+pack, 7.01–7.28 ms network, and 0.89–0.90 ms unpack. Ray tracing, the optional
+output-resolution primary-surface pass, and display post-processing are
+excluded.
 
 ReSTIR+SVGF is retained in the dataset as a matched comparison control, not as
 training input for this checkpoint. Blade's ReSTIR output looks darker than the
@@ -78,7 +85,7 @@ distribution. It has no motion vectors or temporal history, cannot recover
 disoccluded samples from prior frames, and should not be described as DLSS-like
 quality yet.
 
-Pin the `v0.2.0` Hub revision, or its exact commit, in applications. Do not
+Pin the `v0.3.0` Hub revision, or its exact commit, in applications. Do not
 download mutable `main` for a shipped build.
 
 The weights are released under the MIT license.
