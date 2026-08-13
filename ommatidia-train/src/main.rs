@@ -302,6 +302,14 @@ fn main() {
         }
     };
     let layout = *reader.layout();
+    if reader.sequence_length() > 1 {
+        eprintln!(
+            "{} contains {}-frame sequences; the spatial trainer refuses to shuffle them as independent samples",
+            args.data.display(),
+            reader.sequence_length(),
+        );
+        std::process::exit(1);
+    }
     if let Err(message) = validate_input_source(&layout, &args) {
         eprintln!("{message}");
         std::process::exit(1);

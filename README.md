@@ -63,6 +63,11 @@ A matched 1-spp arm reaches 31.74 dB / 0.9215 SSIM with the HR guide, but a b8
 network trained specifically on that distribution adds less than 0.005 dB.
 That closes the “larger static network” branch: temporal history must supply
 new samples before more model capacity is justified.
+On the current common 128-crop score, a perfect static-history oracle makes
+that value concrete: the tuned guide rises from 32.17 dB at one accumulated
+sample to 33.76 at two, 34.72 at four, 35.50 at eight, and 35.89 at sixteen.
+Four aligned 1-spp frames are worth +2.55 dB before motion and rejection
+losses—over one hundred times the b8 static residual's gain.
 The complete controlled setup and trace are recorded in the
 [`independent-path result`](docs/results/path-trace-guided-2026-08-13.md).
 

@@ -114,6 +114,28 @@ surfaces, much of what remains is unobserved Monte Carlo noise. This rejects
 “larger spatial backbone” as the next quality experiment. Reprojected samples
 and feature history must change the evidence available to the model.
 
+### Static-history oracle
+
+Matched 1/2/4/8/16-spp inputs on the same scenes and canonical references give
+an upper bound for perfectly reprojected static history. The table uses the
+tuned deterministic HR guide only; applying the 4-spp-trained residual to the
+other sampling distributions would not be a controlled model comparison.
+
+| accumulated independent samples | HR-guide MSE | PSNR | SSIM |
+|---:|---:|---:|---:|
+| 1 | 0.000607 | 32.17 dB | 0.9327 |
+| 2 | 0.000421 | 33.76 dB | 0.9488 |
+| 4 | 0.000337 | 34.72 dB | 0.9574 |
+| 8 | 0.000282 | 35.50 dB | 0.9636 |
+| 16 | 0.000258 | 35.89 dB | 0.9663 |
+
+Four aligned 1-spp frames improve the deterministic result by 2.55 dB and
+0.0247 SSIM over one frame. By comparison, the learned one-frame b8 residual
+adds 0.02 dB at 4 spp, and a 1-spp-trained b8 adds less than 0.005 dB. The
+history path has ample potential even after allowing for a substantial gap
+between this static oracle and moving, disoccluding sequences. The next gate is
+therefore reprojection validity and temporal stability, not model capacity.
+
 ## ReSTIR+SVGF control
 
 The matched ReSTIR+SVGF dataset is scored only as a comparison input, never as

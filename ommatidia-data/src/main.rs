@@ -28,6 +28,7 @@ struct Args {
     canonical_frames: usize,
     canonical_bounces: u32,
     input_frames: usize,
+    sequence_frames: usize,
     seed: u64,
     preview: Option<PathBuf>,
     gbuffer: bool,
@@ -51,6 +52,7 @@ impl Default for Args {
             canonical_frames: 1024,
             canonical_bounces: render::REFERENCE_MAX_BOUNCES,
             input_frames: 1,
+            sequence_frames: 1,
             seed: 0,
             preview: None,
             gbuffer: true,
@@ -77,6 +79,7 @@ usage: ommatidia-data [options]
   --canonical-frames N      accumulated reference frames, 4 spp each [1024]
   --canonical-bounces N     maximum reference path depth [8]
   --input-frames N          sparse path-traced input samples per pixel [1]
+  --sequence-frames N       independent frames per static scene/camera [1]
   --seed N                  base seed for scenes and cameras  [0]
   --device-id ID            adapter ID for this standalone process (hex or decimal)
   --shader-dir PATH         blade-render shader directory [../blade/blade-render/code]
@@ -133,6 +136,11 @@ fn parse_args() -> Result<Args, String> {
                     .parse()
                     .map_err(|e| format!("--input-frames: {e}"))?
             }
+            "--sequence-frames" => {
+                args.sequence_frames = value()?
+                    .parse()
+                    .map_err(|e| format!("--sequence-frames: {e}"))?
+            }
             "--seed" => args.seed = value()?.parse().map_err(|e| format!("--seed: {e}"))?,
             "--device-id" => args.device_id = Some(ommatidia::gpu::parse_device_id(&value()?)?),
             "--shader-dir" => args.shader_dir = Some(PathBuf::from(value()?)),
@@ -154,6 +162,12 @@ fn parse_args() -> Result<Args, String> {
     }
     if args.input_frames == 0 {
         return Err("--input-frames must be positive".into());
+    }
+    if args.sequence_frames == 0 {
+        return Err("--sequence-frames must be positive".into());
+    }
+    if args.sequence_frames > 1 && args.reference_from.is_none() {
+        return Err("--sequence-frames above one currently needs --reference-from".into());
     }
     if args.svgf_input && args.restir_input {
         return Err("--svgf-input and --restir-input are mutually exclusive".into());
@@ -424,11 +438,18 @@ fn main() {
     if let Some(parent) = args.out.parent() {
         std::fs::create_dir_all(parent).expect("cannot create the output directory");
     }
-    let mut writer = dataset::Writer::create(&args.out, layout).expect("cannot create the dataset");
+    let sequence_length = u32::try_from(args.sequence_frames).expect("sequence length exceeds u32");
+    let mut writer = dataset::Writer::create_sequence(&args.out, layout, sequence_length)
+        .expect("cannot create the dataset");
     let mut reference_reader = args.reference_from.as_ref().map(|path| {
         let reader = dataset::Reader::open(path)
             .unwrap_or_else(|e| panic!("cannot open reference dataset {}: {e}", path.display()));
         let source = reader.layout();
+        assert_eq!(
+            reader.sequence_length(),
+            1,
+            "reference source must contain independent scene records"
+        );
         assert_eq!(source.scale, layout.scale, "reference scale differs");
         assert_eq!(source.lr_width, layout.lr_width, "reference width differs");
         assert_eq!(
@@ -500,9 +521,15 @@ fn main() {
     // really high dynamic range: a peak pinned at 1.0 means something clamped.
     let mut peak = 0.0f32;
 
+    let record_count = args
+        .samples
+        .checked_mul(args.sequence_frames)
+        .expect("sample count overflow");
     println!(
-        "generating {} samples at {}x{} -> {}x{} on {}",
+        "generating {} records ({} scenes × {} frames) at {}x{} -> {}x{} on {}",
+        record_count,
         args.samples,
+        args.sequence_frames,
         lr_size.width,
         lr_size.height,
         hr_size.width,
@@ -510,21 +537,30 @@ fn main() {
         context.device_information().device_name,
     );
 
-    for index in 0..args.samples {
-        // A fresh scene per sample, so the network sees layout variety rather
-        // than one scene from many angles.
-        let geometries = scene::build(
-            &scene_config,
-            args.seed ^ (index as u64).wrapping_mul(0x9E37_79B9),
-        );
-        let model = harness
-            .asset_hub
-            .models
-            .baker
-            .create_model(&format!("scene{index}"), geometries);
-        let handle = harness.asset_hub.models.insert(model);
-        let objects = vec![blade_render::Object::from(handle)];
-        let camera = scene::camera(&scene_config, &mut rng);
+    let mut active_sequence: Option<(Vec<blade_render::Object>, blade_render::Camera)> = None;
+    for index in 0..record_count {
+        let scene_index = index / args.sequence_frames;
+        let sequence_frame = index % args.sequence_frames;
+        if sequence_frame == 0 {
+            // A fresh scene per sequence. Frames inside it intentionally keep
+            // geometry and camera fixed while Blade advances its stochastic
+            // frame index, giving independent samples with exact reprojection.
+            let geometries = scene::build(
+                &scene_config,
+                args.seed ^ (scene_index as u64).wrapping_mul(0x9E37_79B9),
+            );
+            let model = harness
+                .asset_hub
+                .models
+                .baker
+                .create_model(&format!("scene{scene_index}"), geometries);
+            let handle = harness.asset_hub.models.insert(model);
+            active_sequence = Some((
+                vec![blade_render::Object::from(handle)],
+                scene::camera(&scene_config, &mut rng),
+            ));
+        }
+        let (objects, camera) = active_sequence.as_ref().expect("sequence was initialized");
 
         let input_pass = if args.svgf_input || args.restir_input {
             render::Pass::RealTime
@@ -539,8 +575,8 @@ fn main() {
             &context,
             &mut encoder,
             &harness.asset_hub,
-            &objects,
-            &camera,
+            objects,
+            camera,
             input_pass,
             args.svgf_input,
             lr_probe.as_ref(),
@@ -548,8 +584,8 @@ fn main() {
         let (hr, reference_lr) = if let Some(reader) = &mut reference_reader {
             let source_layout = *reader.layout();
             let sample = reader
-                .sample(index)
-                .unwrap_or_else(|e| panic!("cannot read reference sample {index}: {e}"));
+                .sample(scene_index)
+                .unwrap_or_else(|e| panic!("cannot read reference sample {scene_index}: {e}"));
             let color_len = Plane::Color.channels() * source_layout.hr_texels();
             let gbuffer = if args.hr_gbuffer {
                 render::capture(
@@ -558,8 +594,8 @@ fn main() {
                     &context,
                     &mut encoder,
                     &harness.asset_hub,
-                    &objects,
-                    &camera,
+                    objects,
+                    camera,
                     render::Pass::PathTrace { frames: 1 },
                     false,
                     hr_probe.as_ref(),
@@ -583,8 +619,8 @@ fn main() {
                     &context,
                     &mut encoder,
                     &harness.asset_hub,
-                    &objects,
-                    &camera,
+                    objects,
+                    camera,
                     render::Pass::Canonical {
                         frames: args.canonical_frames,
                         max_bounces: args.canonical_bounces,
@@ -655,7 +691,7 @@ fn main() {
             assert_eq!(
                 record[gbuffer_start..],
                 reference_lr[gbuffer_start..],
-                "reference sample {index} describes a different scene or camera"
+                "reference sample {scene_index} describes a different scene or camera"
             );
         }
         if index == 0 {
@@ -670,16 +706,17 @@ fn main() {
 
         peak = peak.max(hr.color.iter().copied().fold(0.0f32, f32::max));
 
-        if index % 8 == 0 || index + 1 == args.samples {
+        if index % 8 == 0 || index + 1 == record_count {
             let done = index + 1;
             let rate = done as f32 / started.elapsed().as_secs_f32();
-            println!("  {done}/{} ({rate:.1}/s)", args.samples);
+            println!("  {done}/{record_count} ({rate:.1}/s)");
         }
     }
 
     let count = writer.finish().expect("cannot finish the dataset");
     println!(
-        "wrote {count} samples to {} in {:.1}s, peak radiance {peak:.2}",
+        "wrote {count} records ({} sequences) to {} in {:.1}s, peak radiance {peak:.2}",
+        count as usize / args.sequence_frames,
         args.out.display(),
         started.elapsed().as_secs_f32()
     );
