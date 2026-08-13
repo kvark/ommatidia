@@ -74,6 +74,29 @@ separate validation set. It remains in the deployment path as the learned
 spatial checkpoint, but the result is a strong signal not to spend more
 training or backbone complexity on a single-frame residual.
 
+## Lower-ray-budget gate
+
+A matched 1-spp HR-G-buffer set tests whether four samples had simply made the
+deterministic base too easy. It reuses the same canonical records and scene
+seeds, changing only the sparse input sample count. A b8 network was trained
+from scratch for the exact 1-spp base and scored on the separate validation
+file:
+
+| reconstruction | MSE | PSNR | SSIM |
+|---|---:|---:|---:|
+| nearest | 0.011973 | 19.22 dB | 0.3365 |
+| bilinear | 0.005681 | 22.46 dB | 0.4293 |
+| low-resolution guide | 0.000752 | 31.24 dB | 0.9108 |
+| HR guide 5×5 | 0.000671 | **31.74 dB** | **0.9215** |
+| HR guide + 1-spp-trained b8 | 0.000670 | **31.74 dB** | **0.9215** |
+
+The learned arm gains less than 0.005 dB after 2,000 steps. Lowering the ray
+budget increases the value of renderer-aware filtering but does not make a
+single-frame residual learnable: after the guide has pooled compatible
+surfaces, much of what remains is unobserved Monte Carlo noise. This rejects
+“larger spatial backbone” as the next quality experiment. Reprojected samples
+and feature history must change the evidence available to the model.
+
 ## ReSTIR+SVGF control
 
 The matched ReSTIR+SVGF dataset is scored only as a comparison input, never as

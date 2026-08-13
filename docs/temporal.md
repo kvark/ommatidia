@@ -21,6 +21,12 @@ ray budgets, sub-pixel evidence across motion, and 1-spp stability. The
 superseded nearest-base result remains recorded in
 [`results/path-trace-spatial-b24-2026-08-12.md`](results/path-trace-spatial-b24-2026-08-12.md).
 
+The matched 1-spp control makes this an experimental result rather than an
+intuition. Its HR guide reaches 31.74 dB / 0.9215 SSIM, while a b8 model trained
+from scratch on the same 1-spp distribution adds less than 0.005 dB. The next
+model must receive additional samples through valid history; changing the
+static block family cannot recover evidence absent from the frame.
+
 The first temporal model should keep reprojection outside the learned network.
 The GPU pack stage will sample the previous high-resolution output at
 `current_pixel + motion`, reject history using depth and normal disagreement,
