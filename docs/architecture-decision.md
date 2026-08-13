@@ -145,6 +145,14 @@ The target topology is consequently:
    compact 1/4-input-resolution feature state rather than a full-resolution
    activation pyramid.
 
+The first moving-camera oracle validates steps 1–2 before a network is added.
+On 32 four-frame sequences, motion-only accumulation ghosts and falls from
+31.17 to 29.09 dB despite improving SSIM. Depth/normal/albedo rejection drops
+only 2.7% of history samples and instead reaches 32.33 dB / 0.9301 SSIM. The
+next model should therefore receive an explicit validity/confidence channel;
+asking attention to discover reprojection failures implicitly would discard a
+measured 1.16 dB gain and make failures harder to inspect.
+
 At 960×540 input, one 96-channel FP16 bottleneck state is about 6.2 MB. That is
 small enough to be explicit in the native resource contract and large enough
 that blindly retaining many frames is not free. Start with one recurrent state
