@@ -8,11 +8,12 @@
 use std::path::Path;
 
 use ommatidia::batch::{self, Crop};
-use ommatidia::dataset::{Layout, Sample};
+use ommatidia::dataset::Layout;
 use ommatidia::diffusion::{self, Schedule};
-use ommatidia::model::{ModelConfig, Objective};
+use ommatidia::model::{ModelConfig, Objective, Prediction};
 use ommatidia::rng::Rng;
 
+use crate::batcher::InputSample;
 use crate::batcher::MAX_PERIOD;
 
 /// Run the network over one crop and return the reconstructed high resolution
@@ -24,7 +25,7 @@ pub fn reconstruct(
     session: &mut meganeura::Session,
     config: &ModelConfig,
     schedule: &Schedule,
-    sample: &Sample,
+    input: &InputSample,
     layout: &Layout,
     crop: Crop,
     guided: Option<&[f32]>,
@@ -35,8 +36,9 @@ pub fn reconstruct(
     let per_slot = (config.target_channels() * config.tile * config.tile) as usize;
 
     let mut cond = vec![0.0; config.cond_len()];
-    batch::write_conditioning(sample, layout, config.cond_planes, crop, 0, &mut cond);
+    let _ = input.write_conditioning(layout, config, crop, 0, &mut cond);
     session.set_input("cond", &cond);
+    let sample = input.sample();
 
     let residual = match config.objective {
         Objective::Direct => {
@@ -77,7 +79,35 @@ pub fn reconstruct(
     };
 
     let low = batch::crop_color(sample, layout, crop);
-    batch::assemble(&low, guided, &residual, [crop.tile as usize; 2], config)
+    match config.prediction {
+        Prediction::SubpixelResidual => {
+            batch::assemble(&low, guided, &residual, [crop.tile as usize; 2], config)
+        }
+        Prediction::LowResolutionResidual => {
+            let low = batch::guided_color(sample, layout, crop, config.guide);
+            let corrected = batch::assemble_low_resolution(
+                &low,
+                &residual,
+                [crop.tile as usize; 2],
+                config.residual_gain,
+            );
+            let full_crop = Crop {
+                x: 0,
+                y: 0,
+                tile: layout.lr_width,
+            };
+            let mut full = batch::guided_color(sample, layout, full_crop, config.guide);
+            let width = layout.lr_width as usize;
+            let tile = crop.tile as usize;
+            for y in 0..tile {
+                let destination = ((crop.y as usize + y) * width + crop.x as usize) * 3;
+                let source = y * tile * 3;
+                full[destination..destination + tile * 3]
+                    .copy_from_slice(&corrected[source..source + tile * 3]);
+            }
+            batch::high_resolution_guided_from_color(sample, layout, crop, config.guide, &full)
+        }
+    }
 }
 
 /// Tone map linear RGB and write it out, so the three images can be compared

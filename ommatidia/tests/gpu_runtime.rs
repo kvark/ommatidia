@@ -64,8 +64,10 @@ fn config() -> ModelConfig {
         residual_gain: 7.5,
         gn_eps: 1e-5,
         objective: Objective::Direct,
+        prediction: ommatidia::model::Prediction::SubpixelResidual,
         reconstruction_base: ReconstructionBase::Bilinear,
         guide: ommatidia::model::GuideConfig::TUNED,
+        temporal: None,
     }
 }
 

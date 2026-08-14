@@ -34,7 +34,8 @@
 use half::f16;
 
 use crate::dataset::{Layout, Plane, PlaneSet, Sample};
-use crate::model::{GuideConfig, ModelConfig, ReconstructionBase};
+use crate::model::{GuideConfig, ModelConfig, Prediction, ReconstructionBase};
+use crate::temporal::PreparedSample;
 use crate::transform;
 
 /// A rectangular crop of one sample, in low resolution pixels.
@@ -122,6 +123,68 @@ pub fn write_conditioning(
             channel += 1;
         }
     }
+}
+
+/// Write the conditioning expected by a temporal checkpoint.
+///
+/// Stored planes come from the prepared sample, whose colour is the safely
+/// accumulated estimate. Original current-frame RGB and normalized history
+/// confidence follow those planes. Keeping these as ordinary channels adds
+/// only stem-convolution weights; it needs no new graph operation.
+pub fn write_temporal_conditioning(
+    prepared: &PreparedSample,
+    layout: &Layout,
+    config: &ModelConfig,
+    crop: Crop,
+    slot: usize,
+    out: &mut [f32],
+) -> Vec<f32> {
+    assert!(config.temporal.is_some(), "checkpoint is not temporal");
+    let tile = crop.tile as usize;
+    let texels = tile * tile;
+    let channels = config.cond_channels() as usize;
+    let per_slot = channels * texels;
+    assert!(out.len() >= (slot + 1) * per_slot);
+    let destination = &mut out[slot * per_slot..(slot + 1) * per_slot];
+    write_conditioning(
+        &prepared.sample,
+        layout,
+        config.cond_planes,
+        crop,
+        0,
+        destination,
+    );
+
+    let stored_channels = config.cond_planes.channels();
+    let stride = layout.lr_width as usize;
+    for component in 0..3 {
+        let base = (stored_channels + component) * texels;
+        for y in 0..tile {
+            let source_row = (crop.y as usize + y) * stride + crop.x as usize;
+            for x in 0..tile {
+                let value = prepared.current_color[(source_row + x) * 3 + component];
+                destination[base + y * tile + x] = transform::compress(value);
+            }
+        }
+    }
+    let base = (stored_channels + 3) * texels;
+    for y in 0..tile {
+        let source_row = (crop.y as usize + y) * stride + crop.x as usize;
+        for x in 0..tile {
+            destination[base + y * tile + x] = prepared.confidence[source_row + x];
+        }
+    }
+    let guided = guided_color(&prepared.sample, layout, crop, config.guide);
+    for component in 0..3 {
+        let base = (stored_channels + 4 + component) * texels;
+        for y in 0..tile {
+            for x in 0..tile {
+                destination[base + y * tile + x] =
+                    transform::compress(guided[(y * tile + x) * 3 + component]);
+            }
+        }
+    }
+    guided
 }
 
 const GUIDE_RADIUS: i32 = 6;
@@ -310,6 +373,25 @@ pub fn guided_base(sample: &Sample, layout: &Layout, crop: Crop, guide: GuideCon
     out
 }
 
+/// Geometry-guided denoised colour at input resolution.
+pub fn guided_color(sample: &Sample, layout: &Layout, crop: Crop, guide: GuideConfig) -> Vec<f32> {
+    let tile = crop.tile as usize;
+    let mut out = vec![0.0; tile * tile * 3];
+    for y in 0..tile {
+        for x in 0..tile {
+            let color = guided_texel(
+                sample,
+                layout,
+                crop.x as i32 + x as i32,
+                crop.y as i32 + y as i32,
+                guide,
+            );
+            out[(y * tile + x) * 3..(y * tile + x) * 3 + 3].copy_from_slice(&color);
+        }
+    }
+    out
+}
+
 /// Joint bilateral upsampling using an optional high-resolution primary
 /// surface pass. Unlike bilinear reconstruction, this can place an edge
 /// between low-resolution texel centres when the renderer supplies its exact
@@ -319,6 +401,32 @@ pub fn high_resolution_guided_base(
     layout: &Layout,
     crop: Crop,
     guide: GuideConfig,
+) -> Vec<f32> {
+    high_resolution_guided(sample, layout, crop, guide, None)
+}
+
+/// Joint bilateral upsampling of an already-denoised low-resolution colour.
+///
+/// Unlike [`high_resolution_guided_base`], this skips the 13x13 low-resolution
+/// filter. It is the reconstruction path for a model that predicts clean RGB
+/// rather than an unpredictable high-resolution sub-pixel residual.
+pub fn high_resolution_guided_from_color(
+    sample: &Sample,
+    layout: &Layout,
+    crop: Crop,
+    guide: GuideConfig,
+    low_color: &[f32],
+) -> Vec<f32> {
+    assert_eq!(low_color.len(), layout.lr_texels() * 3);
+    high_resolution_guided(sample, layout, crop, guide, Some(low_color))
+}
+
+fn high_resolution_guided(
+    sample: &Sample,
+    layout: &Layout,
+    crop: Crop,
+    guide: GuideConfig,
+    low_color: Option<&[f32]>,
 ) -> Vec<f32> {
     const RADIUS: i32 = 2;
     const PADDING: i32 = RADIUS + 1;
@@ -331,13 +439,14 @@ pub fn high_resolution_guided_base(
     let mut low = vec![[0.0f32; 3]; padded_width * padded_width];
     for y in 0..padded_width {
         for x in 0..padded_width {
-            low[y * padded_width + x] = guided_texel(
-                sample,
-                layout,
-                origin_x + x as i32,
-                origin_y + y as i32,
-                guide,
-            );
+            let source_x = (origin_x + x as i32).clamp(0, layout.lr_width as i32 - 1);
+            let source_y = (origin_y + y as i32).clamp(0, layout.lr_height as i32 - 1);
+            low[y * padded_width + x] = if let Some(color) = low_color {
+                let index = (source_y as usize * layout.lr_width as usize + source_x as usize) * 3;
+                [color[index], color[index + 1], color[index + 2]]
+            } else {
+                guided_texel(sample, layout, source_x, source_y, guide)
+            };
         }
     }
 
@@ -517,6 +626,116 @@ pub fn write_residual(
     }
 }
 
+/// Write the target selected by [`ModelConfig::prediction`].
+pub fn write_target(
+    sample: &Sample,
+    layout: &Layout,
+    crop: Crop,
+    slot: usize,
+    config: &ModelConfig,
+    out: &mut [f32],
+) {
+    match config.prediction {
+        Prediction::SubpixelResidual => write_residual(sample, layout, crop, slot, config, out),
+        Prediction::LowResolutionResidual => {
+            write_low_resolution_residual(sample, layout, crop, slot, config, out)
+        }
+    }
+}
+
+/// Train a three-channel low-resolution correction against a box-filtered
+/// canonical target. This is a denoising target: unlike sub-pixel residuals,
+/// it asks the network to estimate one stable radiance value per input pixel.
+pub fn write_low_resolution_residual(
+    sample: &Sample,
+    layout: &Layout,
+    crop: Crop,
+    slot: usize,
+    config: &ModelConfig,
+    out: &mut [f32],
+) {
+    write_low_resolution_residual_from_base(sample, layout, crop, slot, config, None, out)
+}
+
+/// Variant of [`write_low_resolution_residual`] that reuses a guided crop
+/// already computed while packing temporal conditioning.
+pub fn write_low_resolution_residual_from_base(
+    sample: &Sample,
+    layout: &Layout,
+    crop: Crop,
+    slot: usize,
+    config: &ModelConfig,
+    guided: Option<&[f32]>,
+    out: &mut [f32],
+) {
+    let tile = crop.tile as usize;
+    let per_slot = 3 * tile * tile;
+    assert!(out.len() >= (slot + 1) * per_slot);
+    let scale = layout.scale as usize;
+    let hr_texels = layout.hr_texels();
+    let hr_base = layout.hr_planes.channel_offset(Plane::Color).unwrap();
+    let hr_width = layout.hr_width() as usize;
+    for channel in 0..3 {
+        let high = &sample.hr[(hr_base + channel) * hr_texels..(hr_base + channel + 1) * hr_texels];
+        for y in 0..tile {
+            let source_y = crop.y as usize + y;
+            for x in 0..tile {
+                let source_x = crop.x as usize + x;
+                let mut reference = 0.0;
+                for dy in 0..scale {
+                    for dx in 0..scale {
+                        reference += high
+                            [(source_y * scale + dy) * hr_width + source_x * scale + dx]
+                            .to_f32();
+                    }
+                }
+                reference /= (scale * scale) as f32;
+                let base = guided.map_or_else(
+                    || {
+                        guided_texel(
+                            sample,
+                            layout,
+                            source_x as i32,
+                            source_y as i32,
+                            config.guide,
+                        )[channel]
+                    },
+                    |guided| guided[(y * tile + x) * 3 + channel],
+                );
+                out[slot * per_slot + (channel * tile + y) * tile + x] =
+                    (transform::compress(reference) - transform::compress(base))
+                        * config.residual_gain;
+            }
+        }
+    }
+}
+
+/// Apply a predicted planar low-resolution RGB correction to an interleaved
+/// linear colour crop.
+pub fn assemble_low_resolution(
+    low: &[f32],
+    residual: &[f32],
+    extent: [usize; 2],
+    gain: f32,
+) -> Vec<f32> {
+    let [width, height] = extent;
+    assert_eq!(low.len(), width * height * 3);
+    assert_eq!(residual.len(), width * height * 3);
+    let inverse_gain = gain.recip();
+    let mut out = vec![0.0; low.len()];
+    for y in 0..height {
+        for x in 0..width {
+            for channel in 0..3 {
+                let delta = residual[(channel * height + y) * width + x] * inverse_gain;
+                out[(y * width + x) * 3 + channel] = transform::decompress(
+                    transform::compress(low[(y * width + x) * 3 + channel]) + delta,
+                );
+            }
+        }
+    }
+    out
+}
+
 /// Reassemble a high resolution image from a low resolution one and a
 /// predicted sub-pixel residual.
 ///
@@ -599,8 +818,7 @@ pub fn estimate_gain(
     config: &ModelConfig,
 ) -> f32 {
     let tile = layout.lr_width.min(layout.lr_height);
-    let sub = (layout.scale * layout.scale) as usize;
-    let mut scratch = vec![0.0; 3 * sub * (tile * tile) as usize];
+    let mut scratch = vec![0.0; (config.target_channels() * tile * tile) as usize];
 
     let mut sum = 0.0f64;
     let mut count = 0usize;
@@ -608,7 +826,7 @@ pub fn estimate_gain(
     unit.residual_gain = 1.0;
     for sample in samples {
         let crop = Crop { x: 0, y: 0, tile };
-        write_residual(&sample, layout, crop, 0, &unit, &mut scratch);
+        write_target(&sample, layout, crop, 0, &unit, &mut scratch);
         // The residual is centred on zero by construction, so the mean square
         // is the variance and there is no mean to subtract.
         sum += scratch
@@ -839,6 +1057,31 @@ mod tests {
         let reference = crop_reference(&s, &l, crop);
         for (actual, expected) in rebuilt.iter().zip(reference) {
             assert!((actual - expected).abs() < 1e-3);
+        }
+    }
+
+    #[test]
+    fn zero_low_resolution_correction_preserves_the_guided_base() {
+        let mut l = layout(2, 8, 8);
+        l.lr_planes = l.lr_planes.with(Plane::Normal).with(Plane::DiffuseAlbedo);
+        l.hr_planes = l
+            .hr_planes
+            .with(Plane::Depth)
+            .with(Plane::Normal)
+            .with(Plane::DiffuseAlbedo);
+        let s = sample(&l, 10);
+        let crop = Crop {
+            x: 0,
+            y: 0,
+            tile: 8,
+        };
+        let config = reconstruction_config(2, ReconstructionBase::HighResolutionGuided);
+        let expected = high_resolution_guided_base(&s, &l, crop, config.guide);
+        let guided = guided_color(&s, &l, crop, config.guide);
+        let corrected = assemble_low_resolution(&guided, &[0.0; 3 * 64], [8, 8], 1.0);
+        let actual = high_resolution_guided_from_color(&s, &l, crop, config.guide, &corrected);
+        for (actual, expected) in actual.into_iter().zip(expected) {
+            assert!((actual - expected).abs() < 1e-4, "{actual} vs {expected}");
         }
     }
 

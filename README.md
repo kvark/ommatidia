@@ -73,6 +73,15 @@ motion-only accumulation ghosts and falls from 31.17 to 29.09 dB, whereas
 depth/normal/albedo rejection reaches 32.33 dB / 0.9301 SSIM. Only 2.7% of
 history pixels are rejected. Validity is therefore an explicit input to the
 next temporal model, not something a larger backbone should have to infer.
+The sequence-aware trainer now preserves whole-sequence splits and tests a
+safe temporal model: accumulated colour remains the deterministic base, while
+current RGB, confidence, and the exact guided base are ordinary U-Net input
+channels. Predicting three low-resolution colour corrections reaches 32.28 dB
+on a separate moving-sequence set versus 32.26 dB for rejected history alone;
+a 4×-compute b16 control reaches 32.30 dB. The small learned increment is real
+but not release-worthy, so the spatial v0.3.1 runtime remains the default while
+motion diversity and temporal losses are expanded. See the
+[`temporal model result`](docs/results/temporal-low-color-2026-08-14.md).
 The complete controlled setup and trace are recorded in the
 [`independent-path result`](docs/results/path-trace-guided-2026-08-13.md).
 

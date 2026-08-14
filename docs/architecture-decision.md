@@ -153,6 +153,15 @@ next model should therefore receive an explicit validity/confidence channel;
 asking attention to discover reprojection failures implicitly would discard a
 measured 1.16 dB gain and make failures harder to inspect.
 
+The first sequence-aware model keeps that deterministic result as its zero
+output and appends seven ordinary channels: current RGB, accepted-history
+confidence, and guided RGB. Changing the target from 12 unpredictable
+high-resolution sub-pixel residuals to three low-resolution radiance residuals
+produces a small repeatable external gain (32.26 → 32.28 dB at b8). Widening to
+b16 reaches 32.30 dB but costs 3.7× the arithmetic. This rejects width as the
+next lever and keeps local attention conditional on a harder motion dataset and
+temporal-stability loss demonstrating a need for it.
+
 At 960×540 input, one 96-channel FP16 bottleneck state is about 6.2 MB. That is
 small enough to be explicit in the native resource contract and large enough
 that blindly retaining many frames is not free. Start with one recurrent state

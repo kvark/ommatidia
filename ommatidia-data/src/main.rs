@@ -351,15 +351,16 @@ fn to_record(frame: &render::Frame, texels: usize) -> Vec<f16> {
     out
 }
 
-/// Report the range of every stored plane.
+/// Report the range of every stored plane in the first record.
 ///
 /// Worth the few lines: a G-buffer that came out empty, or a channel that was
 /// silently written in the wrong order, is obvious here and invisible after a
 /// training run. Depth should span the scene, normals should reach both signs,
-/// and the unorm channels should stay inside `[0, 1]`.
+/// and the unorm channels should stay inside `[0, 1]`. Motion is expected to
+/// be zero here because the first frame of a sequence has no predecessor.
 fn report_planes(record: &[f16], layout: &Layout) {
     let texels = layout.lr_texels();
-    println!("input planes:");
+    println!("first-record input planes:");
     let mut channel = 0;
     for plane in layout.lr_planes.iter() {
         for component in 0..plane.channels() {

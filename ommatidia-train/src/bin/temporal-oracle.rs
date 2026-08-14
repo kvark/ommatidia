@@ -55,61 +55,7 @@ fn bilinear(
     out
 }
 
-fn surfaces_match(
-    current: &Sample,
-    previous: &Sample,
-    layout: &Layout,
-    current_index: usize,
-    previous_index: usize,
-    config: RejectConfig,
-) -> bool {
-    let current_depth = plane(current, layout, Plane::Depth, 0, current_index);
-    let previous_depth = plane(previous, layout, Plane::Depth, 0, previous_index);
-    let sky = |depth: f32| depth >= 60_000.0;
-    if sky(current_depth) || sky(previous_depth) {
-        return sky(current_depth) == sky(previous_depth);
-    }
-    let encoded = |depth: f32| 1.0 / (1.0 + depth.max(0.0));
-    if (encoded(current_depth) - encoded(previous_depth)).abs() > config.depth_delta {
-        return false;
-    }
-
-    let mut normal_dot = 0.0;
-    let mut current_len2 = 0.0;
-    let mut previous_len2 = 0.0;
-    let mut albedo_delta2 = 0.0;
-    for channel in 0..3 {
-        let a = plane(current, layout, Plane::Normal, channel, current_index);
-        let b = plane(previous, layout, Plane::Normal, channel, previous_index);
-        normal_dot += a * b;
-        current_len2 += a * a;
-        previous_len2 += b * b;
-        let delta = plane(
-            current,
-            layout,
-            Plane::DiffuseAlbedo,
-            channel,
-            current_index,
-        ) - plane(
-            previous,
-            layout,
-            Plane::DiffuseAlbedo,
-            channel,
-            previous_index,
-        );
-        albedo_delta2 += delta * delta;
-    }
-    let cosine = normal_dot / (current_len2 * previous_len2).sqrt().max(1.0e-6);
-    cosine > config.normal_cosine && albedo_delta2 < config.albedo_delta2
-}
-
-fn accumulate(
-    current: &Sample,
-    previous: &Sample,
-    layout: &Layout,
-    history: &History,
-    rejection: Option<RejectConfig>,
-) -> History {
+fn accumulate(current: &Sample, layout: &Layout, history: &History) -> History {
     let width = layout.lr_width as usize;
     let height = layout.lr_height as usize;
     let texels = width * height;
@@ -129,19 +75,7 @@ fn accumulate(
                 && position[1] >= 0.0
                 && position[0] <= (width - 1) as f32
                 && position[1] <= (height - 1) as f32;
-            let previous_x = position[0].round().clamp(0.0, (width - 1) as f32) as usize;
-            let previous_y = position[1].round().clamp(0.0, (height - 1) as f32) as usize;
-            let valid = inside
-                && rejection.is_none_or(|config| {
-                    surfaces_match(
-                        current,
-                        previous,
-                        layout,
-                        index,
-                        previous_y * width + previous_x,
-                        config,
-                    )
-                });
+            let valid = inside;
             let count = if valid {
                 bilinear(&history.count, width, height, 1, position)[0].min(3.0)
             } else {
@@ -187,6 +121,32 @@ fn initial_history(sample: &Sample, layout: &Layout) -> History {
     }
 }
 
+fn downsampled_reference(sample: &Sample, layout: &Layout) -> Vec<f32> {
+    let scale = layout.scale as usize;
+    let width = layout.lr_width as usize;
+    let height = layout.lr_height as usize;
+    let hr_width = layout.hr_width() as usize;
+    let hr_texels = layout.hr_texels();
+    let base = layout.hr_planes.channel_offset(Plane::Color).unwrap();
+    let mut out = vec![0.0; width * height * 3];
+    for y in 0..height {
+        for x in 0..width {
+            for channel in 0..3 {
+                let source =
+                    &sample.hr[(base + channel) * hr_texels..(base + channel + 1) * hr_texels];
+                let mut sum = 0.0;
+                for dy in 0..scale {
+                    for dx in 0..scale {
+                        sum += source[(y * scale + dy) * hr_width + x * scale + dx].to_f32();
+                    }
+                }
+                out[(y * width + x) * 3 + channel] = sum / (scale * scale) as f32;
+            }
+        }
+    }
+    out
+}
+
 #[derive(Default)]
 struct Score {
     mse: f64,
@@ -213,10 +173,10 @@ impl Score {
 
 fn main() {
     let mut args = std::env::args_os().skip(1);
-    let path = args.next().unwrap_or_else(|| {
+    let path = std::path::PathBuf::from(args.next().unwrap_or_else(|| {
         eprintln!("usage: temporal-oracle DATASET.omd [DEPTH_DELTA NORMAL_COSINE ALBEDO_DELTA2]");
         std::process::exit(2);
-    });
+    }));
     let mut rejection = RejectConfig::default();
     for (name, target) in [
         ("depth delta", &mut rejection.depth_delta),
@@ -230,7 +190,8 @@ fn main() {
                 .unwrap_or_else(|| panic!("invalid {name}"));
         }
     }
-    let mut reader = Reader::open(path).expect("open sequence dataset");
+    let mut reader = Reader::open(&path).expect("open sequence dataset");
+    let mut temporal_reader = Reader::open(&path).expect("open temporal sequence dataset");
     let layout = *reader.layout();
     let sequence_length = reader.sequence_length();
     assert!(sequence_length > 1, "dataset does not contain sequences");
@@ -265,45 +226,72 @@ fn main() {
     let mut single = Score::default();
     let mut motion_only = Score::default();
     let mut rejected = Score::default();
+    let mut rejected_without_spatial_filter = Score::default();
+    let mut canonical_low_oracle = Score::default();
     let mut accepted_pixels = 0usize;
     let mut history_pixels = 0usize;
     for sequence in 0..reader.len() / sequence_length {
-        let mut previous = reader.sample(sequence * sequence_length).unwrap();
-        let mut raw_history = initial_history(&previous, &layout);
-        let mut valid_history = initial_history(&previous, &layout);
+        let first = reader.sample(sequence * sequence_length).unwrap();
+        let mut raw_history = initial_history(&first, &layout);
         for frame in 1..sequence_length {
-            let current = reader.sample(sequence * sequence_length + frame).unwrap();
-            raw_history = accumulate(&current, &previous, &layout, &raw_history, None);
-            valid_history = accumulate(
-                &current,
-                &previous,
-                &layout,
-                &valid_history,
-                Some(rejection),
-            );
-            accepted_pixels += valid_history
-                .count
+            let index = sequence * sequence_length + frame;
+            let current = reader.sample(index).unwrap();
+            raw_history = accumulate(&current, &layout, &raw_history);
+            let prepared = ommatidia::temporal::prepare(
+                &mut temporal_reader,
+                index,
+                ommatidia::temporal::Config {
+                    frames: 4,
+                    rejection: ommatidia::temporal::RejectionConfig {
+                        depth_delta: rejection.depth_delta,
+                        normal_cosine: rejection.normal_cosine,
+                        albedo_delta2: rejection.albedo_delta2,
+                    },
+                },
+            )
+            .unwrap();
+            accepted_pixels += prepared
+                .confidence
                 .iter()
-                .filter(|&&count| count > 1.0)
+                .filter(|&&confidence| confidence > 0.25)
                 .count();
-            history_pixels += valid_history.count.len();
+            history_pixels += prepared.confidence.len();
             let reference = batch::crop_reference(&current, &layout, crop);
+            let rejected_color = batch::crop_color(&prepared.sample, &layout, crop);
+            rejected_without_spatial_filter.add(
+                &batch::high_resolution_guided_from_color(
+                    &current,
+                    &layout,
+                    crop,
+                    GuideConfig::TUNED,
+                    &rejected_color,
+                ),
+                &reference,
+                extent,
+            );
+            canonical_low_oracle.add(
+                &batch::high_resolution_guided_from_color(
+                    &current,
+                    &layout,
+                    crop,
+                    GuideConfig::TUNED,
+                    &downsampled_reference(&current, &layout),
+                ),
+                &reference,
+                extent,
+            );
             for (score, sample) in [
                 (&mut single, current.clone()),
                 (
                     &mut motion_only,
                     with_color(&current, &layout, &raw_history.color),
                 ),
-                (
-                    &mut rejected,
-                    with_color(&current, &layout, &valid_history.color),
-                ),
+                (&mut rejected, prepared.sample),
             ] {
                 let image =
                     batch::high_resolution_guided_base(&sample, &layout, crop, GuideConfig::TUNED);
                 score.add(&image, &reference, extent);
             }
-            previous = current;
         }
     }
     println!(
@@ -314,6 +302,8 @@ fn main() {
     single.print("single frame");
     motion_only.print("motion-only history");
     rejected.print("surface-rejected history");
+    rejected_without_spatial_filter.print("history, direct HR gather");
+    canonical_low_oracle.print("canonical-low oracle");
     println!(
         "surface history accepted at {:.1}% of pixels",
         100.0 * accepted_pixels as f64 / history_pixels as f64,
@@ -354,7 +344,7 @@ mod tests {
             color: vec![0.0, 0.0, 0.0, 2.0, 4.0, 6.0, 0.0, 0.0, 0.0],
             count: vec![1.0; 3],
         };
-        let result = accumulate(&sample, &sample, &layout, &history, None);
+        let result = accumulate(&sample, &layout, &history);
         assert_eq!(&result.color[..3], &[1.0, 2.0, 3.0]);
         assert_eq!(result.count[0], 2.0);
     }

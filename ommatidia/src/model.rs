@@ -1,9 +1,10 @@
 //! The reconstruction network, as a meganeura graph.
 //!
-//! A timestep-conditioned U-Net that runs entirely at input resolution and
-//! emits `3 * scale^2` channels, which the runtime scatters into the high
-//! resolution target. See `docs/design.md` for why the network never touches
-//! output resolution.
+//! A timestep-conditioned U-Net that runs entirely at input resolution. The
+//! deployed spatial path emits `3 * scale^2` sub-pixel residual channels. The
+//! temporal experiment instead emits three denoised-colour residual channels
+//! and lets the existing geometry-aware gather reconstruct output resolution.
+//! See `docs/design.md` for why the network never touches output resolution.
 //!
 //! The same backbone serves both objectives. Under [`Objective::Diffusion`] it
 //! takes a noised residual alongside the conditioning and predicts the noise;
@@ -14,6 +15,7 @@ use meganeura::{Graph, NodeId};
 use serde::{Deserialize, Serialize};
 
 use crate::dataset::{Plane, PlaneSet};
+use crate::temporal;
 
 /// What the network is trained to predict.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -25,6 +27,19 @@ pub enum Objective {
     ///
     /// The fast path, and the baseline any distilled sampler has to beat.
     Direct,
+}
+
+/// Spatial quantity emitted by the network.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Prediction {
+    /// Historical path: one residual for every output sub-pixel and RGB channel.
+    SubpixelResidual,
+    /// RGB correction at input resolution, followed by geometry-aware gather.
+    LowResolutionResidual,
+}
+
+fn legacy_prediction() -> Prediction {
+    Prediction::SubpixelResidual
 }
 
 /// Deterministic image reconstruction underneath the learned residual.
@@ -144,6 +159,9 @@ pub struct ModelConfig {
     /// for why a diffusion model cannot be trained without it.
     pub residual_gain: f32,
     pub objective: Objective,
+    /// What the graph's output tensor represents.
+    #[serde(default = "legacy_prediction")]
+    pub prediction: Prediction,
     /// Image reconstruction to which the network adds its residual.
     ///
     /// Missing in v0.1 sidecars, whose weights were trained against nearest.
@@ -152,6 +170,10 @@ pub struct ModelConfig {
     /// Exact coefficients used by the CPU trainer and GPU reconstruction.
     #[serde(default = "legacy_guide_config")]
     pub guide: GuideConfig,
+    /// Reprojected sparse samples consumed by this checkpoint. `None` keeps
+    /// all existing single-frame sidecars and runtimes unchanged.
+    #[serde(default)]
+    pub temporal: Option<temporal::Config>,
 }
 
 impl Default for ModelConfig {
@@ -179,8 +201,10 @@ impl Default for ModelConfig {
             // Overwritten from the data; 1.0 leaves the residual as it is.
             residual_gain: 1.0,
             objective: Objective::Direct,
+            prediction: Prediction::SubpixelResidual,
             reconstruction_base: ReconstructionBase::GuidedBilinear,
             guide: GuideConfig::TUNED,
+            temporal: None,
         }
     }
 }
@@ -194,11 +218,15 @@ impl ModelConfig {
     /// Conditioning channels, from the plane set.
     pub fn cond_channels(&self) -> u32 {
         self.cond_planes.channels() as u32
+            + self.temporal.map_or(0, |_| temporal::Config::AUX_CHANNELS)
     }
 
-    /// Output channels: RGB for every sub-pixel of the scale factor.
+    /// Output channels for the selected prediction target.
     pub fn target_channels(&self) -> u32 {
-        3 * self.scale * self.scale
+        match self.prediction {
+            Prediction::SubpixelResidual => 3 * self.scale * self.scale,
+            Prediction::LowResolutionResidual => 3,
+        }
     }
 
     /// Channels the first convolution consumes.
@@ -334,6 +362,22 @@ impl ModelConfig {
         }
         if self.cond_channels() == 0 {
             return Err("the conditioning plane set is empty".into());
+        }
+        if let Some(temporal) = self.temporal {
+            if temporal.frames < 2 {
+                return Err(format!(
+                    "temporal history needs at least two frames, got {}",
+                    temporal.frames
+                ));
+            }
+            if self.cond_planes.contains(Plane::Motion) {
+                return Err("motion is consumed by reprojection, not by the model".into());
+            }
+        }
+        if self.prediction == Prediction::LowResolutionResidual
+            && self.reconstruction_base != ReconstructionBase::HighResolutionGuided
+        {
+            return Err("low-resolution prediction needs HR-guided reconstruction".into());
         }
         if matches!(
             self.reconstruction_base,
@@ -832,6 +876,27 @@ mod tests {
         assert_eq!(c.in_channels(), 3, "direct sees only the conditioning");
         c.scale = 4;
         assert_eq!(c.target_channels(), 48);
+    }
+
+    #[test]
+    fn temporal_low_color_uses_only_ordinary_channels() {
+        let mut c = small();
+        c.objective = Objective::Direct;
+        c.prediction = Prediction::LowResolutionResidual;
+        c.reconstruction_base = ReconstructionBase::HighResolutionGuided;
+        c.cond_planes = c
+            .cond_planes
+            .with(Plane::Depth)
+            .with(Plane::Normal)
+            .with(Plane::DiffuseAlbedo);
+        c.temporal = Some(crate::temporal::Config {
+            frames: 4,
+            rejection: crate::temporal::RejectionConfig::default(),
+        });
+        assert_eq!(c.cond_channels(), 17); // Ten stored plus seven temporal auxiliaries.
+        assert_eq!(c.target_channels(), 3);
+        assert_eq!(c.in_channels(), 17);
+        assert!(c.validate().is_ok());
     }
 
     #[test]

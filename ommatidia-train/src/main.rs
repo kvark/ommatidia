@@ -17,7 +17,7 @@ use ommatidia::batch::{self, Crop};
 use ommatidia::checkpoint;
 use ommatidia::dataset::Reader;
 use ommatidia::diffusion::Schedule;
-use ommatidia::model::{self, ModelConfig, Objective, ReconstructionBase};
+use ommatidia::model::{self, ModelConfig, Objective, Prediction, ReconstructionBase};
 
 /// How a dataset is divided between fitting and scoring.
 ///
@@ -33,8 +33,12 @@ struct Split {
 impl Split {
     /// Reserve `fraction` of the set for validation, always leaving at least
     /// one sample on each side.
-    fn new(total: usize, fraction: f32) -> Self {
-        let held = ((total as f32 * fraction).round() as usize).clamp(1, total.saturating_sub(1));
+    fn new(total: usize, sequence_length: usize, fraction: f32) -> Self {
+        assert!(total.is_multiple_of(sequence_length));
+        let sequences = total / sequence_length;
+        let held_sequences =
+            ((sequences as f32 * fraction).round() as usize).clamp(1, sequences.saturating_sub(1));
+        let held = held_sequences * sequence_length;
         Self {
             train: total - held,
             total,
@@ -70,6 +74,7 @@ struct Args {
     timesteps: usize,
     sampler_steps: usize,
     objective: Objective,
+    prediction: Prediction,
     reconstruction_base: ReconstructionBase,
     seed: u64,
     log_every: usize,
@@ -82,6 +87,7 @@ struct Args {
     eval_only: bool,
     allow_filtered_input: bool,
     device_id: Option<u32>,
+    history_frames: u32,
 }
 
 impl Default for Args {
@@ -102,6 +108,7 @@ impl Default for Args {
             timesteps: 1000,
             sampler_steps: 20,
             objective: Objective::Direct,
+            prediction: Prediction::SubpixelResidual,
             reconstruction_base: ReconstructionBase::GuidedBilinear,
             seed: 0,
             log_every: 50,
@@ -114,6 +121,7 @@ impl Default for Args {
             eval_only: false,
             allow_filtered_input: false,
             device_id: None,
+            history_frames: 1,
         }
     }
 }
@@ -140,10 +148,12 @@ usage: ommatidia-train [options]
   --timesteps N        diffusion schedule length  [1000]
   --sampler-steps N    DDIM steps used when evaluating  [20]
   --objective KIND     direct or diffusion  [direct]
+  --prediction KIND    subpixel or low-color residual  [subpixel]
   --reconstruction-base KIND
                        nearest, bilinear, guided, or hr-guided  [guided]
   --seed N             seed for init and batching  [0]
   --device-id ID       adapter ID for this standalone process (hex or decimal)
+  --history-frames N   surface-reprojected sparse frames, 1 for spatial [1]
   --log-every N        steps between loss lines  [50]
   --eval-out DIR       write comparison PNGs of the first held-out crop
   --val-fraction F     share of the set held out for scoring  [0.15]
@@ -219,6 +229,13 @@ fn parse_from(argv: impl Iterator<Item = String>) -> Result<Args, String> {
                     other => return Err(format!("unknown objective {other:?}")),
                 }
             }
+            "--prediction" => {
+                args.prediction = match value()?.as_str() {
+                    "subpixel" => Prediction::SubpixelResidual,
+                    "low-color" => Prediction::LowResolutionResidual,
+                    other => return Err(format!("unknown prediction {other:?}")),
+                }
+            }
             "--reconstruction-base" => {
                 args.reconstruction_base = match value()?.as_str() {
                     "nearest" => ReconstructionBase::Nearest,
@@ -230,6 +247,11 @@ fn parse_from(argv: impl Iterator<Item = String>) -> Result<Args, String> {
             }
             "--seed" => args.seed = value()?.parse().map_err(|e| format!("--seed: {e}"))?,
             "--device-id" => args.device_id = Some(ommatidia::gpu::parse_device_id(&value()?)?),
+            "--history-frames" => {
+                args.history_frames = value()?
+                    .parse()
+                    .map_err(|e| format!("--history-frames: {e}"))?
+            }
             "--log-every" => {
                 args.log_every = value()?.parse().map_err(|e| format!("--log-every: {e}"))?
             }
@@ -268,6 +290,9 @@ fn parse_from(argv: impl Iterator<Item = String>) -> Result<Args, String> {
     if args.eval_crops == 0 {
         return Err("--eval-crops must be positive".into());
     }
+    if args.history_frames == 0 {
+        return Err("--history-frames must be positive".into());
+    }
     Ok(args)
 }
 
@@ -302,12 +327,16 @@ fn main() {
         }
     };
     let layout = *reader.layout();
-    if reader.sequence_length() > 1 {
+    if reader.sequence_length() > 1 && !args.eval_only && args.history_frames < 2 {
         eprintln!(
-            "{} contains {}-frame sequences; the spatial trainer refuses to shuffle them as independent samples",
+            "{} contains {}-frame sequences; select --history-frames 2 or greater",
             args.data.display(),
             reader.sequence_length(),
         );
+        std::process::exit(1);
+    }
+    if reader.sequence_length() == 1 && args.history_frames > 1 {
+        eprintln!("--history-frames needs a sequence dataset");
         std::process::exit(1);
     }
     if let Err(message) = validate_input_source(&layout, &args) {
@@ -316,6 +345,10 @@ fn main() {
     }
     if reader.is_empty() {
         eprintln!("{} holds no samples", args.data.display());
+        std::process::exit(1);
+    }
+    if reader.len() / reader.sequence_length() < 2 {
+        eprintln!("training and validation need at least two independent sequences");
         std::process::exit(1);
     }
     let tile = args.tile.min(layout.lr_width).min(layout.lr_height);
@@ -349,6 +382,10 @@ fn main() {
 
     // Everything about the data comes from the data, so the network cannot ask
     // for a plane the dataset does not carry or upscale by the wrong factor.
+    let temporal = (args.history_frames > 1).then_some(ommatidia::temporal::Config {
+        frames: args.history_frames,
+        rejection: ommatidia::temporal::RejectionConfig::default(),
+    });
     let mut config = ModelConfig {
         scale: layout.scale,
         tile,
@@ -358,6 +395,8 @@ fn main() {
         // order, and differ only in which channels reach the network.
         cond_planes: if args.color_only {
             ommatidia::PlaneSet::new().with(ommatidia::Plane::Color)
+        } else if temporal.is_some() {
+            layout.lr_planes.without(ommatidia::Plane::Motion)
         } else {
             layout.lr_planes
         },
@@ -367,17 +406,34 @@ fn main() {
         num_groups: args.num_groups,
         residual_gain: 1.0,
         objective: args.objective,
+        prediction: args.prediction,
         reconstruction_base,
+        temporal,
         ..ModelConfig::default()
     };
+    let split = Split::new(reader.len(), reader.sequence_length(), args.val_fraction);
     // The residual is small, and how small depends on the content and the
     // scale factor, so it is measured rather than assumed. Without this the
     // diffusion objective trains to a low loss and samples to pure noise.
     let probe = GAIN_PROBE_SAMPLES.min(reader.len());
     if !args.eval_only {
-        let samples: Vec<_> = (0..probe)
-            .filter_map(|i| reader.sample(i * reader.len() / probe.max(1)).ok())
-            .collect();
+        let samples: Vec<_> = if let Some(temporal) = config.temporal {
+            let sequence_length = reader.sequence_length();
+            let sequences = split.training().len() / sequence_length;
+            (0..probe.min(sequences))
+                .filter_map(|i| {
+                    let sequence = i * sequences / probe.min(sequences).max(1);
+                    let index = sequence * sequence_length + sequence_length - 1;
+                    ommatidia::temporal::prepare(&mut reader, index, temporal)
+                        .ok()
+                        .map(|prepared| prepared.sample)
+                })
+                .collect()
+        } else {
+            (0..probe)
+                .filter_map(|i| reader.sample(i * reader.len() / probe.max(1)).ok())
+                .collect()
+        };
         config.residual_gain = ommatidia::batch::estimate_gain(samples, &layout, &config);
         println!(
             "residual gain {:.2} (standard deviation {:.4}), measured over {probe} samples",
@@ -390,7 +446,6 @@ fn main() {
         std::process::exit(1);
     }
 
-    let split = Split::new(reader.len(), args.val_fraction);
     println!(
         "{} samples for training, {} held out for scoring",
         split.training().len(),
@@ -708,21 +763,25 @@ impl Evaluator {
         let started = std::time::Instant::now();
 
         'outer: for index in split.validation() {
-            let sample = match batcher.reader().sample(index) {
+            if !batcher.has_history(index) {
+                continue;
+            }
+            let input = match batcher.sample(index) {
                 Ok(sample) => sample,
                 Err(e) => {
                     eprintln!("cannot read validation sample {index}: {e}");
                     break;
                 }
             };
+            let sample = input.sample();
             for &crop in &crops {
                 if counted >= args.eval_crops {
                     break 'outer;
                 }
                 let guided = has_guides
-                    .then(|| batch::guided_base(&sample, &layout, crop, self.config.guide));
+                    .then(|| batch::guided_base(sample, &layout, crop, self.config.guide));
                 let hr_guided = has_hr_guides.then(|| {
-                    batch::high_resolution_guided_base(&sample, &layout, crop, self.config.guide)
+                    batch::high_resolution_guided_base(sample, &layout, crop, self.config.guide)
                 });
                 let model_base = match self.config.reconstruction_base {
                     ReconstructionBase::GuidedBilinear => guided.as_deref(),
@@ -733,7 +792,7 @@ impl Evaluator {
                     &mut self.session,
                     &self.config,
                     schedule,
-                    &sample,
+                    &input,
                     &layout,
                     crop,
                     model_base,
@@ -742,8 +801,8 @@ impl Evaluator {
                     // lucky or unlucky draw repeated.
                     args.seed.wrapping_add(counted as u64),
                 );
-                let low = ommatidia::batch::crop_color(&sample, &layout, crop);
-                let reference = ommatidia::batch::crop_reference(&sample, &layout, crop);
+                let low = ommatidia::batch::crop_color(sample, &layout, crop);
+                let reference = ommatidia::batch::crop_reference(sample, &layout, crop);
                 let baseline = eval::nearest(
                     &low,
                     crop.tile as usize,
@@ -897,6 +956,7 @@ mod cli_tests {
             // without, so a new switch needs no entry here to stay covered.
             let candidates: Vec<Vec<&str>> = match flag.as_str() {
                 "--objective" => vec![vec!["--objective", "direct"]],
+                "--prediction" => vec![vec!["--prediction", "subpixel"]],
                 "--reconstruction-base" => {
                     vec![vec!["--reconstruction-base", "guided"]]
                 }
@@ -932,6 +992,13 @@ mod cli_tests {
         assert_eq!(args.blocks_per_level, 1);
         assert_eq!(args.batch, 8);
         assert!(!args.allow_filtered_input);
+    }
+
+    #[test]
+    fn validation_never_cuts_a_frame_sequence() {
+        let split = Split::new(40, 4, 0.15);
+        assert_eq!(split.training(), 0..32);
+        assert_eq!(split.validation(), 32..40);
     }
 
     #[test]
