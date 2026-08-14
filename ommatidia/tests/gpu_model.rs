@@ -7,7 +7,7 @@
 //!   cargo test -p ommatidia --test gpu_model -- --ignored --nocapture
 //! ```
 
-use ommatidia::model::{ModelConfig, Objective, build, build_for_extent};
+use ommatidia::model::{ModelConfig, Objective, ReconstructionBase, build, build_for_extent};
 use ommatidia::rng::Rng;
 use ommatidia::{Plane, PlaneSet};
 
@@ -36,6 +36,8 @@ fn config() -> ModelConfig {
         num_groups: 8,
         time_input_dim: 16,
         time_embed_dim: 32,
+        objective: Objective::Diffusion,
+        reconstruction_base: ReconstructionBase::Bilinear,
         ..ModelConfig::default()
     }
 }

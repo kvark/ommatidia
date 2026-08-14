@@ -6,7 +6,7 @@
 //! regression one.
 
 use ommatidia::batch::{self, Crop};
-use ommatidia::dataset::{Layout, Reader};
+use ommatidia::dataset::{Layout, Reader, Sample};
 use ommatidia::diffusion::{self, Schedule};
 use ommatidia::model::{ModelConfig, Objective};
 use ommatidia::rng::Rng;
@@ -24,6 +24,40 @@ pub struct Batch {
     /// under either objective. See [`ommatidia::diffusion`] for why the
     /// diffusion target is the signal rather than the noise.
     pub target: Vec<f32>,
+}
+
+/// One record after applying the checkpoint's input contract.
+pub enum InputSample {
+    Spatial(Sample),
+    Temporal(ommatidia::temporal::PreparedSample),
+}
+
+impl InputSample {
+    pub fn sample(&self) -> &Sample {
+        match self {
+            Self::Spatial(sample) => sample,
+            Self::Temporal(prepared) => &prepared.sample,
+        }
+    }
+
+    pub fn write_conditioning(
+        &self,
+        layout: &Layout,
+        config: &ModelConfig,
+        crop: Crop,
+        slot: usize,
+        out: &mut [f32],
+    ) -> Option<Vec<f32>> {
+        match self {
+            Self::Spatial(sample) => {
+                batch::write_conditioning(sample, layout, config.cond_planes, crop, slot, out);
+                None
+            }
+            Self::Temporal(prepared) => Some(batch::write_temporal_conditioning(
+                prepared, layout, config, crop, slot, out,
+            )),
+        }
+    }
 }
 
 pub struct Batcher {
@@ -56,6 +90,17 @@ impl Batcher {
             train.end <= reader.len(),
             "the training split overruns the set"
         );
+        let sequence_length = reader.sequence_length();
+        assert!(
+            train.start.is_multiple_of(sequence_length)
+                && train.end.is_multiple_of(sequence_length),
+            "the split cuts through a frame sequence"
+        );
+        assert_eq!(
+            config.temporal.is_some(),
+            sequence_length > 1,
+            "sequence datasets and temporal checkpoints must be used together"
+        );
         let layout = *reader.layout();
         let per_slot = (config.target_channels() * config.tile * config.tile) as usize;
         Self {
@@ -75,8 +120,20 @@ impl Batcher {
         &self.layout
     }
 
-    pub fn reader(&mut self) -> &mut Reader {
-        &mut self.reader
+    pub fn sample(&mut self, index: usize) -> Result<InputSample, ommatidia::dataset::Error> {
+        match self.config.temporal {
+            Some(config) => Ok(InputSample::Temporal(ommatidia::temporal::prepare(
+                &mut self.reader,
+                index,
+                config,
+            )?)),
+            None => Ok(InputSample::Spatial(self.reader.sample(index)?)),
+        }
+    }
+
+    /// Whether `index` has at least one prior frame in its sequence.
+    pub fn has_history(&self, index: usize) -> bool {
+        self.config.temporal.is_none() || !index.is_multiple_of(self.reader.sequence_length())
     }
 
     /// A crop position that fits inside the sample.
@@ -112,19 +169,40 @@ impl Batcher {
         }
 
         for slot in 0..batch_size {
-            let index = self.train.start + self.rng.below(self.train.len() as u32) as usize;
-            let sample = self.reader.sample(index)?;
+            let index = if config.temporal.is_some() {
+                let sequence_length = self.reader.sequence_length();
+                let sequences = self.train.len() / sequence_length;
+                let sequence = self.rng.below(sequences as u32) as usize;
+                let frame = 1 + self.rng.below((sequence_length - 1) as u32) as usize;
+                self.train.start + sequence * sequence_length + frame
+            } else {
+                self.train.start + self.rng.below(self.train.len() as u32) as usize
+            };
+            let sample = self.sample(index)?;
             let crop = self.random_crop();
 
-            batch::write_conditioning(
-                &sample,
-                &self.layout,
-                config.cond_planes,
-                crop,
-                slot,
-                &mut out.cond,
-            );
-            batch::write_residual(&sample, &self.layout, crop, 0, &config, &mut self.residual);
+            let guided =
+                sample.write_conditioning(&self.layout, &config, crop, slot, &mut out.cond);
+            if config.prediction == ommatidia::model::Prediction::LowResolutionResidual {
+                batch::write_low_resolution_residual_from_base(
+                    sample.sample(),
+                    &self.layout,
+                    crop,
+                    0,
+                    &config,
+                    guided.as_deref(),
+                    &mut self.residual,
+                );
+            } else {
+                batch::write_target(
+                    sample.sample(),
+                    &self.layout,
+                    crop,
+                    0,
+                    &config,
+                    &mut self.residual,
+                );
+            }
 
             if diffusing {
                 // Every slot gets its own timestep. Sharing one across the

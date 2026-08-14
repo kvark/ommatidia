@@ -356,6 +356,13 @@ impl Upscaler {
     ) -> Result<Self, UpscalerError> {
         let (mut config, paths) = crate::checkpoint::load_config(stem)
             .map_err(|e| UpscalerError::Checkpoint(e.to_string()))?;
+        if config.temporal.is_some()
+            || config.prediction == model::Prediction::LowResolutionResidual
+        {
+            return Err(UpscalerError::Config(
+                "this experimental checkpoint needs the history-enabled pack/unpack path".into(),
+            ));
+        }
         // A checkpoint may have been trained with a batch; a frame is one tile.
         config.batch = 1;
 

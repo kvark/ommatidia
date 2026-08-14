@@ -45,11 +45,12 @@ compact G-buffer representation. A static four-frame GPU smoke test produced
 different radiance with byte-identical geometry/targets and zero motion; the
 moving-camera test produced nonzero motion after the sequence boundary.
 
-Legacy files read as length one. Until the temporal batcher splits and shuffles
-whole sequences, the spatial trainer rejects length-above-one files instead of
-leaking neighboring frames across its train/validation split. The first frame
-of each sequence is an explicit history reset; object motion, disocclusions,
-and randomized trajectories remain the next data expansion.
+Legacy files read as length one. The trainer now splits only at sequence
+boundaries, draws frames 2–N for temporal batches, and skips reset frames when
+scoring. Spatial checkpoints still reject sequence files unless temporal
+history is selected. The first frame of each sequence is an explicit history
+reset; object motion, disocclusions, and randomized trajectories remain the
+next data expansion.
 
 The first moving-camera oracle uses 32 four-frame sequences, one independent
 path per input pixel, 256 accumulated canonical frames per target, and a 0.05
@@ -78,13 +79,27 @@ surface discontinuities identify most bad reprojections. The oracle accepts
 the three thresholds as optional arguments so the same claim can be retested
 once object motion and harder materials are present.
 
-The first temporal model should keep reprojection outside the learned network.
-The GPU pack stage will sample the previous high-resolution output at
-`current_pixel + motion`, reject history using depth and normal disagreement,
-and space-to-depth the accepted RGB plus one confidence channel. The U-Net then
-receives current sparse color/G-buffer and reprojected history, all at input
-resolution. This preserves the current low-resolution execution shape and adds
-cost mainly to the stem convolution rather than every layer.
+The first learned gate keeps reprojection outside the network. Surface-rejected
+colour replaces the noisy colour plane used by deterministic reconstruction;
+the U-Net additionally receives current RGB, normalized accumulated count, and
+the exact guided RGB base. These are seven ordinary input channels, so the
+experiment adds only stem weights and no Meganeura operation or shader group.
+
+The original 12-channel sub-pixel residual stayed at +0.00 dB after 1,000
+steps: once the guide has pooled valid samples, those residuals are dominated
+by high-resolution Monte Carlo outcomes absent from the input. A better target
+predicts three low-resolution RGB corrections over the safe guided base, then
+uses the existing output-resolution geometry gather. A canonical-low oracle
+shows 36.11 dB / 0.9602 SSIM versus 32.33 / 0.9301 for rejected history, so the
+target has headroom without asking the network to invent sub-pixel samples.
+
+On 512 training sequences and an independent 32-sequence set, b8 reaches
+32.28 dB / 0.9292 versus 32.26 / 0.9292 for the temporal HR guide. B16 reaches
+32.30 / 0.9294, but raises model arithmetic from 12.7 to 47.2 GFLOP per 1080p
+frame and parameters from 73.7k to 290k. This is useful architecture evidence,
+not a release candidate: most quality still comes from valid history, and
+width has sharply diminishing returns. The complete experiment is recorded in
+[`results/temporal-low-color-2026-08-14.md`](results/temporal-low-color-2026-08-14.md).
 
 The runtime contract needs four additions:
 

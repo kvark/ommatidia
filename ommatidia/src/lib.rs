@@ -25,9 +25,10 @@ pub mod metrics;
 pub mod model;
 pub mod rng;
 pub mod runtime;
+pub mod temporal;
 pub mod transform;
 
 pub use dataset::{InputSource, Layout, Plane, PlaneSet, Sample};
 pub use diffusion::{Schedule, timestep_embedding};
-pub use model::{Model, ModelConfig, Objective, ReconstructionBase};
+pub use model::{Model, ModelConfig, Objective, Prediction, ReconstructionBase};
 pub use runtime::{FrameInputs, Upscaler, UpscalerError};

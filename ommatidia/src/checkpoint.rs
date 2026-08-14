@@ -162,5 +162,10 @@ mod tests {
         let old_text = format!("{})", &text[..marker]);
         let config: ModelConfig = ron::from_str(&old_text).unwrap();
         assert_eq!(config.guide, GuideConfig::LEGACY);
+        assert_eq!(
+            config.prediction,
+            crate::model::Prediction::SubpixelResidual
+        );
+        assert_eq!(config.temporal, None);
     }
 }
