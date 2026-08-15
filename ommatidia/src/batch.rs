@@ -184,6 +184,15 @@ pub fn write_temporal_conditioning(
             }
         }
     }
+    if config.temporal.unwrap().features == crate::temporal::Features::Variance {
+        let base = (stored_channels + 7) * texels;
+        for y in 0..tile {
+            let source_row = (crop.y as usize + y) * stride + crop.x as usize;
+            for x in 0..tile {
+                destination[base + y * tile + x] = prepared.deviation[source_row + x];
+            }
+        }
+    }
     guided
 }
 

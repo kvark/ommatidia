@@ -101,6 +101,16 @@ not a release candidate: most quality still comes from valid history, and
 width has sharply diminishing returns. The complete experiment is recorded in
 [`results/temporal-low-color-2026-08-14.md`](results/temporal-low-color-2026-08-14.md).
 
+The next curved-motion gate is recorded in
+[`results/temporal-motion-gates-2026-08-15.md`](results/temporal-motion-gates-2026-08-15.md).
+It adds a motion-compensated delta metric and a curved-motion training
+distribution. The same b8 model then gains 1.17 dB spatially and 0.50 dB
+temporally on an independent set; one history-deviation channel raises those
+to 1.27 and 0.57 dB for 72 parameters and no dispatch. Eight-frame
+accumulation is radiometrically tied, while a supervised blend gate is much
+worse. The next larger experiment therefore needs paired consecutive outputs
+and a temporal loss; changing the backbone is still unsupported by evidence.
+
 The runtime contract needs four additions:
 
 1. current-to-previous motion vectors with an explicit pixel/normalized scale

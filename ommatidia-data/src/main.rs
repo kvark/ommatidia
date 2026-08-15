@@ -30,6 +30,7 @@ struct Args {
     input_frames: usize,
     sequence_frames: usize,
     camera_motion: f32,
+    random_camera_motion: f32,
     seed: u64,
     preview: Option<PathBuf>,
     gbuffer: bool,
@@ -55,6 +56,7 @@ impl Default for Args {
             input_frames: 1,
             sequence_frames: 1,
             camera_motion: 0.0,
+            random_camera_motion: 0.0,
             seed: 0,
             preview: None,
             gbuffer: true,
@@ -83,6 +85,8 @@ usage: ommatidia-data [options]
   --input-frames N          sparse path-traced input samples per pixel [1]
   --sequence-frames N       independent frames per static scene/camera [1]
   --camera-motion F         world-X camera translation per sequence frame [0]
+  --random-camera-motion F  deterministic curved camera motion, with nominal
+                            translation F per frame [0]
   --seed N                  base seed for scenes and cameras  [0]
   --device-id ID            adapter ID for this standalone process (hex or decimal)
   --shader-dir PATH         blade-render shader directory [../blade/blade-render/code]
@@ -149,6 +153,11 @@ fn parse_args() -> Result<Args, String> {
                     .parse()
                     .map_err(|e| format!("--camera-motion: {e}"))?
             }
+            "--random-camera-motion" => {
+                args.random_camera_motion = value()?
+                    .parse()
+                    .map_err(|e| format!("--random-camera-motion: {e}"))?
+            }
             "--seed" => args.seed = value()?.parse().map_err(|e| format!("--seed: {e}"))?,
             "--device-id" => args.device_id = Some(ommatidia::gpu::parse_device_id(&value()?)?),
             "--shader-dir" => args.shader_dir = Some(PathBuf::from(value()?)),
@@ -177,11 +186,18 @@ fn parse_args() -> Result<Args, String> {
     if !args.camera_motion.is_finite() {
         return Err("--camera-motion must be finite".into());
     }
-    if args.camera_motion != 0.0 && args.sequence_frames == 1 {
-        return Err("--camera-motion needs --sequence-frames above one".into());
+    if !args.random_camera_motion.is_finite() || args.random_camera_motion < 0.0 {
+        return Err("--random-camera-motion must be finite and non-negative".into());
     }
-    if args.camera_motion != 0.0 && args.reference_from.is_some() {
-        return Err("--camera-motion cannot reuse static references".into());
+    if args.camera_motion != 0.0 && args.random_camera_motion != 0.0 {
+        return Err("--camera-motion and --random-camera-motion are mutually exclusive".into());
+    }
+    let has_camera_motion = args.camera_motion != 0.0 || args.random_camera_motion != 0.0;
+    if has_camera_motion && args.sequence_frames == 1 {
+        return Err("camera motion needs --sequence-frames above one".into());
+    }
+    if has_camera_motion && args.reference_from.is_some() {
+        return Err("camera motion cannot reuse static references".into());
     }
     if args.svgf_input && args.restir_input {
         return Err("--svgf-input and --restir-input are mutually exclusive".into());
@@ -586,6 +602,14 @@ fn main() {
         let (objects, base_camera) = active_sequence.as_ref().expect("sequence was initialized");
         let mut camera = *base_camera;
         camera.pos.x += args.camera_motion * sequence_frame as f32;
+        let random_offset = scene::camera_motion(
+            args.seed ^ (scene_index as u64).wrapping_mul(0xD1B5_4A32_D192_ED03),
+            sequence_frame,
+            args.random_camera_motion,
+        );
+        camera.pos.x += random_offset[0];
+        camera.pos.y += random_offset[1];
+        camera.pos.z += random_offset[2];
 
         let input_pass = if args.svgf_input || args.restir_input {
             render::Pass::RealTime

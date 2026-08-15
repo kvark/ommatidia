@@ -142,6 +142,39 @@ pub fn write_png(path: &Path, rgb: &[f32], width: u32, height: u32) -> std::io::
 
 pub use ommatidia::metrics::{error, ssim};
 
+/// Crop the current-to-previous motion and surface-validity mask used by the
+/// temporal metric. Confidence above one accumulated sample means the shared
+/// rejection path accepted history for that low-resolution pixel.
+pub fn temporal_evidence(
+    input: &InputSample,
+    layout: &Layout,
+    crop: Crop,
+    history_frames: u32,
+) -> Option<(Vec<f32>, Vec<bool>)> {
+    let InputSample::Temporal(prepared) = input else {
+        return None;
+    };
+    let motion_x = prepared
+        .sample
+        .lr_channel(layout, ommatidia::Plane::Motion, 0)?;
+    let motion_y = prepared
+        .sample
+        .lr_channel(layout, ommatidia::Plane::Motion, 1)?;
+    let width = layout.lr_width as usize;
+    let tile = crop.tile as usize;
+    let mut motion = Vec::with_capacity(tile * tile * 2);
+    let mut valid = Vec::with_capacity(tile * tile);
+    for y in 0..tile {
+        for x in 0..tile {
+            let index = (crop.y as usize + y) * width + crop.x as usize + x;
+            motion.push(motion_x[index].to_f32());
+            motion.push(motion_y[index].to_f32());
+            valid.push(prepared.confidence[index] * history_frames as f32 > 1.001);
+        }
+    }
+    Some((motion, valid))
+}
+
 /// Nearest-neighbour upsampling of interleaved linear RGB.
 ///
 /// The baseline the network has to beat: it is what a zero residual produces,

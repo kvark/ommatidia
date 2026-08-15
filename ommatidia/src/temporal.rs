@@ -37,13 +37,27 @@ pub struct Config {
     /// Maximum number of independent frames in the accumulated estimate.
     pub frames: u32,
     pub rejection: RejectionConfig,
+    /// Versioned auxiliary-channel layout used by the checkpoint.
+    #[serde(default)]
+    pub features: Features,
 }
 
 impl Config {
     /// Extra low-resolution channels appended after the stored plane set:
     /// current-frame RGB, normalized sample count, and the exact guided RGB
     /// over which a low-resolution checkpoint predicts its correction.
-    pub const AUX_CHANNELS: u32 = 7;
+    pub fn auxiliary_channels(self) -> u32 {
+        7 + u32::from(self.features == Features::Variance)
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub enum Features {
+    /// Current RGB, confidence, and guided RGB.
+    #[default]
+    Basic,
+    /// Basic inputs plus accepted-history luminance deviation.
+    Variance,
 }
 
 /// A sample prepared for the temporal model.
@@ -54,11 +68,21 @@ pub struct PreparedSample {
     pub current_color: Vec<f32>,
     /// Accumulated sample count divided by [`Config::frames`].
     pub confidence: Vec<f32>,
+    /// Standard deviation of compressed luminance across accepted history.
+    pub deviation: Vec<f32>,
 }
 
 struct History {
     color: Vec<f32>,
     count: Vec<f32>,
+    luminance: Vec<f32>,
+    luminance_square: Vec<f32>,
+}
+
+fn compressed_luminance(rgb: [f32; 3]) -> f32 {
+    0.2126 * crate::transform::compress(rgb[0])
+        + 0.7152 * crate::transform::compress(rgb[1])
+        + 0.0722 * crate::transform::compress(rgb[2])
 }
 
 fn plane(sample: &Sample, layout: &Layout, plane: Plane, channel: usize, index: usize) -> f32 {
@@ -144,9 +168,12 @@ fn initial(sample: &Sample, layout: &Layout) -> History {
             *component = plane(sample, layout, Plane::Color, channel, index);
         }
     }
+    let luminance: Vec<_> = color.iter().copied().map(compressed_luminance).collect();
     History {
         color: color.into_iter().flatten().collect(),
         count: vec![1.0; texels],
+        luminance_square: luminance.iter().map(|value| value * value).collect(),
+        luminance,
     }
 }
 
@@ -166,9 +193,14 @@ fn accumulate(
         .map(|rgb| [rgb[0], rgb[1], rgb[2]])
         .collect();
     let history_count: Vec<[f32; 1]> = history.count.iter().map(|&v| [v]).collect();
+    let history_luminance: Vec<[f32; 1]> = history.luminance.iter().map(|&v| [v]).collect();
+    let history_luminance_square: Vec<[f32; 1]> =
+        history.luminance_square.iter().map(|&v| [v]).collect();
     let mut next = History {
         color: vec![0.0; texels * 3],
         count: vec![1.0; texels],
+        luminance: vec![0.0; texels],
+        luminance_square: vec![0.0; texels],
     };
     for y in 0..height {
         for x in 0..width {
@@ -200,12 +232,29 @@ fn accumulate(
                 0.0
             };
             let prior = valid.then(|| bilinear(&history_color, width, height, position));
+            let (prior_luminance, prior_luminance_square) = if valid {
+                (
+                    bilinear(&history_luminance, width, height, position)[0],
+                    bilinear(&history_luminance_square, width, height, position)[0],
+                )
+            } else {
+                (0.0, 0.0)
+            };
+            let current_rgb = [
+                plane(current, layout, Plane::Color, 0, index),
+                plane(current, layout, Plane::Color, 1, index),
+                plane(current, layout, Plane::Color, 2, index),
+            ];
             for channel in 0..3 {
-                let current_value = plane(current, layout, Plane::Color, channel, index);
+                let current_value = current_rgb[channel];
                 let prior_value = prior.as_ref().map_or(0.0, |value| value[channel]);
                 next.color[index * 3 + channel] =
                     (current_value + count * prior_value) / (count + 1.0);
             }
+            let luminance = compressed_luminance(current_rgb);
+            next.luminance[index] = (luminance + count * prior_luminance) / (count + 1.0);
+            next.luminance_square[index] =
+                (luminance * luminance + count * prior_luminance_square) / (count + 1.0);
             next.count[index] = count + 1.0;
         }
     }
@@ -254,6 +303,12 @@ pub fn prepare(
             .count
             .iter()
             .map(|&count| count / config.frames as f32)
+            .collect(),
+        deviation: history
+            .luminance_square
+            .iter()
+            .zip(&history.luminance)
+            .map(|(&square, &mean)| (square - mean * mean).max(0.0).sqrt())
             .collect(),
     })
 }
@@ -309,6 +364,7 @@ mod tests {
             Config {
                 frames: 2,
                 rejection: RejectionConfig::default(),
+                features: Features::Basic,
             },
         )
         .unwrap();
@@ -318,6 +374,7 @@ mod tests {
             .unwrap();
         assert_eq!(red[0].to_f32(), 1.0);
         assert_eq!(prepared.confidence[0], 1.0);
+        assert!(prepared.deviation[0] > 0.0);
         std::fs::remove_file(path).unwrap();
     }
 }

@@ -82,6 +82,12 @@ a 4×-compute b16 control reaches 32.30 dB. The small learned increment is real
 but not release-worthy, so the spatial v0.3.1 runtime remains the default while
 motion diversity and temporal losses are expanded. See the
 [`temporal model result`](docs/results/temporal-low-color-2026-08-14.md).
+The follow-up
+[`curved-motion gates`](docs/results/temporal-motion-gates-2026-08-15.md)
+add a motion-compensated stability metric. Curved-motion training plus one
+history-deviation channel improves the independent set by 1.27 dB spatially
+and 0.57 dB temporally at essentially the same b8 cost; the next larger step is
+joint sequence training rather than a wider or transformer backbone.
 The complete controlled setup and trace are recorded in the
 [`independent-path result`](docs/results/path-trace-guided-2026-08-13.md).
 

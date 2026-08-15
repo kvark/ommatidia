@@ -298,6 +298,31 @@ pub fn camera(config: &SceneConfig, rng: &mut Rng) -> blade_render::Camera {
     }
 }
 
+/// A deterministic, smoothly curving camera translation for one sequence.
+///
+/// The first frame is always the unmodified base pose. The dominant direction,
+/// vertical drift, and bend differ per sequence, while the distance between
+/// adjacent frames stays close to `step`. This exercises motion-vector signs,
+/// disocclusions, and non-axis-aligned reprojection without making generation
+/// depend on mutable RNG state from an earlier sequence.
+pub fn camera_motion(seed: u64, frame: usize, step: f32) -> [f32; 3] {
+    if frame == 0 || step == 0.0 {
+        return [0.0; 3];
+    }
+    let mut rng = Rng::new(seed ^ 0xA24B_AED4_963E_E407);
+    let angle = std::f32::consts::TAU * rng.uniform();
+    let bend = 0.12 * (2.0 * rng.uniform() - 1.0);
+    let vertical = 0.15 * (2.0 * rng.uniform() - 1.0);
+    let t = frame as f32;
+    let side = bend * t * (t - 1.0) * 0.5;
+    let (sin, cos) = angle.sin_cos();
+    [
+        step * (t * cos - side * sin),
+        step * vertical * t,
+        step * (t * sin + side * cos),
+    ]
+}
+
 /// Rotation taking the camera's -Z axis onto `target - position`, with no roll.
 ///
 /// Blade's convention is right-handed with X right, Y up, and Z towards the
@@ -419,6 +444,21 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn camera_motion_is_sequence_local_and_curved() {
+        assert_eq!(camera_motion(7, 0, 0.05), [0.0; 3]);
+        assert_eq!(camera_motion(7, 3, 0.05), camera_motion(7, 3, 0.05));
+        assert_ne!(camera_motion(7, 3, 0.05), camera_motion(8, 3, 0.05));
+
+        let a = camera_motion(7, 1, 0.05);
+        let b = camera_motion(7, 2, 0.05);
+        let cross_y = a[2] * b[0] - a[0] * b[2];
+        assert!(
+            cross_y.abs() > 1.0e-7,
+            "trajectory should bend: {a:?}, {b:?}"
+        );
     }
 
     #[test]
