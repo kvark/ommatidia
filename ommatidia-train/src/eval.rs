@@ -142,6 +142,57 @@ pub fn write_png(path: &Path, rgb: &[f32], width: u32, height: u32) -> std::io::
 
 pub use ommatidia::metrics::{error, ssim};
 
+/// Everything scored about one reconstruction, summed over crops.
+///
+/// PSNR and SSIM are what this project has always reported, and a
+/// reconstruction can improve both while visibly losing the frame. The other
+/// two are here because of that: `relative` stops a bright region from deciding
+/// the score on its own, and `detail` is the only one of the four that falls
+/// when an edge is softened. A run that raises PSNR while dropping detail has
+/// traded the picture for the number, and now says so.
+#[derive(Default, Clone, Copy)]
+pub struct Scores {
+    error: f64,
+    ssim: f64,
+    relative: f64,
+    detail: f64,
+    crops: usize,
+}
+
+impl Scores {
+    pub fn add(&mut self, image: &[f32], reference: &[f32], extent: usize) {
+        self.error += error(image, reference) as f64;
+        self.ssim += ssim(image, reference, extent, extent) as f64;
+        self.relative += ommatidia::metrics::relative_error(image, reference);
+        self.detail += ommatidia::metrics::detail(image, extent, extent);
+        self.crops += 1;
+    }
+
+    pub fn mse(&self) -> f64 {
+        self.error / self.crops.max(1) as f64
+    }
+
+    pub fn psnr(&self) -> f64 {
+        -10.0 * self.mse().log10()
+    }
+
+    /// One reported line. `reference_detail` is the same accumulator taken over
+    /// the canonical images, so what is printed is the fraction of the
+    /// reference's detail that survived rather than a gradient nobody can
+    /// calibrate against.
+    pub fn line(&self, name: &str, reference_detail: f64) -> String {
+        let crops = self.crops.max(1) as f64;
+        format!(
+            "{name:<9} MSE {:.6}, PSNR {:.2} dB, SSIM {:.4}, relMSE {:.5}, detail {:.0}%",
+            self.mse(),
+            self.psnr(),
+            self.ssim / crops,
+            self.relative / crops,
+            100.0 * self.detail / reference_detail,
+        )
+    }
+}
+
 /// Crop the current-to-previous motion and surface-validity mask used by the
 /// temporal metric. Confidence above one accumulated sample means the shared
 /// rejection path accepted history for that low-resolution pixel.

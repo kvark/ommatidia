@@ -768,14 +768,13 @@ impl Evaluator {
             return None;
         }
 
-        let mut baseline_total = 0.0f64;
-        let mut bilinear_total = 0.0f64;
-        let mut network_total = 0.0f64;
-        let mut baseline_ssim_total = 0.0f64;
-        let mut bilinear_ssim_total = 0.0f64;
-        let mut network_ssim_total = 0.0f64;
-        let mut guided_total = 0.0f64;
-        let mut guided_ssim_total = 0.0f64;
+        let mut nearest_scores = eval::Scores::default();
+        let mut bilinear_scores = eval::Scores::default();
+        let mut network_scores = eval::Scores::default();
+        let mut guided_scores = eval::Scores::default();
+        let mut hr_guided_scores = eval::Scores::default();
+        // Detail is only meaningful against the canonical frame's own.
+        let mut reference_detail = 0.0f64;
         let has_guides = [
             ommatidia::Plane::Depth,
             ommatidia::Plane::Normal,
@@ -790,8 +789,6 @@ impl Evaluator {
         ]
         .into_iter()
         .all(|plane| layout.hr_planes.contains(plane));
-        let mut hr_guided_total = 0.0f64;
-        let mut hr_guided_ssim_total = 0.0f64;
         let mut temporal_base_total = 0.0f64;
         let mut temporal_network_total = 0.0f64;
         let mut temporal_counted = 0usize;
@@ -858,21 +855,16 @@ impl Evaluator {
                     crop.tile as usize,
                     self.config.scale as usize,
                 );
-                baseline_total += eval::error(&baseline, &reference) as f64;
-                bilinear_total += eval::error(&bilinear, &reference) as f64;
-                network_total += eval::error(&predicted, &reference) as f64;
                 let extent = (crop.tile * self.config.scale) as usize;
-                baseline_ssim_total += eval::ssim(&baseline, &reference, extent, extent) as f64;
-                bilinear_ssim_total += eval::ssim(&bilinear, &reference, extent, extent) as f64;
-                network_ssim_total += eval::ssim(&predicted, &reference, extent, extent) as f64;
+                nearest_scores.add(&baseline, &reference, extent);
+                bilinear_scores.add(&bilinear, &reference, extent);
+                network_scores.add(&predicted, &reference, extent);
+                reference_detail += ommatidia::metrics::detail(&reference, extent, extent);
                 if let Some(guided) = &guided {
-                    guided_total += eval::error(guided, &reference) as f64;
-                    guided_ssim_total += eval::ssim(guided, &reference, extent, extent) as f64;
+                    guided_scores.add(guided, &reference, extent);
                 }
                 if let Some(hr_guided) = &hr_guided {
-                    hr_guided_total += eval::error(hr_guided, &reference) as f64;
-                    hr_guided_ssim_total +=
-                        eval::ssim(hr_guided, &reference, extent, extent) as f64;
+                    hr_guided_scores.add(hr_guided, &reference, extent);
                 }
 
                 let temporal_base = match self.config.reconstruction_base {
@@ -991,56 +983,36 @@ impl Evaluator {
             eprintln!("no validation crops were evaluated");
             return None;
         }
-        let baseline_error = baseline_total / counted as f64;
-        let network_error = network_total / counted as f64;
-        let bilinear_error = bilinear_total / counted as f64;
-        let baseline_psnr = -10.0 * baseline_error.log10();
-        let network_psnr = -10.0 * network_error.log10();
-        let bilinear_psnr = -10.0 * bilinear_error.log10();
-        let baseline_ssim = baseline_ssim_total / counted as f64;
-        let network_ssim = network_ssim_total / counted as f64;
-        let bilinear_ssim = bilinear_ssim_total / counted as f64;
-        let guided = has_guides.then(|| {
-            let error = guided_total / counted as f64;
-            let psnr = -10.0 * error.log10();
-            let ssim = guided_ssim_total / counted as f64;
-            (error, psnr, ssim)
-        });
         let (base_name, base_error) = match self.config.reconstruction_base {
-            ReconstructionBase::Nearest => ("nearest", baseline_error),
-            ReconstructionBase::Bilinear => ("bilinear", bilinear_error),
-            ReconstructionBase::GuidedBilinear => (
-                "guided",
-                guided.expect("guided models require guide planes").0,
-            ),
-            ReconstructionBase::HighResolutionGuided => {
-                let error = hr_guided_total / counted as f64;
-                ("HR guide", error)
+            ReconstructionBase::Nearest => ("nearest", nearest_scores.mse()),
+            ReconstructionBase::Bilinear => ("bilinear", bilinear_scores.mse()),
+            ReconstructionBase::GuidedBilinear => {
+                assert!(has_guides, "guided models require guide planes");
+                ("guided", guided_scores.mse())
             }
+            ReconstructionBase::HighResolutionGuided => ("HR guide", hr_guided_scores.mse()),
         };
+        let network_error = network_scores.mse();
         let gain = if network_error > 0.0 {
             10.0 * (base_error / network_error).log10()
         } else {
             f64::INFINITY
         };
         println!(
-            "  held-out over {counted} crops in {:.1}s:\n  \
-             nearest  MSE {baseline_error:.6}, PSNR {baseline_psnr:.2} dB, SSIM {baseline_ssim:.4}\n  \
-             bilinear MSE {bilinear_error:.6}, PSNR {bilinear_psnr:.2} dB, SSIM {bilinear_ssim:.4}",
+            "  held-out over {counted} crops in {:.1}s:",
             started.elapsed().as_secs_f32()
         );
-        if let Some((error, psnr, ssim)) = guided {
-            println!("  guided   MSE {error:.6}, PSNR {psnr:.2} dB, SSIM {ssim:.4}");
+        println!("  {}", nearest_scores.line("nearest", reference_detail));
+        println!("  {}", bilinear_scores.line("bilinear", reference_detail));
+        if has_guides {
+            println!("  {}", guided_scores.line("guided", reference_detail));
         }
         if has_hr_guides {
-            let error = hr_guided_total / counted as f64;
-            let psnr = -10.0 * error.log10();
-            let ssim = hr_guided_ssim_total / counted as f64;
-            println!("  HR guide MSE {error:.6}, PSNR {psnr:.2} dB, SSIM {ssim:.4}");
+            println!("  {}", hr_guided_scores.line("HR guide", reference_detail));
         }
         println!(
-            "  network  MSE {network_error:.6}, PSNR {network_psnr:.2} dB, SSIM {network_ssim:.4} \
-             ({gain:+.2} dB versus {base_name})"
+            "  {} ({gain:+.2} dB versus {base_name})",
+            network_scores.line("network", reference_detail)
         );
         if temporal_counted != 0 {
             let base = temporal_base_total / temporal_values as f64;

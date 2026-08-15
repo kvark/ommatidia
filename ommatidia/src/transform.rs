@@ -37,6 +37,22 @@ pub fn decompress(y: f32) -> f32 {
     y / (1.0 - y)
 }
 
+/// Compress and sRGB-encode: the value that reaches the screen.
+///
+/// [`compress`] alone is nearly linear near zero, so a metric computed in it
+/// weights a dark pixel by roughly its radiance rather than by how visible an
+/// error there would be. This is the transform the evaluator's PNGs already
+/// apply, so scoring in it scores the image that was looked at.
+pub fn display(x: f32) -> f32 {
+    let mapped = compress(x);
+    let encoded = if mapped <= 0.003_130_8 {
+        12.92 * mapped
+    } else {
+        1.055 * mapped.powf(1.0 / 2.4) - 0.055
+    };
+    encoded.clamp(0.0, 1.0)
+}
+
 /// Map view-space distance to `(0, 1]`.
 ///
 /// Raw distance is unbounded and its useful precision is concentrated near the
