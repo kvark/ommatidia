@@ -77,6 +77,8 @@ struct Args {
     prediction: Prediction,
     reconstruction_base: ReconstructionBase,
     kernel_radius: u32,
+    demodulate: bool,
+    demodulation_offset: f32,
     seed: u64,
     log_every: usize,
     eval_out: Option<PathBuf>,
@@ -123,6 +125,8 @@ impl Default for Args {
             prediction: Prediction::SubpixelResidual,
             reconstruction_base: ReconstructionBase::GuidedBilinear,
             kernel_radius: 2,
+            demodulate: false,
+            demodulation_offset: 0.25,
             seed: 0,
             log_every: 50,
             eval_out: None,
@@ -169,6 +173,13 @@ usage: ommatidia-train [options]
                        is the only one with no separate denoise  [guided]
   --kernel-radius N    half-width of the neighbourhood a kernel gathers, in
                        input pixels  [2]
+  --demodulate         gather radiance divided by albedo and multiply the exact
+                       output-resolution albedo back, so the texture is put
+                       back rather than reconstructed. Kernel checkpoints only
+  --demodulation-offset F
+                       added to the albedo on both sides, bounding how far a
+                       pixel can be rescaled. 0.05 allows 20x and loses 1.5 dB
+                       to the compressed gather; 0.25 allows 4x  [0.25]
   --seed N             seed for init and batching  [0]
   --device-id ID       adapter ID for this standalone process (hex or decimal)
   --history-frames N   surface-reprojected sparse frames, 1 for spatial [1]
@@ -271,6 +282,12 @@ fn parse_from(argv: impl Iterator<Item = String>) -> Result<Args, String> {
                 args.kernel_radius = value()?
                     .parse()
                     .map_err(|e| format!("--kernel-radius: {e}"))?
+            }
+            "--demodulate" => args.demodulate = true,
+            "--demodulation-offset" => {
+                args.demodulation_offset = value()?
+                    .parse()
+                    .map_err(|e| format!("--demodulation-offset: {e}"))?
             }
             "--seed" => args.seed = value()?.parse().map_err(|e| format!("--seed: {e}"))?,
             "--device-id" => args.device_id = Some(ommatidia::gpu::parse_device_id(&value()?)?),
@@ -401,9 +418,19 @@ fn main() {
         .then(|| checkpoint::load_config(&args.out).ok())
         .flatten()
         .map(|(config, _)| config);
-    let (prediction, kernel_radius) = match &stored {
-        Some(config) => (config.prediction, config.kernel_radius),
-        None => (args.prediction, args.kernel_radius),
+    let (prediction, kernel_radius, demodulate, demodulation_offset) = match &stored {
+        Some(config) => (
+            config.prediction,
+            config.kernel_radius,
+            config.demodulate,
+            config.demodulation_offset,
+        ),
+        None => (
+            args.prediction,
+            args.kernel_radius,
+            args.demodulate,
+            args.demodulation_offset,
+        ),
     };
     let reconstruction_base = match &stored {
         Some(config) => config.reconstruction_base,
@@ -452,6 +479,8 @@ fn main() {
         objective: args.objective,
         prediction,
         kernel_radius,
+        demodulate,
+        demodulation_offset,
         reconstruction_base,
         temporal,
         ..ModelConfig::default()
@@ -1119,6 +1148,22 @@ mod cli_tests {
                     vec!["--prediction", "subpixel"],
                     vec!["--prediction", "kernel", "--reconstruction-base", "sample"],
                 ],
+                "--demodulation-offset" => vec![vec![
+                    "--demodulation-offset",
+                    "0.25",
+                    "--demodulate",
+                    "--prediction",
+                    "kernel",
+                    "--reconstruction-base",
+                    "sample",
+                ]],
+                "--demodulate" => vec![vec![
+                    "--demodulate",
+                    "--prediction",
+                    "kernel",
+                    "--reconstruction-base",
+                    "sample",
+                ]],
                 "--reconstruction-base" => {
                     vec![vec!["--reconstruction-base", "guided"]]
                 }

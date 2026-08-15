@@ -726,10 +726,22 @@ pub fn write_kernel_target(
                 for dy in 0..scale {
                     for dx in 0..scale {
                         let channel = c * sub + dy * scale + dx;
+                        let mut value = high[(source_y + dy) * stride + source_x + dx].to_f32();
+                        if config.demodulate {
+                            // The loss then sits in the space the gather works
+                            // in, so the modulation stays entirely outside the
+                            // graph and outside the gradient.
+                            value /= hr_plane_value(
+                                sample,
+                                layout,
+                                Plane::DiffuseAlbedo,
+                                c,
+                                source_x + dx,
+                                source_y + dy,
+                            ) + config.demodulation_offset;
+                        }
                         out[slot * per_slot + (channel * tile + y) * tile + x] =
-                            transform::compress(
-                                high[(source_y + dy) * stride + source_x + dx].to_f32(),
-                            );
+                            transform::compress(value);
                     }
                 }
             }
@@ -766,6 +778,16 @@ pub fn write_taps(
     let width = layout.lr_width as i32;
     let height = layout.lr_height as i32;
 
+    let albedo = config.demodulate.then(|| {
+        let base = layout
+            .lr_planes
+            .channel_offset(Plane::DiffuseAlbedo)
+            .expect("demodulation needs the low resolution albedo");
+        (0..3)
+            .map(|c| &sample.lr[(base + c) * texels..(base + c + 1) * texels])
+            .collect::<Vec<_>>()
+    });
+
     for c in 0..3 {
         let source = &sample.lr[(base + c) * texels..(base + c + 1) * texels];
         for tap in 0..taps {
@@ -775,8 +797,13 @@ pub fn write_taps(
                 let source_y = (crop.y as i32 + y as i32 + dy).clamp(0, height - 1) as usize;
                 for x in 0..tile {
                     let source_x = (crop.x as i32 + x as i32 + dx).clamp(0, width - 1) as usize;
+                    let offset = source_y * stride + source_x;
+                    let mut value = source[offset].to_f32();
+                    if let Some(albedo) = &albedo {
+                        value /= albedo[c][offset].to_f32() + config.demodulation_offset;
+                    }
                     out[slot * per_slot + (channel * tile + y) * tile + x] =
-                        transform::compress(source[source_y * stride + source_x].to_f32());
+                        transform::compress(value);
                 }
             }
         }
@@ -815,6 +842,17 @@ pub fn assemble_kernel(
     let planes: Vec<&[f16]> = (0..3)
         .map(|c| &sample.lr[(base + c) * texels..(base + c + 1) * texels])
         .collect();
+    // The gather has to read what the taps were written in, or the training
+    // path and this one are reconstructing different quantities.
+    let albedo = config.demodulate.then(|| {
+        let base = layout
+            .lr_planes
+            .channel_offset(Plane::DiffuseAlbedo)
+            .expect("demodulation needs the low resolution albedo");
+        (0..3)
+            .map(|c| &sample.lr[(base + c) * texels..(base + c + 1) * texels])
+            .collect::<Vec<_>>()
+    });
 
     let out_width = tile * scale;
     let mut out = vec![0.0; out_width * out_width * 3];
@@ -830,15 +868,33 @@ pub fn assemble_kernel(
                     let source_x = (crop.x as i32 + x as i32 + dx).clamp(0, width - 1) as usize;
                     let offset = source_y * stride + source_x;
                     for c in 0..3 {
-                        sum[c] += weight * transform::compress(planes[c][offset].to_f32());
+                        let mut value = planes[c][offset].to_f32();
+                        if let Some(albedo) = &albedo {
+                            value /= albedo[c][offset].to_f32() + config.demodulation_offset;
+                        }
+                        sum[c] += weight * transform::compress(value);
                     }
                     total += weight;
                 }
                 let (sub_x, sub_y) = config.sub_pixel(slot as u32);
-                let destination =
-                    ((y * scale + sub_y as usize) * out_width + x * scale + sub_x as usize) * 3;
+                let (out_x, out_y) = (x * scale + sub_x as usize, y * scale + sub_y as usize);
+                let destination = (out_y * out_width + out_x) * 3;
                 for c in 0..3 {
-                    out[destination + c] = transform::decompress(sum[c] / total.max(KERNEL_FLOOR));
+                    let mut value = transform::decompress(sum[c] / total.max(KERNEL_FLOOR));
+                    if config.demodulate {
+                        // Multiplying by the exact output-resolution albedo is
+                        // what puts the texture back, at a resolution the
+                        // gather never had to reconstruct it at.
+                        value *= hr_plane_value(
+                            sample,
+                            layout,
+                            Plane::DiffuseAlbedo,
+                            c,
+                            crop.x as usize * scale + out_x,
+                            crop.y as usize * scale + out_y,
+                        ) + config.demodulation_offset;
+                    }
+                    out[destination + c] = value;
                 }
             }
         }

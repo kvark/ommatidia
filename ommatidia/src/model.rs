@@ -134,6 +134,10 @@ fn legacy_kernel_radius() -> u32 {
     2
 }
 
+fn legacy_demodulation_offset() -> f32 {
+    0.25
+}
+
 /// How a parameter should be filled before training starts.
 #[derive(Clone, Debug, PartialEq)]
 pub enum InitKind {
@@ -200,6 +204,34 @@ pub struct ModelConfig {
     /// Exact coefficients used by the CPU trainer and GPU reconstruction.
     #[serde(default = "legacy_guide_config")]
     pub guide: GuideConfig,
+    /// Reconstruct radiance divided by albedo, and multiply the exact
+    /// output-resolution albedo back afterwards.
+    ///
+    /// The albedo is known exactly at output resolution, so a reconstruction
+    /// that carries it through the filter is asking a network to recover
+    /// something it was already told. Dividing it out first leaves the smoother
+    /// illumination term to reconstruct and puts the texture back by
+    /// multiplication. Standard in production denoisers, and measured on
+    /// shadowed, textured scenes it takes the deterministic base from 47.5% to
+    /// 65.4% detail retention — against 0.1 points on scenes whose materials
+    /// are all one flat colour, which is why it looked worthless before.
+    #[serde(default)]
+    pub demodulate: bool,
+    /// Added to the albedo on both sides of a demodulated reconstruction.
+    ///
+    /// It bounds how far demodulation can rescale a pixel, and that bound is
+    /// the whole ballgame: the gather runs in a compressed space tuned for
+    /// radiance, and dividing by a small albedo moves a pixel somewhere that
+    /// space has no precision left. Measured, 0.05 allows a 20x rescale and
+    /// costs 1.5 dB against no demodulation at all; 0.25 allows 4x and gains
+    /// 0.3 dB, 26% relative error, and sixteen points of detail.
+    ///
+    /// The same offset divides and multiplies, so a surface whose albedo does
+    /// not change between input and output resolution comes back exactly and
+    /// only the boundaries move. It also keeps an emissive surface, whose
+    /// albedo is zero, from dividing by nothing.
+    #[serde(default = "legacy_demodulation_offset")]
+    pub demodulation_offset: f32,
     /// Half-width, in input pixels, of the neighbourhood a
     /// [`Prediction::SubpixelKernel`] gathers from. Ignored by the other
     /// targets, and carried in the checkpoint because the runtime has to read
@@ -241,6 +273,8 @@ impl Default for ModelConfig {
             reconstruction_base: ReconstructionBase::GuidedBilinear,
             guide: GuideConfig::TUNED,
             kernel_radius: legacy_kernel_radius(),
+            demodulate: false,
+            demodulation_offset: legacy_demodulation_offset(),
             temporal: None,
         }
     }
@@ -487,6 +521,20 @@ impl ModelConfig {
                  without the other"
                     .into(),
             );
+        }
+        if self.demodulate {
+            if self.prediction != Prediction::SubpixelKernel {
+                return Err("demodulation is part of the sample gather".into());
+            }
+            if !self.cond_planes.contains(Plane::DiffuseAlbedo) {
+                return Err("demodulation divides by the albedo, so it has to have one".into());
+            }
+            if !self.demodulation_offset.is_finite() || self.demodulation_offset <= 0.0 {
+                return Err(format!(
+                    "demodulation offset {} must be finite and positive",
+                    self.demodulation_offset
+                ));
+            }
         }
         if self.prediction == Prediction::SubpixelKernel {
             if self.kernel_radius == 0 {

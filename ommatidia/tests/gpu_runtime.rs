@@ -68,6 +68,8 @@ fn config() -> ModelConfig {
         reconstruction_base: ReconstructionBase::Bilinear,
         guide: ommatidia::model::GuideConfig::TUNED,
         kernel_radius: 2,
+        demodulate: false,
+        demodulation_offset: 0.25,
         temporal: None,
     }
 }
@@ -99,6 +101,13 @@ fn kernel_config() -> ModelConfig {
         reconstruction_base: ReconstructionBase::Sample,
         kernel_radius: 2,
         ..guided_config()
+    }
+}
+
+fn demodulating_kernel_config() -> ModelConfig {
+    ModelConfig {
+        demodulate: true,
+        ..kernel_config()
     }
 }
 
@@ -652,12 +661,25 @@ fn upscale_matches_the_cpu_path() {
 #[test]
 #[ignore = "requires a GPU"]
 fn kernel_upscale_matches_the_cpu_path() {
+    check_kernel_parity(&kernel_config(), "kernel");
+}
+
+/// Demodulation multiplies the exact output-resolution albedo back after the
+/// gather, so it is the one part of the reconstruction that reads a texture the
+/// gather never touched. If the CPU and the shader disagreed about which texel
+/// that is, every surface would come back tinted by its neighbour.
+#[test]
+#[ignore = "requires a GPU"]
+fn demodulated_kernel_upscale_matches_the_cpu_path() {
+    check_kernel_parity(&demodulating_kernel_config(), "demodulated kernel");
+}
+
+fn check_kernel_parity(config: &ModelConfig, label: &str) {
     let Some(context) = context() else { return };
-    let config = kernel_config();
-    let dir = std::env::temp_dir().join("ommatidia-gpu-runtime-kernel");
+    let dir = std::env::temp_dir().join(format!("ommatidia-gpu-runtime-{label}").replace(' ', "-"));
     std::fs::create_dir_all(&dir).unwrap();
     let stem = dir.join("model");
-    write_checkpoint(&config, &stem, Arc::clone(&context));
+    write_checkpoint(config, &stem, Arc::clone(&context));
 
     let mut upscaler =
         Upscaler::from_checkpoint(Arc::clone(&context), &stem, 1, 100).expect("upscaler");
@@ -688,6 +710,26 @@ fn kernel_upscale_matches_the_cpu_path() {
         }
     }
 
+    // Output-resolution albedo that is not a copy of the input's, so a path
+    // that read the wrong resolution would land on the wrong values.
+    let hr_texels = (TILE * SCALE * TILE * SCALE) as usize;
+    let mut hr_albedos = vec![0.0f32; hr_texels * 3];
+    for y in 0..(TILE * SCALE) as usize {
+        for x in 0..(TILE * SCALE) as usize {
+            let destination = (y * (TILE * SCALE) as usize + x) * 3;
+            let checker = if (x / 3 + y / 3).is_multiple_of(2) {
+                0.8
+            } else {
+                0.2
+            };
+            hr_albedos[destination] = checker;
+            hr_albedos[destination + 1] = checker * 0.6;
+            hr_albedos[destination + 2] = checker * 0.35;
+        }
+    }
+    let hr_depths = vec![1.0f32; hr_texels * 3];
+    let hr_normals = vec![0.0f32; hr_texels * 3];
+
     let mut encoder = context.create_command_encoder(gpu::CommandEncoderDesc {
         name: "kernel-upscale-test",
         buffer_count: 2,
@@ -699,6 +741,27 @@ fn kernel_upscale_matches_the_cpu_path() {
     let (_nt, normal_view, _ns) = color_texture(&context, &mut encoder, &normals, TILE, TILE);
     let (_at, albedo_view, _as) = color_texture(&context, &mut encoder, &albedos, TILE, TILE);
     let (_st, specular_view, _ss) = color_texture(&context, &mut encoder, &specular, TILE, TILE);
+    let (_hdt, hr_depth_view, _hds) = color_texture(
+        &context,
+        &mut encoder,
+        &hr_depths,
+        TILE * SCALE,
+        TILE * SCALE,
+    );
+    let (_hnt, hr_normal_view, _hns) = color_texture(
+        &context,
+        &mut encoder,
+        &hr_normals,
+        TILE * SCALE,
+        TILE * SCALE,
+    );
+    let (_hat, hr_albedo_view, _has) = color_texture(
+        &context,
+        &mut encoder,
+        &hr_albedos,
+        TILE * SCALE,
+        TILE * SCALE,
+    );
 
     let format = Upscaler::OUTPUT_FORMAT;
     let out_size = gpu::Extent {
@@ -730,7 +793,8 @@ fn kernel_upscale_matches_the_cpu_path() {
 
     upscaler.upscale(
         &mut encoder,
-        &FrameInputs::from_textures(view, depth_view, normal_view, albedo_view, specular_view),
+        &FrameInputs::from_textures(view, depth_view, normal_view, albedo_view, specular_view)
+            .with_high_resolution_gbuffer(hr_depth_view, hr_normal_view, hr_albedo_view),
         output_view,
     );
 
@@ -759,19 +823,39 @@ fn kernel_upscale_matches_the_cpu_path() {
         lr_width: TILE,
         lr_height: TILE,
         lr_source: ommatidia::dataset::InputSource::PathTrace,
-        lr_planes: PlaneSet::new().with(Plane::Color),
-        hr_planes: PlaneSet::new().with(Plane::Color),
+        lr_planes: PlaneSet::new()
+            .with(Plane::Color)
+            .with(Plane::DiffuseAlbedo),
+        hr_planes: PlaneSet::new()
+            .with(Plane::Color)
+            .with(Plane::DiffuseAlbedo),
     };
     let mut planar = vec![f16::ZERO; layout.lr_len()];
+    let color_base = layout.lr_planes.channel_offset(Plane::Color).unwrap();
+    let albedo_base = layout
+        .lr_planes
+        .channel_offset(Plane::DiffuseAlbedo)
+        .unwrap();
     for component in 0..3 {
         for index in 0..texels {
-            planar[component * texels + index] = f16::from_f32(colors[index * 3 + component]);
+            planar[(color_base + component) * texels + index] =
+                f16::from_f32(colors[index * 3 + component]);
+            planar[(albedo_base + component) * texels + index] =
+                f16::from_f32(albedos[index * 3 + component]);
         }
     }
-    let sample = Sample {
-        lr: planar,
-        hr: vec![f16::ZERO; layout.hr_len()],
-    };
+    let mut hr = vec![f16::ZERO; layout.hr_len()];
+    let hr_albedo_base = layout
+        .hr_planes
+        .channel_offset(Plane::DiffuseAlbedo)
+        .unwrap();
+    for component in 0..3 {
+        for index in 0..hr_texels {
+            hr[(hr_albedo_base + component) * hr_texels + index] =
+                f16::from_f32(hr_albedos[index * 3 + component]);
+        }
+    }
+    let sample = Sample { lr: planar, hr };
     let expected = batch::assemble_kernel(
         &sample,
         &layout,
@@ -781,7 +865,7 @@ fn kernel_upscale_matches_the_cpu_path() {
             tile: TILE,
         },
         &weights,
-        &config,
+        config,
     );
 
     let mut worst = 0.0f32;
@@ -797,20 +881,23 @@ fn kernel_upscale_matches_the_cpu_path() {
             worst = worst.max(difference);
         }
     }
-    println!("kernel upscale: worst relative difference from the CPU path = {worst:e}");
+    println!("{label} upscale: worst relative difference from the CPU path = {worst:e}");
 
     // A gather of non-negative samples with non-negative weights cannot leave
-    // the range of what it read, whatever the network learned.
-    let (low, high) = colors
-        .iter()
-        .fold((f32::MAX, f32::MIN), |(lo, hi), &v| (lo.min(v), hi.max(v)));
-    for texel in 0..(out_width * out_height) as usize {
-        for c in 0..3 {
-            let value = halves[texel * 4 + c].to_f32();
-            assert!(
-                value >= low - 1e-2 && value <= high + 1e-2,
-                "texel {texel} channel {c} left the input range: {value} not in [{low}, {high}]"
-            );
+    // the range of what it read, whatever the network learned. Demodulation
+    // rescales by the albedo afterwards, so the bound only holds without it.
+    if !config.demodulate {
+        let (low, high) = colors
+            .iter()
+            .fold((f32::MAX, f32::MIN), |(lo, hi), &v| (lo.min(v), hi.max(v)));
+        for texel in 0..(out_width * out_height) as usize {
+            for c in 0..3 {
+                let value = halves[texel * 4 + c].to_f32();
+                assert!(
+                    value >= low - 1e-2 && value <= high + 1e-2,
+                    "texel {texel} channel {c} left the input range: {value} not in [{low}, {high}]"
+                );
+            }
         }
     }
 }

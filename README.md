@@ -181,11 +181,12 @@ BC1 asset path a glTF material's base colour does.
 Retrained on those scenes, both architectures for 8,000 steps, scored on a
 separate 128-scene set:
 
-| external validation | PSNR | relMSE | worst crop | detail |
-|---|---:|---:|---:|---:|
-| HR guide 5×5 | 28.36 dB | 0.187 | 5.80 | 47% |
-| residual b8 | 29.96 dB | 17.204 | **171.31** | 61% |
-| **kernel b16 r2** | **30.26 dB** | **0.044** | **0.47** | **67%** |
+| external validation | PSNR | SSIM | relMSE | worst crop | detail |
+|---|---:|---:|---:|---:|---:|
+| HR guide 5×5 | 28.36 dB | 0.8736 | 0.187 | 5.80 | 47% |
+| residual b8 | 29.96 dB | 0.8704 | 17.204 | **171.31** | 61% |
+| kernel b16 r2 | **30.26 dB** | 0.8563 | 0.044 | 0.47 | 67% |
+| **kernel b16 r2, `--demodulate`** | 30.21 dB | **0.8840** | **0.032** | **0.29** | **83%** |
 
 This corrects something. The learned residual added 0.02 dB on the old scenes
 and 1.60 dB here, so most of that null result was the data rather than the
@@ -199,6 +200,14 @@ The kernel model's worst crop is 0.47 — better than the deterministic base's
 own worst case. That is the formulation rather than the training: the output is
 a convex combination of radiance the renderer measured, so there is no
 arithmetic by which it invents any.
+
+Demodulating the albedo — dividing it out before the gather and multiplying the
+exact output-resolution one back after — is level on PSNR and better on
+everything else, and is the only arm that beats the deterministic base on SSIM
+too. The offset that bounds how far a pixel may be rescaled matters more than it
+sounds: at 0.05 it allows a factor of twenty, which lands pixels where the
+compressed gather has no precision left and costs 1.5 dB. At 0.25 it allows
+four.
 
 SSIM should not be read on this content. Split by crop brightness, the darkest
 third scores 0.9810 and the brightest 0.7905: C2 is absolute, and where the

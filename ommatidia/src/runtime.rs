@@ -87,6 +87,8 @@ struct UnpackParams {
     decode_blade_gbuffer: u32,
     decode_hr_blade_gbuffer: u32,
     kernel_radius: u32,
+    demodulate: u32,
+    demodulation_offset: f32,
     guide_spatial_denominator: f32,
     guide_depth_denominator: f32,
     guide_normal_power: f32,
@@ -468,7 +470,8 @@ impl Upscaler {
     /// on its own encoder and the network has to see the packed tensor.
     pub fn pack(&self, encoder: &mut gpu::CommandEncoder, inputs: &FrameInputs) {
         assert!(
-            self.config.reconstruction_base != model::ReconstructionBase::HighResolutionGuided
+            (self.config.reconstruction_base != model::ReconstructionBase::HighResolutionGuided
+                && !self.config.demodulate)
                 || inputs.has_high_resolution_gbuffer,
             "this checkpoint requires a high-resolution G-buffer"
         );
@@ -600,6 +603,8 @@ impl Upscaler {
                     decode_blade_gbuffer: inputs.decode_blade_gbuffer as u32,
                     decode_hr_blade_gbuffer: inputs.decode_hr_blade_gbuffer as u32,
                     kernel_radius: self.config.kernel_radius,
+                    demodulate: self.config.demodulate as u32,
+                    demodulation_offset: self.config.demodulation_offset,
                     guide_spatial_denominator: self.config.guide.spatial_denominator(),
                     guide_depth_denominator: self.config.guide.depth_denominator(),
                     guide_normal_power: self.config.guide.normal_power,
