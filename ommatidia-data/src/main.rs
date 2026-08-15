@@ -32,6 +32,8 @@ struct Args {
     camera_motion: f32,
     random_camera_motion: f32,
     object_motion: f32,
+    enclosed: bool,
+    ground_patches: usize,
     seed: u64,
     preview: Option<PathBuf>,
     gbuffer: bool,
@@ -59,6 +61,8 @@ impl Default for Args {
             camera_motion: 0.0,
             random_camera_motion: 0.0,
             object_motion: 0.0,
+            enclosed: false,
+            ground_patches: 0,
             seed: 0,
             preview: None,
             gbuffer: true,
@@ -89,6 +93,13 @@ usage: ommatidia-data [options]
   --camera-motion F         world-X camera translation per sequence frame [0]
   --random-camera-motion F  deterministic curved camera motion, with nominal
                             translation F per frame [0]
+  --enclosed                put the scene in a room, so the emissive spheres
+                            are the only light. Without it the fallback
+                            environment is a white furnace and nothing in the
+                            frame can be in shadow
+  --ground-patches N        subdivide the central ground into N by N patches
+                            with independent albedo, giving the frame detail
+                            finer than a whole object  [0]
   --object-motion F         move one sphere and one box independently, with
                             nominal translation F per frame [0]
   --seed N                  base seed for scenes and cameras  [0]
@@ -166,6 +177,12 @@ fn parse_args() -> Result<Args, String> {
                 args.object_motion = value()?
                     .parse()
                     .map_err(|e| format!("--object-motion: {e}"))?
+            }
+            "--enclosed" => args.enclosed = true,
+            "--ground-patches" => {
+                args.ground_patches = value()?
+                    .parse()
+                    .map_err(|e| format!("--ground-patches: {e}"))?
             }
             "--seed" => args.seed = value()?.parse().map_err(|e| format!("--seed: {e}"))?,
             "--device-id" => args.device_id = Some(ommatidia::gpu::parse_device_id(&value()?)?),
@@ -600,7 +617,11 @@ fn main() {
         "GPU timed out during setup"
     );
 
-    let scene_config = scene::SceneConfig::default();
+    let scene_config = scene::SceneConfig {
+        enclosed: args.enclosed,
+        ground_patches: args.ground_patches,
+        ..scene::SceneConfig::default()
+    };
     let mut rng = Rng::new(args.seed);
     let started = std::time::Instant::now();
     // Watched because it is the one number that says whether the capture is
