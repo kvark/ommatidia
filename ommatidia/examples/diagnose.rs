@@ -409,6 +409,10 @@ fn main() {
     let mut reference_values = 0usize;
     let mut ssim_block = 0.0f64;
     let mut ssim_gaussian = 0.0f64;
+    // SSIM against how bright the crop is, because its stabilising constants
+    // are absolute: where the local variance is far below C2, the structure
+    // term reports agreement whatever the images do.
+    let mut ssim_by_level: Vec<(f64, f64)> = Vec::new();
     let mut ssim_block_blurred = 0.0f64;
     let mut ssim_gaussian_blurred = 0.0f64;
 
@@ -601,6 +605,15 @@ fn main() {
             detail_ideal += detail(&ideal, extent);
             ssim_block += ommatidia::metrics::ssim(&base, &reference, extent, extent) as f64;
             ssim_gaussian += gaussian_ssim(&base, &reference, extent);
+            {
+                let level = reference
+                    .chunks_exact(3)
+                    .map(|rgb| display(luminance(rgb)) as f64)
+                    .sum::<f64>()
+                    / (extent * extent) as f64;
+                let score = ommatidia::metrics::ssim(&base, &reference, extent, extent) as f64;
+                ssim_by_level.push((level, score));
+            }
             ssim_block_blurred +=
                 ommatidia::metrics::ssim(&blur(&base, extent, 1), &reference, extent, extent)
                     as f64;
@@ -757,6 +770,23 @@ fn main() {
             100.0 * detail_blurred[slot] / detail_reference,
         );
     }
+
+    ssim_by_level.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
+    let third = (ssim_by_level.len() / 3).max(1);
+    let mean =
+        |slice: &[(f64, f64)]| slice.iter().map(|entry| entry.1).sum::<f64>() / slice.len() as f64;
+    println!(
+        "\nSSIM against how bright the crop is\n  \
+         darkest third {:.4} (mean level {:.3})   brightest third {:.4} (mean level {:.3})",
+        mean(&ssim_by_level[..third]),
+        ssim_by_level[..third].iter().map(|e| e.0).sum::<f64>() / third as f64,
+        mean(&ssim_by_level[ssim_by_level.len() - third..]),
+        ssim_by_level[ssim_by_level.len() - third..]
+            .iter()
+            .map(|e| e.0)
+            .sum::<f64>()
+            / third as f64,
+    );
 
     println!("\nSSIM, project 8x8 blocks versus the standard Gaussian window");
     println!(
