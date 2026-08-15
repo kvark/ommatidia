@@ -146,7 +146,81 @@ filter from pack and the 25-tap bilateral from unpack, and adds a 25-tap gather.
 The head is a 3×3 convolution to 100 channels and is now over a third of the
 b8 arithmetic; a 1×1 head is the obvious thing to measure next.
 
-## What this does not settle
+## On scenes that carry shadow and texture
+
+The section above originally ended by saying the scenes could not discriminate
+these results, and predicting that the kernel formulation would gain more on
+harder content rather than less. `--canopy`, `--textures` and `--gloss` make
+that measurable. A matched 2,400-scene training set and a separate 128-scene
+seed-10000 validation set were generated with all three, and both architectures
+were retrained on them for the same 8,000 steps.
+
+The new set is a different problem: 35.6% of its pixels fall below a displayed
+luminance of 0.10 where none did before, it carries 2.06× the gradient energy,
+and texel-centre bilinear scores 21.34 dB rather than 26.51.
+
+| external validation, 128 crops | PSNR | SSIM | relMSE | worst crop | detail |
+|---|---:|---:|---:|---:|---:|
+| HR guide 5×5 | 28.36 dB | 0.8736 | 0.187 | 5.80 | 47% |
+| residual b8 | 29.96 dB | 0.8704 | 17.204 | **171.31** | 61% |
+| **kernel b16 r2** | **30.26 dB** | 0.8563 | **0.044** | **0.47** | **67%** |
+
+Three things, in order of how much they change what to do next.
+
+**The residual parameterisation was not the whole story, and the earlier
+conclusion needs correcting.** On the old scenes the learned residual added
+0.02 dB, and it was tempting to read that as the parameterisation being at
+fault. Here the same shape adds 1.60 dB. Most of that null result was the data:
+a residual over a filter has nothing to predict when the ground truth inside
+every object is smooth and the G-buffer already segments it. Given content with
+texture and shadow, there is a great deal to predict, and it predicts it.
+
+**But it is unbounded, and it shows.** Its relative error is 17.2 against the
+0.187 of the base it corrects — 92× worse than not running it at all, and
+8× worse than the raw unfiltered input. The worst crop reaches 171. PSNR is an
+absolute error in a compressed space and simply cannot see this: it reports the
+same model as a 1.60 dB improvement. The failure is in the dark third of the
+frame, where a residual added in compressed space and then decompressed turns a
+small mistake into a large radiance, and where PSNR has almost no weight.
+
+**The kernel model's worst case is better than the deterministic base's.** 0.47
+against 5.80, and 364× better than the residual arm's. This is the property
+claimed for the formulation rather than trained into it: the output is a convex
+combination of samples the renderer measured, so there is no arithmetic by which
+it can invent radiance that was not there. It is the difference between a
+reconstruction that is usually right and one that cannot be very wrong.
+
+The gap also widened as predicted, though not where expected. On PSNR the two
+learned arms are close, 29.96 against 30.26. On relative error they are 393×
+apart, and on detail retention it is 61% against 67% with the base at 47%.
+
+## What this still does not settle
+
+SSIM has gone inert on this content and should not be read as a result. Split by
+how bright the crop is, the darkest third scores 0.9810 and the brightest 0.7905
+— the hardest content getting the best mark, because C2 is an absolute constant
+of 9e-4 in compressed space and a crop whose mean level is 0.039 has local
+variance well below it, so the structure term divides two numbers that are both
+approximately C2. The old scenes never exposed this: their darkest third
+averages a level of 0.550. `metrics::ssim` is deliberately unchanged, since
+every published figure is in terms of it, but the diagnostic now reports the
+split so an inert number is visible as one.
+
+Albedo demodulation is the obvious next experiment and now has a measurement
+behind it. On these scenes, reconstructing in demodulated space and
+re-modulating by the exact output-resolution albedo takes the deterministic
+base from 47.5% to 65.4% detail retention — 18 points, for a technique that
+measured as 0.1 points on the old data. The kernel path should gain from it too
+and for the same reason: the high-frequency albedo is known exactly at output
+resolution, so nothing needs to reconstruct it.
+
+Training cost is worth noting. The kernel arm trains at 35.5 steps/s and the
+residual arm at 4.7, on the same data and the same device, because the residual
+target needs the 13×13 guided filter evaluated on the CPU for every crop of
+every batch and the kernel target does not. Removing the deterministic filter
+removed most of the training cost with it.
+
+## The scenes, and why they had to change
 
 The scenes cannot really discriminate these results. Blade's fallback
 environment is a white 1×1 texture, so an open scene is lit by a uniform
@@ -170,7 +244,3 @@ small emissive spheres to be found by chance, and bilinear on the resulting
 input scores 8.5 dB against 26.5 dB open. A canopy over part of the scene keeps
 the sampling conditioned.
 
-Retraining on scenes that carry shadow and texture is the next measurement, and
-until it is done these numbers describe reconstruction of smooth, evenly lit
-content. The kernel formulation should gain more there, not less, but that is a
-prediction rather than a result.
