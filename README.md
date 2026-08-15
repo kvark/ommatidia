@@ -88,6 +88,13 @@ add a motion-compensated stability metric. Curved-motion training plus one
 history-deviation channel improves the independent set by 1.27 dB spatially
 and 0.57 dB temporally at essentially the same b8 cost; the next larger step is
 joint sequence training rather than a wider or transformer backbone.
+The subsequent
+[`object-motion gate`](docs/results/temporal-object-motion-2026-08-15.md)
+animates independent Blade objects and scores moving pixels directly. A mixed
+camera/object 4,000-step b8 run reaches 34.52 dB on object-only motion and
+34.21 dB on camera-only motion, improving the prior checkpoint by 0.06 and
+0.02 dB at identical inference cost while retaining temporal stability. A
+velocity-channel ablation was worse and its code was removed.
 The complete controlled setup and trace are recorded in the
 [`independent-path result`](docs/results/path-trace-guided-2026-08-13.md).
 

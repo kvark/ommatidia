@@ -31,6 +31,7 @@ struct Args {
     sequence_frames: usize,
     camera_motion: f32,
     random_camera_motion: f32,
+    object_motion: f32,
     seed: u64,
     preview: Option<PathBuf>,
     gbuffer: bool,
@@ -57,6 +58,7 @@ impl Default for Args {
             sequence_frames: 1,
             camera_motion: 0.0,
             random_camera_motion: 0.0,
+            object_motion: 0.0,
             seed: 0,
             preview: None,
             gbuffer: true,
@@ -83,10 +85,12 @@ usage: ommatidia-data [options]
   --canonical-frames N      accumulated reference frames, 4 spp each [1024]
   --canonical-bounces N     maximum reference path depth [8]
   --input-frames N          sparse path-traced input samples per pixel [1]
-  --sequence-frames N       independent frames per static scene/camera [1]
+  --sequence-frames N       consecutive frames per scene [1]
   --camera-motion F         world-X camera translation per sequence frame [0]
   --random-camera-motion F  deterministic curved camera motion, with nominal
                             translation F per frame [0]
+  --object-motion F         move one sphere and one box independently, with
+                            nominal translation F per frame [0]
   --seed N                  base seed for scenes and cameras  [0]
   --device-id ID            adapter ID for this standalone process (hex or decimal)
   --shader-dir PATH         blade-render shader directory [../blade/blade-render/code]
@@ -158,6 +162,11 @@ fn parse_args() -> Result<Args, String> {
                     .parse()
                     .map_err(|e| format!("--random-camera-motion: {e}"))?
             }
+            "--object-motion" => {
+                args.object_motion = value()?
+                    .parse()
+                    .map_err(|e| format!("--object-motion: {e}"))?
+            }
             "--seed" => args.seed = value()?.parse().map_err(|e| format!("--seed: {e}"))?,
             "--device-id" => args.device_id = Some(ommatidia::gpu::parse_device_id(&value()?)?),
             "--shader-dir" => args.shader_dir = Some(PathBuf::from(value()?)),
@@ -189,15 +198,19 @@ fn parse_args() -> Result<Args, String> {
     if !args.random_camera_motion.is_finite() || args.random_camera_motion < 0.0 {
         return Err("--random-camera-motion must be finite and non-negative".into());
     }
+    if !args.object_motion.is_finite() || args.object_motion < 0.0 {
+        return Err("--object-motion must be finite and non-negative".into());
+    }
     if args.camera_motion != 0.0 && args.random_camera_motion != 0.0 {
         return Err("--camera-motion and --random-camera-motion are mutually exclusive".into());
     }
-    let has_camera_motion = args.camera_motion != 0.0 || args.random_camera_motion != 0.0;
-    if has_camera_motion && args.sequence_frames == 1 {
-        return Err("camera motion needs --sequence-frames above one".into());
+    let has_motion =
+        args.camera_motion != 0.0 || args.random_camera_motion != 0.0 || args.object_motion != 0.0;
+    if has_motion && args.sequence_frames == 1 {
+        return Err("motion needs --sequence-frames above one".into());
     }
-    if has_camera_motion && args.reference_from.is_some() {
-        return Err("camera motion cannot reuse static references".into());
+    if has_motion && args.reference_from.is_some() {
+        return Err("motion cannot reuse static references".into());
     }
     if args.svgf_input && args.restir_input {
         return Err("--svgf-input and --restir-input are mutually exclusive".into());
@@ -206,6 +219,40 @@ fn parse_args() -> Result<Args, String> {
         return Err("--reference-from needs the G-buffer to verify scene alignment".into());
     }
     Ok(args)
+}
+
+struct ActiveSequence {
+    objects: Vec<blade_render::Object>,
+    base_camera: blade_render::Camera,
+    motion_seed: u64,
+    moving_start: usize,
+}
+
+fn translation_transform(offset: [f32; 3]) -> gpu::Transform {
+    gpu::Transform {
+        x: [1.0, 0.0, 0.0, offset[0]].into(),
+        y: [0.0, 1.0, 0.0, offset[1]].into(),
+        z: [0.0, 0.0, 1.0, offset[2]].into(),
+    }
+}
+
+impl ActiveSequence {
+    fn animate_objects(&mut self, frame: usize, step: f32) {
+        for (moving_index, object) in self.objects[self.moving_start..].iter_mut().enumerate() {
+            object.prev_transform = translation_transform(scene::object_motion(
+                self.motion_seed,
+                moving_index,
+                frame.saturating_sub(1),
+                step,
+            ));
+            object.transform = translation_transform(scene::object_motion(
+                self.motion_seed,
+                moving_index,
+                frame,
+                step,
+            ));
+        }
+    }
 }
 
 /// Where blade-render keeps its shader sources.
@@ -576,34 +623,54 @@ fn main() {
         context.device_information().device_name,
     );
 
-    let mut active_sequence: Option<(Vec<blade_render::Object>, blade_render::Camera)> = None;
+    let mut active_sequence: Option<ActiveSequence> = None;
     for index in 0..record_count {
         let scene_index = index / args.sequence_frames;
         let sequence_frame = index % args.sequence_frames;
         if sequence_frame == 0 {
-            // A fresh scene per sequence. Frames keep the same geometry and
-            // base camera while Blade advances its stochastic frame index;
-            // `camera_motion` optionally translates that camera over time.
+            // A fresh scene per sequence. Blade advances its stochastic frame
+            // index while the optional camera and object trajectories move.
             let geometries = scene::build(
                 &scene_config,
                 args.seed ^ (scene_index as u64).wrapping_mul(0x9E37_79B9),
             );
-            let model = harness
+            let (static_geometry, moving_geometry) = if args.object_motion == 0.0 {
+                (geometries, Vec::new())
+            } else {
+                scene::split_moving_geometry(geometries, args.seed ^ scene_index as u64)
+            };
+            let mut objects = Vec::with_capacity(1 + moving_geometry.len());
+            let static_model = harness
                 .asset_hub
                 .models
                 .baker
-                .create_model(&format!("scene{scene_index}"), geometries);
-            let handle = harness.asset_hub.models.insert(model);
-            active_sequence = Some((
-                vec![blade_render::Object::from(handle)],
-                scene::camera(&scene_config, &mut rng),
+                .create_model(&format!("scene{scene_index}"), static_geometry);
+            objects.push(blade_render::Object::from(
+                harness.asset_hub.models.insert(static_model),
             ));
+            let moving_start = objects.len();
+            for (moving_index, geometry) in moving_geometry.into_iter().enumerate() {
+                let model = harness.asset_hub.models.baker.create_model(
+                    &format!("scene{scene_index}-moving{moving_index}"),
+                    vec![geometry],
+                );
+                objects.push(blade_render::Object::from(
+                    harness.asset_hub.models.insert(model),
+                ));
+            }
+            active_sequence = Some(ActiveSequence {
+                objects,
+                base_camera: scene::camera(&scene_config, &mut rng),
+                motion_seed: args.seed ^ (scene_index as u64).wrapping_mul(0xD1B5_4A32_D192_ED03),
+                moving_start,
+            });
         }
-        let (objects, base_camera) = active_sequence.as_ref().expect("sequence was initialized");
-        let mut camera = *base_camera;
+        let sequence = active_sequence.as_mut().expect("sequence was initialized");
+        sequence.animate_objects(sequence_frame, args.object_motion);
+        let mut camera = sequence.base_camera;
         camera.pos.x += args.camera_motion * sequence_frame as f32;
         let random_offset = scene::camera_motion(
-            args.seed ^ (scene_index as u64).wrapping_mul(0xD1B5_4A32_D192_ED03),
+            sequence.motion_seed,
             sequence_frame,
             args.random_camera_motion,
         );
@@ -624,7 +691,7 @@ fn main() {
             &context,
             &mut encoder,
             &harness.asset_hub,
-            objects,
+            &sequence.objects,
             &camera,
             input_pass,
             args.svgf_input,
@@ -643,7 +710,7 @@ fn main() {
                     &context,
                     &mut encoder,
                     &harness.asset_hub,
-                    objects,
+                    &sequence.objects,
                     &camera,
                     render::Pass::PathTrace { frames: 1 },
                     false,
@@ -668,7 +735,7 @@ fn main() {
                     &context,
                     &mut encoder,
                     &harness.asset_hub,
-                    objects,
+                    &sequence.objects,
                     &camera,
                     render::Pass::Canonical {
                         frames: args.canonical_frames,
