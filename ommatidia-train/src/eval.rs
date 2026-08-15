@@ -160,6 +160,10 @@ pub struct Scores {
     error: f64,
     ssim: f64,
     relative: f64,
+    /// Worst single crop's relative error. A mean can be carried by a handful
+    /// of crops, and a reconstruction that is catastrophic on a few of them is
+    /// a different problem from one that is mildly wrong on all of them.
+    worst_relative: f64,
     detail: f64,
     crops: usize,
 }
@@ -168,7 +172,9 @@ impl Scores {
     pub fn add(&mut self, image: &[f32], reference: &[f32], extent: usize) {
         self.error += error(image, reference) as f64;
         self.ssim += ssim(image, reference, extent, extent) as f64;
-        self.relative += ommatidia::metrics::relative_error(image, reference);
+        let relative = ommatidia::metrics::relative_error(image, reference);
+        self.relative += relative;
+        self.worst_relative = self.worst_relative.max(relative);
         self.detail += ommatidia::metrics::detail(image, extent, extent);
         self.crops += 1;
     }
@@ -188,11 +194,13 @@ impl Scores {
     pub fn line(&self, name: &str, reference_detail: f64) -> String {
         let crops = self.crops.max(1) as f64;
         format!(
-            "{name:<9} MSE {:.6}, PSNR {:.2} dB, SSIM {:.4}, relMSE {:.5}, detail {:.0}%",
+            "{name:<9} MSE {:.6}, PSNR {:.2} dB, SSIM {:.4}, relMSE {:.5} (worst crop \
+             {:.2}), detail {:.0}%",
             self.mse(),
             self.psnr(),
             self.ssim / crops,
             self.relative / crops,
+            self.worst_relative,
             100.0 * self.detail / reference_detail,
         )
     }

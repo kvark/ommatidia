@@ -16,9 +16,10 @@ control only; the product does not assume sample reuse or a prior denoiser.
 > upscaling stop being two stages with a filtered image between them. On the
 > held-out set that is **+1.74 dB over the previous deterministic base, with
 > 43% less relative error and 86% of the reference's detail rather than 63%**.
-> The published v0.3.1 checkpoint is still the two-stage residual model and
-> remains the default until the kernel path is retrained on scenes that carry
-> shadow and texture. See the
+> On scenes that carry shadow and texture it is **+1.90 dB with a worst-case
+> relative error 364× lower than the residual model's**. The published v0.3.1
+> checkpoint is still the two-stage residual model and remains the default
+> until this is validated at frame rate. See the
 > [`single-operation result`](docs/results/monolithic-kernel-2026-08-15.md).
 > Temporal history is designed but not yet implemented; see
 > [`docs/temporal.md`](docs/temporal.md).
@@ -159,32 +160,51 @@ pixels a rejected bilateral gather produces. Measured on the same held-out set:
 | **kernel b16 r2** | **36.61 dB** | 0.9514 | **0.00595** | **86%** |
 
 Capacity matters again: b8 → b16 is worth +1.23 dB, where under the residual
-parameterisation an 8.8× larger model was worth 0.03 dB. What had saturated was
-how the question was asked.
+parameterisation an 8.8× larger model was worth 0.03 dB.
 
-Two metrics were added to see this at all. PSNR and SSIM cannot: a box blur
+Two metrics were added to see any of this. PSNR and SSIM cannot: a box blur
 that removes an eighth of the frame's remaining detail costs 0.06 dB and
 0.002 SSIM, and *improves* the same error measured in display space. Detail
 retention is displayed gradient energy as a fraction of the canonical frame's,
-and relMSE keeps a bright region from deciding the score alone. Above 100%,
-detail is reporting noise rather than sharpness — which is what the b8 arm's
-99% means, and what b16 fixes.
+and relMSE keeps a bright region from deciding the score alone.
 
-The scenes could not discriminate these results. Blade's fallback environment
-is a white 1×1 texture, so an open scene is a uniform furnace in which nothing
-can be in shadow: none of the validation pixels fall below a displayed
-luminance of 0.10. Every material was a constant colour, so albedo
-demodulation — one of the larger wins in a production denoiser — measured as
-0.01 dB.
+### The scenes had to change too
 
-The generator now takes `--canopy`, `--textures`, `--gloss` and
-`--ground-patches N`, all off by default so published figures still mean what
-they meant. Textures go through the same BC1 asset path a glTF material's base
-colour does. On a probe set that turns all four on, 32.6% of pixels fall below
-0.10 where none did, they carry 22.8% of the displayed error against 5.6% of
-the reported error, the reference carries 2.3× the gradient energy, and
-demodulation stops being free: it is worth 22 points of detail retention where
-it was worth none. Retraining on these is the next measurement.
+Blade's fallback environment is a white 1×1 texture, so an open scene is a
+uniform furnace in which nothing can be in shadow: none of the old validation
+pixels fall below a displayed luminance of 0.10. Every material was a constant
+colour, so albedo demodulation — one of the larger wins in a production
+denoiser — measured as 0.01 dB. `--canopy`, `--textures`, `--gloss` and
+`--ground-patches N` fix that, all off by default. Textures go through the same
+BC1 asset path a glTF material's base colour does.
+
+Retrained on those scenes, both architectures for 8,000 steps, scored on a
+separate 128-scene set:
+
+| external validation | PSNR | relMSE | worst crop | detail |
+|---|---:|---:|---:|---:|
+| HR guide 5×5 | 28.36 dB | 0.187 | 5.80 | 47% |
+| residual b8 | 29.96 dB | 17.204 | **171.31** | 61% |
+| **kernel b16 r2** | **30.26 dB** | **0.044** | **0.47** | **67%** |
+
+This corrects something. The learned residual added 0.02 dB on the old scenes
+and 1.60 dB here, so most of that null result was the data rather than the
+parameterisation — a residual over a filter has nothing to predict when the
+truth inside every object is smooth. But it is unbounded, and its relative
+error is 92× worse than the base it corrects, with a worst crop of 171. PSNR
+reports the same model as a 1.60 dB win, because the failure is in the dark
+third of the frame where PSNR has almost no weight.
+
+The kernel model's worst crop is 0.47 — better than the deterministic base's
+own worst case. That is the formulation rather than the training: the output is
+a convex combination of radiance the renderer measured, so there is no
+arithmetic by which it invents any.
+
+SSIM should not be read on this content. Split by crop brightness, the darkest
+third scores 0.9810 and the brightest 0.7905: C2 is absolute, and where the
+local variance falls below it the structure term reports agreement whatever the
+images did. `metrics::ssim` is unchanged so published figures still compare, and
+the diagnostic now reports the split.
 
 The checked-in July experiments below used SVGF-filtered inputs. They found the
 architecture and kernel optimizations, but their quality figures describe an
