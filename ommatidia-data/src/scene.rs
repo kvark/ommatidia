@@ -56,29 +56,40 @@ fn sphere(center: [f32; 3], radius: f32) -> (Vec<blade_render::Vertex>, Vec<u32>
     (vertices, indices)
 }
 
-/// A horizontal quad centred on the origin, facing up.
-fn ground(half_extent: f32, y: f32) -> (Vec<blade_render::Vertex>, Vec<u32>) {
-    let normal = encode_normal([0.0, 1.0, 0.0]);
-    let tangent = encode_normal([1.0, 0.0, 0.0]);
-    let corners = [
-        [-half_extent, y, -half_extent],
-        [half_extent, y, -half_extent],
-        [half_extent, y, half_extent],
-        [-half_extent, y, half_extent],
-    ];
+/// A flat rectangle at `center`, spanning `center ± u ± v`.
+///
+/// The normal is `u × v`, so the caller picks which way the surface faces by
+/// the order it passes the two half-extents. Wound counter-clockwise seen from
+/// that side, matching the spheres and boxes.
+fn rect(center: [f32; 3], u: [f32; 3], v: [f32; 3]) -> (Vec<blade_render::Vertex>, Vec<u32>) {
+    let face = normalize(cross(u, v));
+    let normal = encode_normal(face);
+    let tangent = encode_normal(normalize(u));
+    let corners = [(-1.0f32, -1.0f32), (1.0, -1.0), (1.0, 1.0), (-1.0, 1.0)];
     let vertices = corners
         .iter()
-        .enumerate()
-        .map(|(i, &position)| blade_render::Vertex {
-            position,
+        .map(|&(su, sv)| blade_render::Vertex {
+            position: [
+                center[0] + su * u[0] + sv * v[0],
+                center[1] + su * u[1] + sv * v[1],
+                center[2] + su * u[2] + sv * v[2],
+            ],
             bitangent_sign: 1.0,
-            tex_coords: [(i & 1) as f32, (i >> 1) as f32],
+            tex_coords: [(su * 0.5 + 0.5), (sv * 0.5 + 0.5)],
             normal,
             tangent,
         })
         .collect();
-    // Counter-clockwise seen from above.
-    (vertices, vec![0, 3, 2, 0, 2, 1])
+    (vertices, vec![0, 1, 2, 0, 2, 3])
+}
+
+/// A horizontal quad centred on the origin, facing up.
+fn ground(half_extent: f32, y: f32) -> (Vec<blade_render::Vertex>, Vec<u32>) {
+    rect(
+        [0.0, y, 0.0],
+        [half_extent, 0.0, 0.0],
+        [0.0, 0.0, -half_extent],
+    )
 }
 
 /// An axis-aligned box, with a rotation about the vertical axis.
@@ -141,6 +152,34 @@ pub struct SceneConfig {
     pub light_count: usize,
     /// Radius of the disc the objects are scattered over.
     pub spread: f32,
+    /// Put a canopy and two walls over part of the scene, so some of it is in
+    /// shadow.
+    ///
+    /// Blade's fallback environment is a white 1x1 texture, which means an open
+    /// scene is lit by a uniform furnace of radiance one from every direction.
+    /// Nothing can be in shadow under that. Measured on the 4-spp validation
+    /// set, none of its pixels fall below a displayed luminance of 0.10 and
+    /// 87.8% of them sit inside a single quarter of the range — so the metrics
+    /// have never been asked about the region where noise is most visible.
+    ///
+    /// Sealing the scene into a room is the obvious fix and the wrong one. The
+    /// environment is the only light the estimator importance-samples, so
+    /// walling it off leaves three small emissive spheres to be found by chance
+    /// alone: a 4-spp input that is black with fireflies, and a 1024-frame
+    /// reference that is still visibly noisy. Measured, bilinear upsampling of
+    /// that input scores 8.5 dB, against 26.5 dB on the open scenes. Covering
+    /// part of the scene instead keeps the sky as the light source and the
+    /// sampling well conditioned, while giving the frame somewhere dark.
+    pub enclosed: bool,
+    /// Subdivide the central ground into this many patches per axis, each with
+    /// its own albedo.
+    ///
+    /// `ProceduralGeometry` carries a colour factor and no texture, so the only
+    /// way to give a surface detail finer than an object is to make it out of
+    /// more objects. Without it, albedo is constant across every surface, which
+    /// is why demodulating by it — one of the larger wins available in a real
+    /// renderer — measures as doing exactly nothing here.
+    pub ground_patches: usize,
 }
 
 impl Default for SceneConfig {
@@ -150,6 +189,8 @@ impl Default for SceneConfig {
             box_count: 5,
             light_count: 3,
             spread: 4.0,
+            enclosed: false,
+            ground_patches: 0,
         }
     }
 }
@@ -160,25 +201,37 @@ pub fn build(config: &SceneConfig, seed: u64) -> Vec<blade_render::ProceduralGeo
     let mut geometries =
         Vec::with_capacity(config.sphere_count + config.box_count + config.light_count + 1);
 
-    let (vertices, indices) = ground(config.spread * 3.0, 0.0);
     let ground_tone = 0.25 + 0.45 * rng.uniform();
-    geometries.push(blade_render::ProceduralGeometry {
-        name: "ground".into(),
-        vertices,
-        indices,
-        // A dielectric floor that bounces light without dominating. Its tone
-        // and roughness vary per scene, since a floor of one fixed brightness
-        // would let the network learn the backdrop rather than the geometry.
-        base_color_factor: [
+    let ground_color = |rng: &mut Rng| {
+        [
             ground_tone,
             ground_tone * (0.85 + 0.3 * rng.uniform()),
             ground_tone * (0.85 + 0.3 * rng.uniform()),
             1.0,
-        ],
-        metalness: 0.0,
-        roughness: 0.4 + 0.55 * rng.uniform(),
-        emissive_factor: [0.0; 3],
-    });
+        ]
+    };
+    let extent = config.spread * 3.0;
+    if config.ground_patches == 0 {
+        let (vertices, indices) = ground(extent, 0.0);
+        geometries.push(blade_render::ProceduralGeometry {
+            name: "ground".into(),
+            vertices,
+            indices,
+            // A dielectric floor that bounces light without dominating. Its
+            // tone and roughness vary per scene, since a floor of one fixed
+            // brightness would let the network learn the backdrop rather than
+            // the geometry.
+            base_color_factor: ground_color(&mut rng),
+            metalness: 0.0,
+            roughness: 0.4 + 0.55 * rng.uniform(),
+            emissive_factor: [0.0; 3],
+        });
+    } else {
+        geometries.extend(patched_ground(config, extent, ground_tone, &mut rng));
+    }
+    if config.enclosed {
+        geometries.extend(canopy(config, &mut rng));
+    }
 
     for i in 0..config.sphere_count {
         let angle = std::f32::consts::TAU * rng.uniform();
@@ -245,8 +298,11 @@ pub fn build(config: &SceneConfig, seed: u64) -> Vec<blade_render::ProceduralGeo
             distance * angle.sin(),
         ];
         let (vertices, indices) = sphere(center, radius);
-        // Bright enough to matter against the ambient dummy environment.
-        let strength = 6.0 + 10.0 * rng.uniform();
+        // Bright enough to matter against the ambient dummy environment, and
+        // brighter still where a canopy has taken most of that away, since
+        // under it these are close to the only light left.
+        let shaded = if config.enclosed { 3.0 } else { 1.0 };
+        let strength = shaded * (6.0 + 10.0 * rng.uniform());
         geometries.push(blade_render::ProceduralGeometry {
             name: format!("light{i}"),
             vertices,
@@ -263,6 +319,147 @@ pub fn build(config: &SceneConfig, seed: u64) -> Vec<blade_render::ProceduralGeo
     }
 
     geometries
+}
+
+/// A canopy over one side of the scene, with two walls under it.
+///
+/// Deliberately partial: the sky stays visible over the rest of the frame, so
+/// it goes on lighting the scene and being importance-sampled, while anything
+/// under the slab sees almost none of it. That is the same arrangement a real
+/// frame has when part of it is indoors, and it produces the contact shadows,
+/// the falloff, and the dark corners that a uniform environment cannot.
+fn canopy(config: &SceneConfig, rng: &mut Rng) -> Vec<blade_render::ProceduralGeometry> {
+    /// A name and the three vectors `rect` needs.
+    type Face = (&'static str, [f32; 3], [f32; 3], [f32; 3]);
+    let half = config.spread;
+    let height = config.spread * 0.85;
+    // Offset along +X, so roughly half the scattered objects fall under it.
+    let center_x = half * 0.75;
+    let faces: [Face; 3] = [
+        // Facing down, over the +X half.
+        (
+            "canopy",
+            [center_x, height, 0.0],
+            [half, 0.0, 0.0],
+            [0.0, 0.0, half * 1.2],
+        ),
+        // The far wall, closing the shadowed side off from grazing sky.
+        (
+            "canopy-wall",
+            [center_x + half, height * 0.5, 0.0],
+            [0.0, 0.0, half * 1.2],
+            [0.0, height * 0.5, 0.0],
+        ),
+        // One side wall, so the shadow has an edge that is not a straight
+        // horizontal line across the frame.
+        (
+            "canopy-side",
+            [center_x, height * 0.5, half * 1.2],
+            [0.0, height * 0.5, 0.0],
+            [half, 0.0, 0.0],
+        ),
+    ];
+    faces
+        .into_iter()
+        .map(|(name, center, u, v)| {
+            let (vertices, indices) = rect(center, u, v);
+            // Saturated, because bounce off these surfaces is most of the light
+            // reaching what they shade, and colour bleeding is a signal worth
+            // having in the data.
+            let tone = 0.35 + 0.4 * rng.uniform();
+            blade_render::ProceduralGeometry {
+                name: name.into(),
+                vertices,
+                indices,
+                base_color_factor: [
+                    tone * (0.5 + 0.7 * rng.uniform()),
+                    tone * (0.5 + 0.7 * rng.uniform()),
+                    tone * (0.5 + 0.7 * rng.uniform()),
+                    1.0,
+                ],
+                metalness: 0.0,
+                roughness: 0.6 + 0.35 * rng.uniform(),
+                emissive_factor: [0.0; 3],
+            }
+        })
+        .collect()
+}
+
+/// The ground as a patchwork, so albedo carries detail finer than an object.
+///
+/// The centre is divided into `ground_patches` squares per axis and each gets
+/// its own colour; four rectangles fill the surround at one colour, since
+/// nothing near the frame edge needs the resolution. The patch edges land at
+/// arbitrary positions relative to the pixel grid, which is the case a
+/// reconstruction filter finds hardest and this data has never contained.
+fn patched_ground(
+    config: &SceneConfig,
+    extent: f32,
+    tone: f32,
+    rng: &mut Rng,
+) -> Vec<blade_render::ProceduralGeometry> {
+    let patches = config.ground_patches;
+    let inner = (config.spread * 1.5).min(extent);
+    let step = 2.0 * inner / patches as f32;
+    let mut out = Vec::with_capacity(patches * patches + 4);
+    for row in 0..patches {
+        for column in 0..patches {
+            let center = [
+                -inner + step * (column as f32 + 0.5),
+                0.0,
+                -inner + step * (row as f32 + 0.5),
+            ];
+            let (vertices, indices) = rect(center, [step * 0.5, 0.0, 0.0], [0.0, 0.0, -step * 0.5]);
+            // Wide enough that neighbouring patches are plainly different, so
+            // the edge between them is a real high-frequency albedo feature.
+            let shade = 0.35 + 1.3 * rng.uniform();
+            out.push(blade_render::ProceduralGeometry {
+                name: format!("ground{row}-{column}"),
+                vertices,
+                indices,
+                base_color_factor: [
+                    (tone * shade * (0.75 + 0.5 * rng.uniform())).min(0.95),
+                    (tone * shade * (0.75 + 0.5 * rng.uniform())).min(0.95),
+                    (tone * shade * (0.75 + 0.5 * rng.uniform())).min(0.95),
+                    1.0,
+                ],
+                metalness: 0.0,
+                roughness: 0.4 + 0.55 * rng.uniform(),
+                emissive_factor: [0.0; 3],
+            });
+        }
+    }
+
+    // Four rectangles around the patchwork, meeting it exactly. Overlapping
+    // coplanar surfaces would make the ray tracer pick between them per hit.
+    let surround = (extent + inner) * 0.5;
+    let band = (extent - inner) * 0.5;
+    let surrounds: [([f32; 3], [f32; 3], [f32; 3]); 4] = [
+        ([0.0, 0.0, -surround], [extent, 0.0, 0.0], [0.0, 0.0, -band]),
+        ([0.0, 0.0, surround], [extent, 0.0, 0.0], [0.0, 0.0, -band]),
+        ([-surround, 0.0, 0.0], [band, 0.0, 0.0], [0.0, 0.0, -inner]),
+        ([surround, 0.0, 0.0], [band, 0.0, 0.0], [0.0, 0.0, -inner]),
+    ];
+    let roughness = 0.4 + 0.55 * rng.uniform();
+    let color = [
+        tone,
+        tone * (0.85 + 0.3 * rng.uniform()),
+        tone * (0.85 + 0.3 * rng.uniform()),
+        1.0,
+    ];
+    for (index, (center, u, v)) in surrounds.into_iter().enumerate() {
+        let (vertices, indices) = rect(center, u, v);
+        out.push(blade_render::ProceduralGeometry {
+            name: format!("ground-surround{index}"),
+            vertices,
+            indices,
+            base_color_factor: color,
+            metalness: 0.0,
+            roughness,
+            emissive_factor: [0.0; 3],
+        });
+    }
+    out
 }
 
 /// Separate two shaded objects so they can receive independent transforms.
