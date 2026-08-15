@@ -620,6 +620,9 @@ pub fn write_residual(
             config.guide,
         )),
         ReconstructionBase::Nearest | ReconstructionBase::Bilinear => None,
+        ReconstructionBase::Sample => {
+            panic!("a kernel checkpoint has no residual over a base; see write_kernel_target")
+        }
     };
 
     for c in 0..3 {
@@ -646,6 +649,9 @@ pub fn write_residual(
                             ReconstructionBase::GuidedBilinear
                             | ReconstructionBase::HighResolutionGuided => guided.as_ref().unwrap()
                                 [((y * scale + dy) * tile * scale + x * scale + dx) * 3 + c],
+                            ReconstructionBase::Sample => {
+                                unreachable!("a kernel checkpoint has no base to correct")
+                            }
                         };
                         let base = transform::compress(base);
                         let hy = source_y * scale + dy;
@@ -675,7 +681,169 @@ pub fn write_target(
         Prediction::LowResolutionResidual => {
             write_low_resolution_residual(sample, layout, crop, slot, config, out)
         }
+        Prediction::SubpixelKernel => write_kernel_target(sample, layout, crop, slot, config, out),
     }
+}
+
+/// The canonical frame itself, compressed, in sub-pixel layout.
+///
+/// A kernel checkpoint has no deterministic base to subtract, so there is no
+/// residual and no gain: the target is the image, and the loss is on what the
+/// gather produced rather than on what the network emitted.
+pub fn write_kernel_target(
+    sample: &Sample,
+    layout: &Layout,
+    crop: Crop,
+    slot: usize,
+    config: &ModelConfig,
+    out: &mut [f32],
+) {
+    let tile = crop.tile as usize;
+    let scale = config.scale as usize;
+    let sub = scale * scale;
+    let per_slot = 3 * sub * tile * tile;
+    assert_eq!(
+        scale, layout.scale as usize,
+        "checkpoint and dataset disagree on scale"
+    );
+    assert!(
+        out.len() >= (slot + 1) * per_slot,
+        "target tensor is too small for slot {slot}"
+    );
+    let base = layout
+        .hr_planes
+        .channel_offset(Plane::Color)
+        .expect("dataset has no high resolution colour");
+    let texels = layout.hr_texels();
+    let stride = layout.hr_width() as usize;
+
+    for c in 0..3 {
+        let high = &sample.hr[(base + c) * texels..(base + c + 1) * texels];
+        for y in 0..tile {
+            let source_y = (crop.y as usize + y) * scale;
+            for x in 0..tile {
+                let source_x = (crop.x as usize + x) * scale;
+                for dy in 0..scale {
+                    for dx in 0..scale {
+                        let channel = c * sub + dy * scale + dx;
+                        out[slot * per_slot + (channel * tile + y) * tile + x] =
+                            transform::compress(
+                                high[(source_y + dy) * stride + source_x + dx].to_f32(),
+                            );
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Write the sparse samples a gather kernel combines, one shifted copy per tap.
+///
+/// Channel `c * taps + tap`, which is the order `model::gather` peels them in.
+/// Addressing clamps to the frame rather than to the crop, because the samples
+/// beside a training tile are real samples the runtime would also read.
+pub fn write_taps(
+    sample: &Sample,
+    layout: &Layout,
+    crop: Crop,
+    slot: usize,
+    config: &ModelConfig,
+    out: &mut [f32],
+) {
+    let tile = crop.tile as usize;
+    let taps = config.taps() as usize;
+    let per_slot = 3 * taps * tile * tile;
+    assert!(
+        out.len() >= (slot + 1) * per_slot,
+        "tap tensor is too small for slot {slot}"
+    );
+    let base = layout
+        .lr_planes
+        .channel_offset(Plane::Color)
+        .expect("dataset has no low resolution colour");
+    let texels = layout.lr_texels();
+    let stride = layout.lr_width as usize;
+    let width = layout.lr_width as i32;
+    let height = layout.lr_height as i32;
+
+    for c in 0..3 {
+        let source = &sample.lr[(base + c) * texels..(base + c + 1) * texels];
+        for tap in 0..taps {
+            let (dx, dy) = config.tap_offset(tap as u32);
+            let channel = c * taps + tap;
+            for y in 0..tile {
+                let source_y = (crop.y as i32 + y as i32 + dy).clamp(0, height - 1) as usize;
+                for x in 0..tile {
+                    let source_x = (crop.x as i32 + x as i32 + dx).clamp(0, width - 1) as usize;
+                    out[slot * per_slot + (channel * tile + y) * tile + x] =
+                        transform::compress(source[source_y * stride + source_x].to_f32());
+                }
+            }
+        }
+    }
+}
+
+/// A gather total below this is treated as no information rather than as a
+/// normalisation. Softplus weights are strictly positive, so this only guards
+/// against every one of them underflowing in `f32`.
+const KERNEL_FLOOR: f32 = 1e-20;
+
+/// Reconstruct one crop from predicted gather weights.
+///
+/// The CPU half of the kernel branch of `shaders/unpack.wgsl`, and the only
+/// reconstruction in this module that is a single pass over the input samples.
+pub fn assemble_kernel(
+    sample: &Sample,
+    layout: &Layout,
+    crop: Crop,
+    weights: &[f32],
+    config: &ModelConfig,
+) -> Vec<f32> {
+    let tile = crop.tile as usize;
+    let scale = config.scale as usize;
+    let taps = config.taps() as usize;
+    let slots = scale * scale;
+    assert_eq!(weights.len(), slots * taps * tile * tile);
+    let base = layout
+        .lr_planes
+        .channel_offset(Plane::Color)
+        .expect("dataset has no low resolution colour");
+    let texels = layout.lr_texels();
+    let stride = layout.lr_width as usize;
+    let width = layout.lr_width as i32;
+    let height = layout.lr_height as i32;
+    let planes: Vec<&[f16]> = (0..3)
+        .map(|c| &sample.lr[(base + c) * texels..(base + c + 1) * texels])
+        .collect();
+
+    let out_width = tile * scale;
+    let mut out = vec![0.0; out_width * out_width * 3];
+    for y in 0..tile {
+        for x in 0..tile {
+            for slot in 0..slots {
+                let mut sum = [0.0f32; 3];
+                let mut total = 0.0f32;
+                for tap in 0..taps {
+                    let weight = weights[((slot * taps + tap) * tile + y) * tile + x];
+                    let (dx, dy) = config.tap_offset(tap as u32);
+                    let source_y = (crop.y as i32 + y as i32 + dy).clamp(0, height - 1) as usize;
+                    let source_x = (crop.x as i32 + x as i32 + dx).clamp(0, width - 1) as usize;
+                    let offset = source_y * stride + source_x;
+                    for c in 0..3 {
+                        sum[c] += weight * transform::compress(planes[c][offset].to_f32());
+                    }
+                    total += weight;
+                }
+                let (sub_x, sub_y) = config.sub_pixel(slot as u32);
+                let destination =
+                    ((y * scale + sub_y as usize) * out_width + x * scale + sub_x as usize) * 3;
+                for c in 0..3 {
+                    out[destination + c] = transform::decompress(sum[c] / total.max(KERNEL_FLOOR));
+                }
+            }
+        }
+    }
+    out
 }
 
 /// Train a three-channel low-resolution correction against a box-filtered
@@ -822,6 +990,9 @@ pub fn assemble(
                             | ReconstructionBase::HighResolutionGuided => guided
                                 .expect("guided reconstruction needs a prefiltered base")
                                 [((y * scale + dy) * out_width + x * scale + dx) * 3 + c],
+                            ReconstructionBase::Sample => {
+                                unreachable!("a kernel checkpoint has no base to correct")
+                            }
                         };
                         let base = transform::compress(base);
                         let channel = c * sub + dy * scale + dx;
@@ -1151,6 +1322,170 @@ mod tests {
                 "element {index} came back as {value}, not the radiance every tap carried"
             );
         }
+    }
+
+    fn kernel_config(radius: u32) -> ModelConfig {
+        ModelConfig {
+            scale: 2,
+            tile: 8,
+            batch: 1,
+            prediction: Prediction::SubpixelKernel,
+            reconstruction_base: ReconstructionBase::Sample,
+            kernel_radius: radius,
+            ..ModelConfig::default()
+        }
+    }
+
+    /// The untrained kernel, evaluated everywhere: `softplus` of the head bias,
+    /// since the head convolution starts at zero.
+    fn untrained_weights(config: &ModelConfig, tile: usize) -> Vec<f32> {
+        let bias = crate::model::bilinear_kernel_bias(config);
+        let mut out = vec![0.0; bias.len() * tile * tile];
+        for (channel, &value) in bias.iter().enumerate() {
+            let weight = value.exp().ln_1p();
+            for texel in 0..tile * tile {
+                out[channel * tile * tile + texel] = weight;
+            }
+        }
+        out
+    }
+
+    /// Any normalised gather of a constant image returns that constant, whatever
+    /// the weights are. If this fails the normalisation or the compressed-space
+    /// round trip is wrong, and no amount of training would have shown it.
+    #[test]
+    fn a_gather_of_a_constant_image_is_that_constant() {
+        let config = kernel_config(2);
+        let l = layout(2, 8, 8);
+        let s = Sample {
+            lr: vec![f16::from_f32(1.5); l.lr_len()],
+            hr: vec![f16::from_f32(1.5); l.hr_len()],
+        };
+        let crop = Crop {
+            x: 0,
+            y: 0,
+            tile: 8,
+        };
+        let weights = untrained_weights(&config, 8);
+        let out = assemble_kernel(&s, &l, crop, &weights, &config);
+        assert_eq!(out.len(), 16 * 16 * 3);
+        for (index, &value) in out.iter().enumerate() {
+            assert!(
+                (value - 1.5).abs() < 1e-3,
+                "element {index} came back as {value}"
+            );
+        }
+    }
+
+    /// The tap order, the sub-pixel order, and the bias geometry all have to
+    /// agree, and each of them is an index expression that would look right
+    /// while being off by one. An untrained kernel puts its largest weight on
+    /// the input sample nearest the output sub-pixel it is reconstructing, so
+    /// checking that pins all three at once.
+    #[test]
+    fn the_untrained_kernel_leans_toward_the_nearest_sample() {
+        for radius in [1u32, 2] {
+            let config = kernel_config(radius);
+            let taps = config.taps();
+            let bias = crate::model::bilinear_kernel_bias(&config);
+            for slot in 0..config.scale * config.scale {
+                let (sub_x, sub_y) = config.sub_pixel(slot);
+                let best = (0..taps)
+                    .max_by(|&a, &b| {
+                        bias[(slot * taps + a) as usize]
+                            .partial_cmp(&bias[(slot * taps + b) as usize])
+                            .unwrap()
+                    })
+                    .unwrap();
+                // Both sub-pixels of a 2x upscale sit a quarter of an input
+                // pixel from its centre, so both lean hardest on the pixel that
+                // owns them.
+                assert_eq!(
+                    config.tap_offset(best),
+                    (0, 0),
+                    "radius {radius}, sub-pixel ({sub_x}, {sub_y}) leaned on the wrong sample"
+                );
+                // The second choice is what fixes the orientation: it has to be
+                // the neighbour on the side the sub-pixel actually lies.
+                let weight_at = |dx: i32, dy: i32| {
+                    let tap = (0..taps)
+                        .find(|&tap| config.tap_offset(tap) == (dx, dy))
+                        .expect("the neighbourhood contains its neighbours");
+                    bias[(slot * taps + tap) as usize]
+                };
+                let toward_x = if sub_x == 0 { -1 } else { 1 };
+                let toward_y = if sub_y == 0 { -1 } else { 1 };
+                assert!(
+                    weight_at(toward_x, 0) > weight_at(-toward_x, 0),
+                    "radius {radius}, sub-pixel ({sub_x}, {sub_y}) leaned the wrong way in x"
+                );
+                assert!(
+                    weight_at(0, toward_y) > weight_at(0, -toward_y),
+                    "radius {radius}, sub-pixel ({sub_x}, {sub_y}) leaned the wrong way in y"
+                );
+            }
+        }
+    }
+
+    /// With no noise to remove, the untrained gather should already be a
+    /// reasonable upscale — close to texel-centre bilinear, off only by the
+    /// floor that keeps the outer taps trainable.
+    #[test]
+    fn the_untrained_kernel_upscales_about_as_well_as_bilinear() {
+        let config = kernel_config(2);
+        let mut l = layout(2, 8, 8);
+        l.lr_planes = PlaneSet::new().with(Plane::Color).with(Plane::Depth);
+        let mut rng = Rng::new(3);
+        let mut s = Sample {
+            lr: vec![f16::from_f32(0.0); l.lr_len()],
+            hr: vec![f16::from_f32(0.0); l.hr_len()],
+        };
+        // A smooth ramp, so bilinear is close to correct and any disagreement
+        // is the kernel's rather than the content's.
+        let base = l.lr_planes.channel_offset(Plane::Color).unwrap();
+        let texels = l.lr_texels();
+        for c in 0..3 {
+            for y in 0..8 {
+                for x in 0..8 {
+                    let value = 0.2 + 0.05 * (x + y) as f32 + 0.01 * rng.uniform();
+                    s.lr[(base + c) * texels + y * 8 + x] = f16::from_f32(value);
+                }
+            }
+        }
+        let crop = Crop {
+            x: 0,
+            y: 0,
+            tile: 8,
+        };
+        let weights = untrained_weights(&config, 8);
+        let gathered = assemble_kernel(&s, &l, crop, &weights, &config);
+        let low = crop_color(&s, &l, crop);
+
+        // Compare against the same bilinear the project reports as its
+        // non-neural baseline, in the space the gather works in.
+        let mut worst = 0.0f32;
+        for oy in 0..16 {
+            for ox in 0..16 {
+                let fx = (ox as f32 + 0.5) / 2.0 - 0.5;
+                let fy = (oy as f32 + 0.5) / 2.0 - 0.5;
+                let (x0, y0) = (fx.floor(), fy.floor());
+                let (tx, ty) = (fx - x0, fy - y0);
+                let at = |x: f32, y: f32| {
+                    let x = (x as i32).clamp(0, 7) as usize;
+                    let y = (y as i32).clamp(0, 7) as usize;
+                    transform::compress(low[(y * 8 + x) * 3])
+                };
+                let top = at(x0, y0) + tx * (at(x0 + 1.0, y0) - at(x0, y0));
+                let bottom = at(x0, y0 + 1.0) + tx * (at(x0 + 1.0, y0 + 1.0) - at(x0, y0 + 1.0));
+                let expected = top + ty * (bottom - top);
+                let actual = transform::compress(gathered[(oy * 16 + ox) * 3]);
+                worst = worst.max((actual - expected).abs());
+            }
+        }
+        assert!(
+            worst < 0.02,
+            "the untrained gather is {worst:.4} away from bilinear in compressed space"
+        );
     }
 
     #[test]

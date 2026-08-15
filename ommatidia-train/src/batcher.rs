@@ -20,10 +20,14 @@ pub struct Batch {
     pub x_t: Vec<f32>,
     /// `[batch, time_input_dim]`. Empty under [`Objective::Direct`].
     pub t_emb: Vec<f32>,
-    /// `[batch, target_channels, tile, tile]`: the clean scaled residual,
-    /// under either objective. See [`ommatidia::diffusion`] for why the
-    /// diffusion target is the signal rather than the noise.
+    /// `[batch, loss_channels, tile, tile]`: the clean scaled residual under
+    /// either objective, or the canonical image itself for a kernel
+    /// checkpoint. See [`ommatidia::diffusion`] for why the diffusion target
+    /// is the signal rather than the noise.
     pub target: Vec<f32>,
+    /// `[batch, 3 * taps, tile, tile]`: the sparse samples a predicted kernel
+    /// gathers. Empty unless the checkpoint predicts kernels.
+    pub taps: Vec<f32>,
 }
 
 /// One record after applying the checkpoint's input contract.
@@ -71,7 +75,7 @@ pub struct Batcher {
     /// touches it — that is the whole point of the split.
     train: std::ops::Range<usize>,
     rng: Rng,
-    /// Scratch for one slot's clean residual, reused across steps.
+    /// Scratch for one slot's clean target, reused across steps.
     residual: Vec<f32>,
     noise: Vec<f32>,
     noised: Vec<f32>,
@@ -103,6 +107,7 @@ impl Batcher {
         );
         let layout = *reader.layout();
         let per_slot = (config.target_channels() * config.tile * config.tile) as usize;
+        let loss_per_slot = (config.loss_channels() * config.tile * config.tile) as usize;
         Self {
             reader,
             layout,
@@ -110,7 +115,7 @@ impl Batcher {
             schedule,
             train,
             rng: Rng::new(seed),
-            residual: vec![0.0; per_slot],
+            residual: vec![0.0; loss_per_slot],
             noise: vec![0.0; per_slot],
             noised: vec![0.0; per_slot],
         }
@@ -155,12 +160,14 @@ impl Batcher {
         let config = self.config.clone();
         let batch_size = config.batch as usize;
         let per_slot = (config.target_channels() * config.tile * config.tile) as usize;
+        let loss_per_slot = (config.loss_channels() * config.tile * config.tile) as usize;
 
         let mut out = Batch {
             cond: vec![0.0; config.cond_len()],
             x_t: Vec::new(),
             t_emb: Vec::new(),
-            target: vec![0.0; config.target_len()],
+            target: vec![0.0; config.loss_len()],
+            taps: vec![0.0; config.tap_len()],
         };
         let diffusing = config.objective == Objective::Diffusion;
         if diffusing {
@@ -203,6 +210,16 @@ impl Batcher {
                     &mut self.residual,
                 );
             }
+            if !out.taps.is_empty() {
+                batch::write_taps(
+                    sample.sample(),
+                    &self.layout,
+                    crop,
+                    slot,
+                    &config,
+                    &mut out.taps,
+                );
+            }
 
             if diffusing {
                 // Every slot gets its own timestep. Sharing one across the
@@ -223,7 +240,8 @@ impl Batcher {
                 let width = config.time_input_dim as usize;
                 out.t_emb[slot * width..(slot + 1) * width].copy_from_slice(&embedding);
             } else {
-                out.target[slot * per_slot..(slot + 1) * per_slot].copy_from_slice(&self.residual);
+                out.target[slot * loss_per_slot..(slot + 1) * loss_per_slot]
+                    .copy_from_slice(&self.residual);
             }
         }
 

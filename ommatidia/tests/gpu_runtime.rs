@@ -67,6 +67,7 @@ fn config() -> ModelConfig {
         prediction: ommatidia::model::Prediction::SubpixelResidual,
         reconstruction_base: ReconstructionBase::Bilinear,
         guide: ommatidia::model::GuideConfig::TUNED,
+        kernel_radius: 2,
         temporal: None,
     }
 }

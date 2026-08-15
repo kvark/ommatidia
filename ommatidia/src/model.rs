@@ -36,6 +36,26 @@ pub enum Prediction {
     SubpixelResidual,
     /// RGB correction at input resolution, followed by geometry-aware gather.
     LowResolutionResidual,
+    /// A gather kernel over nearby input samples, one per output sub-pixel.
+    ///
+    /// Denoising and upscaling stop being two stages. There is no filtered
+    /// low-resolution image in the middle and no deterministic base to correct:
+    /// the output pixel is a weighted average of the sparse samples themselves,
+    /// and the network's whole job is deciding which of them belong to it.
+    ///
+    /// Predicting the weights rather than the colour is what makes this
+    /// tractable. Asked for a residual over a filter, a least-squares network
+    /// is being asked to predict that filter's error, which is dominated by the
+    /// particular noise the renderer drew and whose conditional mean is very
+    /// nearly zero — measured at 0.02 dB on this data. Asked for weights, it is
+    /// choosing among samples it can see, and it cannot answer zero.
+    ///
+    /// Two properties come from the form rather than from training. The output
+    /// is a convex combination of real radiance, so it cannot overshoot, invent
+    /// energy, or emit the black pixels a normalised bilateral gather produces
+    /// when it rejects every tap. And the reconstruction is one dispatch over
+    /// one neighbourhood, so nothing is filtered twice.
+    SubpixelKernel,
 }
 
 fn legacy_prediction() -> Prediction {
@@ -55,6 +75,9 @@ pub enum ReconstructionBase {
     /// Low-resolution denoising followed by joint bilateral upsampling against
     /// a high-resolution primary-surface G-buffer.
     HighResolutionGuided = 3,
+    /// No deterministic base at all: the network gathers the input samples
+    /// itself. The only reconstruction that is a single operation.
+    Sample = 4,
 }
 
 fn legacy_reconstruction_base() -> ReconstructionBase {
@@ -107,8 +130,12 @@ fn legacy_guide_config() -> GuideConfig {
     GuideConfig::LEGACY
 }
 
+fn legacy_kernel_radius() -> u32 {
+    2
+}
+
 /// How a parameter should be filled before training starts.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum InitKind {
     /// Kaiming normal, scaled by `sqrt(2 / fan_in)`, for weights behind SiLU.
     Kaiming {
@@ -116,6 +143,9 @@ pub enum InitKind {
     },
     Zeros,
     Ones,
+    /// Exact starting values, for a parameter whose initial output has to be a
+    /// particular function rather than a particular distribution.
+    Values(Vec<f32>),
 }
 
 /// A parameter the graph declared, with enough information to initialise it.
@@ -170,6 +200,12 @@ pub struct ModelConfig {
     /// Exact coefficients used by the CPU trainer and GPU reconstruction.
     #[serde(default = "legacy_guide_config")]
     pub guide: GuideConfig,
+    /// Half-width, in input pixels, of the neighbourhood a
+    /// [`Prediction::SubpixelKernel`] gathers from. Ignored by the other
+    /// targets, and carried in the checkpoint because the runtime has to read
+    /// exactly as many weight channels as training wrote.
+    #[serde(default = "legacy_kernel_radius")]
+    pub kernel_radius: u32,
     /// Reprojected sparse samples consumed by this checkpoint. `None` keeps
     /// all existing single-frame sidecars and runtimes unchanged.
     #[serde(default)]
@@ -204,6 +240,7 @@ impl Default for ModelConfig {
             prediction: Prediction::SubpixelResidual,
             reconstruction_base: ReconstructionBase::GuidedBilinear,
             guide: GuideConfig::TUNED,
+            kernel_radius: legacy_kernel_radius(),
             temporal: None,
         }
     }
@@ -223,11 +260,72 @@ impl ModelConfig {
                 .map_or(0, temporal::Config::auxiliary_channels)
     }
 
+    /// Input samples one output sub-pixel gathers from.
+    pub fn taps(&self) -> u32 {
+        let width = 2 * self.kernel_radius + 1;
+        width * width
+    }
+
+    /// Offset of tap `index`, in input pixels, as `(dx, dy)`.
+    ///
+    /// The one definition of the tap order. `batch::write_taps`, the CPU
+    /// gather, and `unpack.wgsl` all walk it, and they only agree because they
+    /// all agree with this.
+    pub fn tap_offset(&self, index: u32) -> (i32, i32) {
+        let width = 2 * self.kernel_radius + 1;
+        let radius = self.kernel_radius as i32;
+        (
+            (index % width) as i32 - radius,
+            (index / width) as i32 - radius,
+        )
+    }
+
+    /// Sub-pixel `(dx, dy)` of slot `slot`.
+    pub fn sub_pixel(&self, slot: u32) -> (u32, u32) {
+        (slot % self.scale, slot / self.scale)
+    }
+
     /// Output channels for the selected prediction target.
     pub fn target_channels(&self) -> u32 {
         match self.prediction {
             Prediction::SubpixelResidual => 3 * self.scale * self.scale,
             Prediction::LowResolutionResidual => 3,
+            // One weight per sub-pixel per tap, sub-pixel major.
+            Prediction::SubpixelKernel => self.scale * self.scale * self.taps(),
+        }
+    }
+
+    /// Channels of the assembled image, which for a kernel checkpoint is not
+    /// what the network emits.
+    pub fn image_channels(&self) -> u32 {
+        3 * self.scale * self.scale
+    }
+
+    /// Channels the loss target carries.
+    ///
+    /// The same as [`Self::target_channels`] everywhere except kernel
+    /// prediction, where the network emits weights and the loss sits on the
+    /// image those weights gathered.
+    pub fn loss_channels(&self) -> u32 {
+        match self.prediction {
+            Prediction::SubpixelKernel => self.image_channels(),
+            _ => self.target_channels(),
+        }
+    }
+
+    /// Elements in one batch of loss targets.
+    pub fn loss_len(&self) -> usize {
+        (self.batch * self.loss_channels() * self.tile * self.tile) as usize
+    }
+
+    /// Elements in one batch of gather taps, empty unless this is a kernel
+    /// checkpoint.
+    pub fn tap_len(&self) -> usize {
+        match self.prediction {
+            Prediction::SubpixelKernel => {
+                (self.batch * 3 * self.taps() * self.tile * self.tile) as usize
+            }
+            _ => 0,
         }
     }
 
@@ -381,6 +479,26 @@ impl ModelConfig {
         {
             return Err("low-resolution prediction needs HR-guided reconstruction".into());
         }
+        if (self.prediction == Prediction::SubpixelKernel)
+            != (self.reconstruction_base == ReconstructionBase::Sample)
+        {
+            return Err(
+                "kernel prediction is the sample-gathering reconstruction; neither works \
+                 without the other"
+                    .into(),
+            );
+        }
+        if self.prediction == Prediction::SubpixelKernel {
+            if self.kernel_radius == 0 {
+                return Err("a gather kernel needs a radius of at least one".into());
+            }
+            if !self.cond_planes.contains(Plane::Color) {
+                return Err("kernel prediction gathers colour, so it has to see it".into());
+            }
+            if self.objective != Objective::Direct {
+                return Err("kernel prediction has no noised residual to denoise".into());
+            }
+        }
         if matches!(
             self.reconstruction_base,
             ReconstructionBase::GuidedBilinear | ReconstructionBase::HighResolutionGuided
@@ -463,13 +581,22 @@ impl Model {
     pub fn initialize(&self, session: &mut meganeura::Session, seed: u64) {
         let mut rng = crate::rng::Rng::new(seed);
         for param in &self.params {
-            let data: Vec<f32> = match param.kind {
+            let data: Vec<f32> = match &param.kind {
                 InitKind::Kaiming { fan_in } => {
-                    let scale = (2.0 / fan_in.max(1) as f32).sqrt();
+                    let scale = (2.0 / (*fan_in).max(1) as f32).sqrt();
                     (0..param.len).map(|_| rng.normal() * scale).collect()
                 }
                 InitKind::Zeros => vec![0.0; param.len],
                 InitKind::Ones => vec![1.0; param.len],
+                InitKind::Values(values) => {
+                    assert_eq!(
+                        values.len(),
+                        param.len,
+                        "{} was given the wrong initial values",
+                        param.name
+                    );
+                    values.clone()
+                }
             };
             session.set_parameter(&param.name, &data);
         }
@@ -631,6 +758,104 @@ impl<'a> Builder<'a> {
             self.g.add(skip, h)
         }
     }
+}
+
+/// Starting bias for the kernel head, so an untrained network reconstructs
+/// exactly texel-centre bilinear rather than something arbitrary.
+///
+/// The head convolution starts at zero, so at step zero every pixel gets this
+/// same kernel and the model is worth precisely the baseline it has to beat.
+/// Taps outside bilinear's support start at a floor rather than at nothing: a
+/// weight of zero has a gradient of zero under softplus, and a tap that can
+/// never be recruited is a tap that might as well not exist.
+pub(crate) fn bilinear_kernel_bias(config: &ModelConfig) -> Vec<f32> {
+    const FLOOR: f32 = 0.01;
+    // Inverse softplus. `ln(exp(w) - 1)` loses precision for small `w`, where
+    // `exp(w) - 1` is the difference of two nearby numbers, so use `expm1`.
+    let inverse_softplus = |w: f32| w.exp_m1().ln();
+
+    let scale = config.scale as f32;
+    let taps = config.taps();
+    let mut out = vec![0.0; config.target_channels() as usize];
+    for slot in 0..config.scale * config.scale {
+        let (sub_x, sub_y) = config.sub_pixel(slot);
+        // Where this output sub-pixel lands, in input pixels, relative to the
+        // input pixel that owns it.
+        let center_x = (sub_x as f32 + 0.5) / scale - 0.5;
+        let center_y = (sub_y as f32 + 0.5) / scale - 0.5;
+        for tap in 0..taps {
+            let (dx, dy) = config.tap_offset(tap);
+            let weight = (1.0 - (dx as f32 - center_x).abs()).max(0.0)
+                * (1.0 - (dy as f32 - center_y).abs()).max(0.0);
+            out[(slot * taps + tap) as usize] = inverse_softplus(weight.max(FLOOR));
+        }
+    }
+    out
+}
+
+/// Reconstruct the image from predicted gather weights, inside the graph.
+///
+/// Only training needs this. At runtime the unpack shader gathers straight from
+/// the input texture in one dispatch, and the network's output stops at the
+/// weights. But a kernel that is never applied has no gradient, so the training
+/// graph has to carry the gather and the loss has to sit on the image.
+///
+/// The reduction over taps is a 1x1 convolution against constant ones. That is
+/// the one shape meganeura has no primitive for — summing a channel group —
+/// and expressing it as a convolution keeps the whole gather at about sixty
+/// operations instead of the thousand a per-channel decomposition would need.
+fn gather(graph: &mut Graph, config: &ModelConfig, weights: NodeId, extent: [u32; 2]) -> NodeId {
+    let batch = config.batch;
+    let [width, height] = extent;
+    let spatial = width * height;
+    let taps = config.taps();
+    let slots = config.scale * config.scale;
+
+    // Peel one group of `group` channels at a time off the front.
+    let peel = |graph: &mut Graph, mut rest: NodeId, groups: u32, group: u32| {
+        let mut out = Vec::with_capacity(groups as usize);
+        for index in 0..groups {
+            let remaining = (groups - index) * group;
+            if index + 1 == groups {
+                out.push(rest);
+            } else {
+                out.push(graph.split_a(rest, batch, group, remaining - group, spatial));
+                rest = graph.split_b(rest, batch, group, remaining - group, spatial);
+            }
+        }
+        out
+    };
+
+    let per_slot = peel(graph, weights, slots, taps);
+    // The sparse samples themselves, one shifted copy per tap, in compressed
+    // space. `batch::write_taps` fills this.
+    let samples = graph.input("taps", &[(batch * 3 * taps * spatial) as usize]);
+    let per_channel = peel(graph, samples, 3, taps);
+
+    let ones = graph.constant(vec![1.0; taps as usize], &[taps as usize]);
+    let sum_taps = |graph: &mut Graph, x: NodeId| {
+        graph.conv2d(x, ones, batch, taps, height, width, 1, 1, 1, 1, 0)
+    };
+
+    let totals: Vec<NodeId> = per_slot.iter().map(|&slot| sum_taps(graph, slot)).collect();
+
+    // Channel `c * slots + slot`, matching the residual layout the assembler
+    // and the reference target already use.
+    let mut image: Option<NodeId> = None;
+    let mut written = 0u32;
+    for &channel in &per_channel {
+        for (slot, &weight) in per_slot.iter().enumerate() {
+            let weighted = graph.mul(weight, channel);
+            let summed = sum_taps(graph, weighted);
+            let normalized = graph.div(summed, totals[slot]);
+            image = Some(match image {
+                None => normalized,
+                Some(prefix) => graph.concat(prefix, normalized, batch, written, 1, spatial),
+            });
+            written += 1;
+        }
+    }
+    image.expect("a kernel checkpoint reconstructs at least one channel")
 }
 
 /// Build the network.
@@ -815,10 +1040,40 @@ pub fn build_for_extent(
         1,
     );
 
+    // Kernel prediction turns the head's logits into strictly positive weights.
+    // Softplus rather than an exponential: it cannot overflow, it is zero
+    // nowhere so every tap keeps a gradient, and its inverse is closed-form, so
+    // the bias below can start the network at an exact filter.
+    let output = if config.prediction == Prediction::SubpixelKernel {
+        let bias = builder.param(
+            "head.kernel.bias",
+            config.target_channels() as usize,
+            InitKind::Values(bilinear_kernel_bias(config)),
+        );
+        let biased = builder
+            .g
+            .add_per_channel(output, bias, config.target_channels(), spatial);
+        builder.g.softplus(biased, 1.0)
+    } else {
+        output
+    };
+
     let params = builder.params;
     let loss = if training {
-        let target = graph.input("target", &[config.target_len_for_extent(extent)]);
-        let loss = graph.mse_loss(output, target);
+        let loss = match config.prediction {
+            Prediction::SubpixelKernel => {
+                let image = gather(&mut graph, config, output, extent);
+                let target = graph.input(
+                    "target",
+                    &[(batch * config.image_channels() * spatial) as usize],
+                );
+                graph.mse_loss(image, target)
+            }
+            _ => {
+                let target = graph.input("target", &[config.target_len_for_extent(extent)]);
+                graph.mse_loss(output, target)
+            }
+        };
         graph.set_outputs(vec![loss]);
         Some(loss)
     } else {
