@@ -363,6 +363,16 @@ impl Upscaler {
                 "this experimental checkpoint needs the history-enabled pack/unpack path".into(),
             ));
         }
+        if config.prediction == model::Prediction::SubpixelKernel {
+            // Refusing beats reconstructing it wrongly. The trainer's CPU
+            // gather has no counterpart in `unpack.wgsl` yet, and interpreting
+            // gather weights as sub-pixel residuals would run, would produce an
+            // image, and would be nonsense.
+            return Err(UpscalerError::Config(
+                "kernel checkpoints have no runtime gather yet; score them with ommatidia-train"
+                    .into(),
+            ));
+        }
         // A checkpoint may have been trained with a batch; a frame is one tile.
         config.batch = 1;
 

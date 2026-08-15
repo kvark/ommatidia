@@ -76,6 +76,7 @@ struct Args {
     objective: Objective,
     prediction: Prediction,
     reconstruction_base: ReconstructionBase,
+    kernel_radius: u32,
     seed: u64,
     log_every: usize,
     eval_out: Option<PathBuf>,
@@ -121,6 +122,7 @@ impl Default for Args {
             objective: Objective::Direct,
             prediction: Prediction::SubpixelResidual,
             reconstruction_base: ReconstructionBase::GuidedBilinear,
+            kernel_radius: 2,
             seed: 0,
             log_every: 50,
             eval_out: None,
@@ -160,9 +162,13 @@ usage: ommatidia-train [options]
   --timesteps N        diffusion schedule length  [1000]
   --sampler-steps N    DDIM steps used when evaluating  [20]
   --objective KIND     direct or diffusion  [direct]
-  --prediction KIND    subpixel or low-color residual  [subpixel]
+  --prediction KIND    subpixel or low-color residual, or kernel for the
+                       single-operation sample gather  [subpixel]
   --reconstruction-base KIND
-                       nearest, bilinear, guided, or hr-guided  [guided]
+                       nearest, bilinear, guided, hr-guided, or sample, which
+                       is the only one with no separate denoise  [guided]
+  --kernel-radius N    half-width of the neighbourhood a kernel gathers, in
+                       input pixels  [2]
   --seed N             seed for init and batching  [0]
   --device-id ID       adapter ID for this standalone process (hex or decimal)
   --history-frames N   surface-reprojected sparse frames, 1 for spatial [1]
@@ -247,6 +253,7 @@ fn parse_from(argv: impl Iterator<Item = String>) -> Result<Args, String> {
                 args.prediction = match value()?.as_str() {
                     "subpixel" => Prediction::SubpixelResidual,
                     "low-color" => Prediction::LowResolutionResidual,
+                    "kernel" => Prediction::SubpixelKernel,
                     other => return Err(format!("unknown prediction {other:?}")),
                 }
             }
@@ -256,8 +263,14 @@ fn parse_from(argv: impl Iterator<Item = String>) -> Result<Args, String> {
                     "bilinear" => ReconstructionBase::Bilinear,
                     "guided" => ReconstructionBase::GuidedBilinear,
                     "hr-guided" => ReconstructionBase::HighResolutionGuided,
+                    "sample" => ReconstructionBase::Sample,
                     other => return Err(format!("unknown reconstruction base {other:?}")),
                 }
+            }
+            "--kernel-radius" => {
+                args.kernel_radius = value()?
+                    .parse()
+                    .map_err(|e| format!("--kernel-radius: {e}"))?
             }
             "--seed" => args.seed = value()?.parse().map_err(|e| format!("--seed: {e}"))?,
             "--device-id" => args.device_id = Some(ommatidia::gpu::parse_device_id(&value()?)?),
@@ -429,6 +442,7 @@ fn main() {
         residual_gain: 1.0,
         objective: args.objective,
         prediction: args.prediction,
+        kernel_radius: args.kernel_radius,
         reconstruction_base,
         temporal,
         ..ModelConfig::default()
@@ -438,7 +452,8 @@ fn main() {
     // scale factor, so it is measured rather than assumed. Without this the
     // diffusion objective trains to a low loss and samples to pure noise.
     let probe = GAIN_PROBE_SAMPLES.min(reader.len());
-    if !args.eval_only {
+    // A kernel checkpoint has no residual, so there is no scale to measure.
+    if !args.eval_only && config.prediction != Prediction::SubpixelKernel {
         let samples: Vec<_> = if let Some(temporal) = config.temporal {
             let sequence_length = reader.sequence_length();
             let sequences = split.training().len() / sequence_length;
@@ -615,6 +630,9 @@ fn main() {
         let batch = batcher.next().expect("cannot read a batch");
         session.set_input("cond", &batch.cond);
         session.set_input("target", &batch.target);
+        if !batch.taps.is_empty() {
+            session.set_input("taps", &batch.taps);
+        }
         if diffusing {
             session.set_input("x_t", &batch.x_t);
             session.set_input("t_emb", &batch.t_emb);
@@ -826,7 +844,9 @@ impl Evaluator {
                 let model_base = match self.config.reconstruction_base {
                     ReconstructionBase::GuidedBilinear => guided.as_deref(),
                     ReconstructionBase::HighResolutionGuided => hr_guided.as_deref(),
-                    ReconstructionBase::Nearest | ReconstructionBase::Bilinear => None,
+                    ReconstructionBase::Nearest
+                    | ReconstructionBase::Bilinear
+                    | ReconstructionBase::Sample => None,
                 };
                 let predicted = eval::reconstruct(
                     &mut self.session,
@@ -875,6 +895,12 @@ impl Evaluator {
                     }
                     ReconstructionBase::HighResolutionGuided => {
                         hr_guided.as_ref().expect("HR-guided model has an HR guide")
+                    }
+                    // A kernel checkpoint has no base of its own, so it is held
+                    // against the best deterministic reconstruction the dataset
+                    // can support. Anything weaker would flatter it.
+                    ReconstructionBase::Sample => {
+                        hr_guided.as_ref().or(guided.as_ref()).unwrap_or(&bilinear)
                     }
                 };
                 if let Some(temporal) = self.config.temporal
@@ -991,6 +1017,9 @@ impl Evaluator {
                 ("guided", guided_scores.mse())
             }
             ReconstructionBase::HighResolutionGuided => ("HR guide", hr_guided_scores.mse()),
+            ReconstructionBase::Sample if has_hr_guides => ("HR guide", hr_guided_scores.mse()),
+            ReconstructionBase::Sample if has_guides => ("guided", guided_scores.mse()),
+            ReconstructionBase::Sample => ("bilinear", bilinear_scores.mse()),
         };
         let network_error = network_scores.mse();
         let gain = if network_error > 0.0 {
@@ -1077,7 +1106,10 @@ mod cli_tests {
             // without, so a new switch needs no entry here to stay covered.
             let candidates: Vec<Vec<&str>> = match flag.as_str() {
                 "--objective" => vec![vec!["--objective", "direct"]],
-                "--prediction" => vec![vec!["--prediction", "subpixel"]],
+                "--prediction" => vec![
+                    vec!["--prediction", "subpixel"],
+                    vec!["--prediction", "kernel", "--reconstruction-base", "sample"],
+                ],
                 "--reconstruction-base" => {
                     vec![vec!["--reconstruction-base", "guided"]]
                 }
