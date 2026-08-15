@@ -392,14 +392,23 @@ fn main() {
             layout.lr_width, layout.lr_height
         );
     }
-    let reconstruction_base = if args.eval_only {
-        checkpoint::load_config(&args.out)
-            .map(|(config, _)| config.reconstruction_base)
-            .unwrap_or_else(|_| ModelConfig::default().reconstruction_base)
-    } else if args.color_only {
-        ReconstructionBase::Bilinear
-    } else {
-        args.reconstruction_base
+    // Re-scoring takes the shape of the graph from the checkpoint, not from the
+    // flags, and it has to take all of it: reading the base from the sidecar
+    // while leaving the prediction on its default is a configuration that
+    // describes no checkpoint at all.
+    let stored = args
+        .eval_only
+        .then(|| checkpoint::load_config(&args.out).ok())
+        .flatten()
+        .map(|(config, _)| config);
+    let (prediction, kernel_radius) = match &stored {
+        Some(config) => (config.prediction, config.kernel_radius),
+        None => (args.prediction, args.kernel_radius),
+    };
+    let reconstruction_base = match &stored {
+        Some(config) => config.reconstruction_base,
+        None if args.color_only => ReconstructionBase::Bilinear,
+        None => args.reconstruction_base,
     };
     if reconstruction_base == ReconstructionBase::HighResolutionGuided {
         for plane in [
@@ -441,8 +450,8 @@ fn main() {
         num_groups: args.num_groups,
         residual_gain: 1.0,
         objective: args.objective,
-        prediction: args.prediction,
-        kernel_radius: args.kernel_radius,
+        prediction,
+        kernel_radius,
         reconstruction_base,
         temporal,
         ..ModelConfig::default()
