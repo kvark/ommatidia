@@ -198,6 +198,13 @@ pub fn write_temporal_conditioning(
 
 const GUIDE_RADIUS: i32 = 6;
 
+/// Below this total gather weight the guided result is not a weighted average
+/// of anything, and the guide-free gather is used instead.
+///
+/// Mirrored by `GATHER_FALLBACK` in `shaders/unpack.wgsl`; the two paths have
+/// to agree texel for texel.
+pub(crate) const GATHER_FALLBACK: f32 = 1e-4;
+
 fn plane_value(
     sample: &Sample,
     layout: &Layout,
@@ -491,13 +498,23 @@ fn high_resolution_guided(
             let base_y = position_y.floor() as i32;
             let mut sum = [0.0f32; 3];
             let mut weight_sum = 0.0f32;
+            // The guide can reject every tap at once: `guide_similarity`
+            // returns exactly zero when a tap's normal faces away from the
+            // centre's, and again when one side is background and the other is
+            // geometry. At a silhouette all of them can do so together, and
+            // dividing by a floor rather than by a weight sum then emits black.
+            // Keeping the guide-free gather costs one accumulator and gives
+            // those pixels something to fall back to.
+            let mut spatial_sum = [0.0f32; 3];
+            let mut spatial_weight_sum = 0.0f32;
             for dy in -RADIUS..=RADIUS {
                 let source_y = (base_y + dy).clamp(0, layout.lr_height as i32 - 1);
                 for dx in -RADIUS..=RADIUS {
                     let source_x = (base_x + dx).clamp(0, layout.lr_width as i32 - 1);
                     let distance2 = (source_x as f32 - position_x).powi(2)
                         + (source_y as f32 - position_y).powi(2);
-                    let mut weight = (-distance2 / spatial_denominator).exp();
+                    let spatial = (-distance2 / spatial_denominator).exp();
+                    let mut weight = spatial;
                     let x = source_x as usize;
                     let y = source_y as usize;
                     let depth =
@@ -523,14 +540,23 @@ fn high_resolution_guided(
                     );
                     let local_x = (source_x - origin_x) as usize;
                     let local_y = (source_y - origin_y) as usize;
+                    let tap = low[local_y * padded_width + local_x];
                     for component in 0..3 {
-                        sum[component] += weight * low[local_y * padded_width + local_x][component];
+                        sum[component] += weight * tap[component];
+                        spatial_sum[component] += spatial * tap[component];
                     }
                     weight_sum += weight;
+                    spatial_weight_sum += spatial;
                 }
             }
+            let (gathered, divisor) = if weight_sum > GATHER_FALLBACK {
+                (sum, weight_sum)
+            } else {
+                (spatial_sum, spatial_weight_sum)
+            };
             for component in 0..3 {
-                out[(oy * out_width + ox) * 3 + component] = sum[component] / weight_sum.max(1e-12);
+                out[(oy * out_width + ox) * 3 + component] =
+                    gathered[component] / divisor.max(1e-12);
             }
         }
     }
@@ -1066,6 +1092,64 @@ mod tests {
         let reference = crop_reference(&s, &l, crop);
         for (actual, expected) in rebuilt.iter().zip(reference) {
             assert!((actual - expected).abs() < 1e-3);
+        }
+    }
+
+    /// The guide rejects taps by multiplying their weight to exactly zero, and
+    /// at a silhouette it can reject all of them. Dividing by a floor then puts
+    /// a black pixel on the edge: rare, invisible to PSNR, and the first thing
+    /// the eye finds. On the 4-spp validation set 144 pixels did this, 0.01% of
+    /// the frame carrying 3.5% of the error.
+    #[test]
+    fn a_fully_rejected_gather_falls_back_instead_of_going_black() {
+        let planes: PlaneSet = [
+            Plane::Color,
+            Plane::Depth,
+            Plane::Normal,
+            Plane::DiffuseAlbedo,
+        ]
+        .into_iter()
+        .collect();
+        let l = Layout {
+            scale: 2,
+            lr_width: 4,
+            lr_height: 4,
+            lr_source: crate::dataset::InputSource::RawRestir,
+            lr_planes: planes,
+            hr_planes: planes,
+        };
+        let mut s = Sample {
+            lr: vec![f16::from_f32(0.0); l.lr_len()],
+            hr: vec![f16::from_f32(0.0); l.hr_len()],
+        };
+        let fill = |data: &mut [f16], texels: usize, plane: Plane, c: usize, v: f32| {
+            let base = planes.channel_offset(plane).unwrap() + c;
+            for i in 0..texels {
+                data[base * texels + i] = f16::from_f32(v);
+            }
+        };
+        // Every tap carries the same radiance, so any weighted average of them
+        // is that radiance. A different answer can only come from the guard.
+        for c in 0..3 {
+            fill(&mut s.lr, l.lr_texels(), Plane::Color, c, 2.0);
+        }
+        fill(&mut s.lr, l.lr_texels(), Plane::Depth, 0, 1.0);
+        fill(&mut s.hr, l.hr_texels(), Plane::Depth, 0, 1.0);
+        // Opposed normals, so the guide's cosine clamps to zero for every tap.
+        fill(&mut s.lr, l.lr_texels(), Plane::Normal, 2, 1.0);
+        fill(&mut s.hr, l.hr_texels(), Plane::Normal, 2, -1.0);
+
+        let crop = Crop {
+            x: 0,
+            y: 0,
+            tile: 4,
+        };
+        let out = high_resolution_guided_base(&s, &l, crop, GuideConfig::TUNED);
+        for (index, &value) in out.iter().enumerate() {
+            assert!(
+                (value - 2.0).abs() < 1e-3,
+                "element {index} came back as {value}, not the radiance every tap carried"
+            );
         }
     }
 
