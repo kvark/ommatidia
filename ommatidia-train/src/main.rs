@@ -88,6 +88,7 @@ struct Args {
     allow_filtered_input: bool,
     device_id: Option<u32>,
     history_frames: u32,
+    temporal_features: ommatidia::temporal::Features,
 }
 
 impl Default for Args {
@@ -122,6 +123,7 @@ impl Default for Args {
             allow_filtered_input: false,
             device_id: None,
             history_frames: 1,
+            temporal_features: ommatidia::temporal::Features::Variance,
         }
     }
 }
@@ -154,6 +156,8 @@ usage: ommatidia-train [options]
   --seed N             seed for init and batching  [0]
   --device-id ID       adapter ID for this standalone process (hex or decimal)
   --history-frames N   surface-reprojected sparse frames, 1 for spatial [1]
+  --temporal-features KIND
+                       basic or variance history conditioning [variance]
   --log-every N        steps between loss lines  [50]
   --eval-out DIR       write comparison PNGs of the first held-out crop
   --val-fraction F     share of the set held out for scoring  [0.15]
@@ -251,6 +255,13 @@ fn parse_from(argv: impl Iterator<Item = String>) -> Result<Args, String> {
                 args.history_frames = value()?
                     .parse()
                     .map_err(|e| format!("--history-frames: {e}"))?
+            }
+            "--temporal-features" => {
+                args.temporal_features = match value()?.as_str() {
+                    "basic" => ommatidia::temporal::Features::Basic,
+                    "variance" => ommatidia::temporal::Features::Variance,
+                    other => return Err(format!("unknown temporal features {other:?}")),
+                }
             }
             "--log-every" => {
                 args.log_every = value()?.parse().map_err(|e| format!("--log-every: {e}"))?
@@ -385,6 +396,7 @@ fn main() {
     let temporal = (args.history_frames > 1).then_some(ommatidia::temporal::Config {
         frames: args.history_frames,
         rejection: ommatidia::temporal::RejectionConfig::default(),
+        features: args.temporal_features,
     });
     let mut config = ModelConfig {
         scale: layout.scale,
@@ -655,6 +667,10 @@ fn main() {
         }
     }
 
+    // The evaluator is a separate inference graph. Without this final copy it
+    // would score initialization (or the last periodic evaluation) immediately
+    // after correctly saving the trained checkpoint.
+    evaluator.sync(&session);
     drop(session);
     evaluator.score(
         &mut batcher,
@@ -676,6 +692,12 @@ struct Evaluator {
     config: ModelConfig,
     names: Vec<String>,
     scratch: Vec<f32>,
+}
+
+struct TemporalFrame {
+    network: Vec<f32>,
+    base: Vec<f32>,
+    reference: Vec<f32>,
 }
 
 impl Evaluator {
@@ -759,11 +781,18 @@ impl Evaluator {
         .all(|plane| layout.hr_planes.contains(plane));
         let mut hr_guided_total = 0.0f64;
         let mut hr_guided_ssim_total = 0.0f64;
+        let mut temporal_base_total = 0.0f64;
+        let mut temporal_network_total = 0.0f64;
+        let mut temporal_counted = 0usize;
+        let mut temporal_values = 0usize;
+        let mut previous_temporal: Vec<Option<TemporalFrame>> =
+            (0..crops.len()).map(|_| None).collect();
         let mut counted = 0usize;
         let started = std::time::Instant::now();
 
         'outer: for index in split.validation() {
             if !batcher.has_history(index) {
+                previous_temporal.iter_mut().for_each(|slot| *slot = None);
                 continue;
             }
             let input = match batcher.sample(index) {
@@ -774,7 +803,7 @@ impl Evaluator {
                 }
             };
             let sample = input.sample();
-            for &crop in &crops {
+            for (crop_index, &crop) in crops.iter().enumerate() {
                 if counted >= args.eval_crops {
                     break 'outer;
                 }
@@ -830,6 +859,60 @@ impl Evaluator {
                     hr_guided_total += eval::error(hr_guided, &reference) as f64;
                     hr_guided_ssim_total +=
                         eval::ssim(hr_guided, &reference, extent, extent) as f64;
+                }
+
+                let temporal_base = match self.config.reconstruction_base {
+                    ReconstructionBase::Nearest => &baseline,
+                    ReconstructionBase::Bilinear => &bilinear,
+                    ReconstructionBase::GuidedBilinear => {
+                        guided.as_ref().expect("guided model has a guide")
+                    }
+                    ReconstructionBase::HighResolutionGuided => {
+                        hr_guided.as_ref().expect("HR-guided model has an HR guide")
+                    }
+                };
+                if let Some((motion, valid)) = eval::temporal_evidence(
+                    &input,
+                    &layout,
+                    crop,
+                    self.config
+                        .temporal
+                        .expect("temporal input has config")
+                        .frames,
+                ) {
+                    if let Some(previous) = &previous_temporal[crop_index] {
+                        let extent = crop.tile as usize;
+                        let scale = self.config.scale as usize;
+                        let network_error = ommatidia::metrics::temporal_error(
+                            [&predicted, &previous.network],
+                            [&reference, &previous.reference],
+                            &motion,
+                            &valid,
+                            [extent, extent],
+                            scale,
+                        );
+                        let base_error = ommatidia::metrics::temporal_error(
+                            [temporal_base, &previous.base],
+                            [&reference, &previous.reference],
+                            &motion,
+                            &valid,
+                            [extent, extent],
+                            scale,
+                        );
+                        if let (Some(network_error), Some(base_error)) = (network_error, base_error)
+                        {
+                            assert_eq!(network_error.values, base_error.values);
+                            temporal_network_total += network_error.squared_sum;
+                            temporal_base_total += base_error.squared_sum;
+                            temporal_values += network_error.values;
+                            temporal_counted += 1;
+                        }
+                    }
+                    previous_temporal[crop_index] = Some(TemporalFrame {
+                        network: predicted.clone(),
+                        base: temporal_base.clone(),
+                        reference: reference.clone(),
+                    });
                 }
 
                 // The first crop also goes out as images, for eyeballing.
@@ -921,6 +1004,16 @@ impl Evaluator {
             "  network  MSE {network_error:.6}, PSNR {network_psnr:.2} dB, SSIM {network_ssim:.4} \
              ({gain:+.2} dB versus {base_name})"
         );
+        if temporal_counted != 0 {
+            let base = temporal_base_total / temporal_values as f64;
+            let network = temporal_network_total / temporal_values as f64;
+            let gain = 10.0 * (base / network).log10();
+            println!(
+                "  temporal over {temporal_counted} reprojected crop pairs:\n  \
+                 {base_name:<9} delta MSE {base:.6}\n  \
+                 network   delta MSE {network:.6} ({gain:+.2} dB versus {base_name})"
+            );
+        }
         Some(gain as f32)
     }
 }
@@ -960,6 +1053,7 @@ mod cli_tests {
                 "--reconstruction-base" => {
                     vec![vec!["--reconstruction-base", "guided"]]
                 }
+                "--temporal-features" => vec![vec!["--temporal-features", "variance"]],
                 "--val-fraction" => vec![vec!["--val-fraction", "0.1"]],
                 _ => vec![vec![&flag, VALUE], vec![&flag]],
             };
@@ -991,6 +1085,10 @@ mod cli_tests {
         assert_eq!(args.levels, 3);
         assert_eq!(args.blocks_per_level, 1);
         assert_eq!(args.batch, 8);
+        assert_eq!(
+            args.temporal_features,
+            ommatidia::temporal::Features::Variance
+        );
         assert!(!args.allow_filtered_input);
     }
 

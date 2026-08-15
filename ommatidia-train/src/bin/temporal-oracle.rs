@@ -55,7 +55,7 @@ fn bilinear(
     out
 }
 
-fn accumulate(current: &Sample, layout: &Layout, history: &History) -> History {
+fn accumulate(current: &Sample, layout: &Layout, history: &History, frames: usize) -> History {
     let width = layout.lr_width as usize;
     let height = layout.lr_height as usize;
     let texels = width * height;
@@ -77,7 +77,8 @@ fn accumulate(current: &Sample, layout: &Layout, history: &History) -> History {
                 && position[1] <= (height - 1) as f32;
             let valid = inside;
             let count = if valid {
-                bilinear(&history.count, width, height, 1, position)[0].min(3.0)
+                bilinear(&history.count, width, height, 1, position)[0]
+                    .min(frames.saturating_sub(1) as f32)
             } else {
                 0.0
             };
@@ -174,7 +175,10 @@ impl Score {
 fn main() {
     let mut args = std::env::args_os().skip(1);
     let path = std::path::PathBuf::from(args.next().unwrap_or_else(|| {
-        eprintln!("usage: temporal-oracle DATASET.omd [DEPTH_DELTA NORMAL_COSINE ALBEDO_DELTA2]");
+        eprintln!(
+            "usage: temporal-oracle DATASET.omd \
+             [DEPTH_DELTA NORMAL_COSINE ALBEDO_DELTA2 [HISTORY_FRAMES]]"
+        );
         std::process::exit(2);
     }));
     let mut rejection = RejectConfig::default();
@@ -195,6 +199,16 @@ fn main() {
     let layout = *reader.layout();
     let sequence_length = reader.sequence_length();
     assert!(sequence_length > 1, "dataset does not contain sequences");
+    let history_frames = args
+        .next()
+        .map(|value| {
+            value
+                .to_str()
+                .and_then(|text| text.parse::<usize>().ok())
+                .filter(|&frames| frames >= 2 && frames <= sequence_length)
+                .expect("history frames must be between 2 and the sequence length")
+        })
+        .unwrap_or(sequence_length);
     assert_eq!(
         layout.lr_width, layout.lr_height,
         "oracle expects square frames"
@@ -236,24 +250,25 @@ fn main() {
         for frame in 1..sequence_length {
             let index = sequence * sequence_length + frame;
             let current = reader.sample(index).unwrap();
-            raw_history = accumulate(&current, &layout, &raw_history);
+            raw_history = accumulate(&current, &layout, &raw_history, history_frames);
             let prepared = ommatidia::temporal::prepare(
                 &mut temporal_reader,
                 index,
                 ommatidia::temporal::Config {
-                    frames: 4,
+                    frames: history_frames as u32,
                     rejection: ommatidia::temporal::RejectionConfig {
                         depth_delta: rejection.depth_delta,
                         normal_cosine: rejection.normal_cosine,
                         albedo_delta2: rejection.albedo_delta2,
                     },
+                    features: ommatidia::temporal::Features::Basic,
                 },
             )
             .unwrap();
             accepted_pixels += prepared
                 .confidence
                 .iter()
-                .filter(|&&confidence| confidence > 0.25)
+                .filter(|&&confidence| confidence * history_frames as f32 > 1.001)
                 .count();
             history_pixels += prepared.confidence.len();
             let reference = batch::crop_reference(&current, &layout, crop);
@@ -295,9 +310,10 @@ fn main() {
         }
     }
     println!(
-        "{} sequences × {} scored history frames",
+        "{} sequences × {} scored frames, up to {} history samples",
         reader.len() / sequence_length,
-        sequence_length - 1
+        sequence_length - 1,
+        history_frames,
     );
     single.print("single frame");
     motion_only.print("motion-only history");
@@ -344,7 +360,7 @@ mod tests {
             color: vec![0.0, 0.0, 0.0, 2.0, 4.0, 6.0, 0.0, 0.0, 0.0],
             count: vec![1.0; 3],
         };
-        let result = accumulate(&sample, &layout, &history);
+        let result = accumulate(&sample, &layout, &history, 4);
         assert_eq!(&result.color[..3], &[1.0, 2.0, 3.0]);
         assert_eq!(result.count[0], 2.0);
     }

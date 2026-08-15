@@ -218,7 +218,9 @@ impl ModelConfig {
     /// Conditioning channels, from the plane set.
     pub fn cond_channels(&self) -> u32 {
         self.cond_planes.channels() as u32
-            + self.temporal.map_or(0, |_| temporal::Config::AUX_CHANNELS)
+            + self
+                .temporal
+                .map_or(0, temporal::Config::auxiliary_channels)
     }
 
     /// Output channels for the selected prediction target.
@@ -892,11 +894,14 @@ mod tests {
         c.temporal = Some(crate::temporal::Config {
             frames: 4,
             rejection: crate::temporal::RejectionConfig::default(),
+            features: crate::temporal::Features::Basic,
         });
         assert_eq!(c.cond_channels(), 17); // Ten stored plus seven temporal auxiliaries.
         assert_eq!(c.target_channels(), 3);
         assert_eq!(c.in_channels(), 17);
         assert!(c.validate().is_ok());
+        c.temporal.as_mut().unwrap().features = crate::temporal::Features::Variance;
+        assert_eq!(c.cond_channels(), 18);
     }
 
     #[test]

@@ -168,4 +168,24 @@ mod tests {
         );
         assert_eq!(config.temporal, None);
     }
+
+    #[test]
+    fn old_temporal_sidecars_keep_the_basic_channel_layout() {
+        let config = ModelConfig {
+            temporal: Some(crate::temporal::Config {
+                frames: 4,
+                rejection: crate::temporal::RejectionConfig::default(),
+                features: crate::temporal::Features::Variance,
+            }),
+            ..ModelConfig::default()
+        };
+        let text = ron::ser::to_string(&config).unwrap();
+        let old_text = text.replace(",features:Variance", "");
+        assert_ne!(old_text, text);
+        let old: ModelConfig = ron::from_str(&old_text).unwrap();
+        assert_eq!(
+            old.temporal.unwrap().features,
+            crate::temporal::Features::Basic
+        );
+    }
 }
