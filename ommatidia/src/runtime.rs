@@ -86,7 +86,7 @@ struct UnpackParams {
     reconstruction_base: u32,
     decode_blade_gbuffer: u32,
     decode_hr_blade_gbuffer: u32,
-    _pad2: u32,
+    kernel_radius: u32,
     guide_spatial_denominator: f32,
     guide_depth_denominator: f32,
     guide_normal_power: f32,
@@ -363,16 +363,6 @@ impl Upscaler {
                 "this experimental checkpoint needs the history-enabled pack/unpack path".into(),
             ));
         }
-        if config.prediction == model::Prediction::SubpixelKernel {
-            // Refusing beats reconstructing it wrongly. The trainer's CPU
-            // gather has no counterpart in `unpack.wgsl` yet, and interpreting
-            // gather weights as sub-pixel residuals would run, would produce an
-            // image, and would be nonsense.
-            return Err(UpscalerError::Config(
-                "kernel checkpoints have no runtime gather yet; score them with ommatidia-train"
-                    .into(),
-            ));
-        }
         // A checkpoint may have been trained with a batch; a frame is one tile.
         config.batch = 1;
 
@@ -609,7 +599,7 @@ impl Upscaler {
                     reconstruction_base: self.config.reconstruction_base as u32,
                     decode_blade_gbuffer: inputs.decode_blade_gbuffer as u32,
                     decode_hr_blade_gbuffer: inputs.decode_hr_blade_gbuffer as u32,
-                    _pad2: 0,
+                    kernel_radius: self.config.kernel_radius,
                     guide_spatial_denominator: self.config.guide.spatial_denominator(),
                     guide_depth_denominator: self.config.guide.depth_denominator(),
                     guide_normal_power: self.config.guide.normal_power,

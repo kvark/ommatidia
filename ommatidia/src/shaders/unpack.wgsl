@@ -19,7 +19,7 @@ struct UnpackParams {
     reconstruction_base: u32,
     decode_blade_gbuffer: u32,
     decode_hr_blade_gbuffer: u32,
-    _pad2: u32,
+    kernel_radius: u32,
     guide_spatial_denominator: f32,
     guide_depth_denominator: f32,
     guide_normal_power: f32,
@@ -42,6 +42,10 @@ const SKY_DEPTH: f32 = 1.0e6;
 // Mirrors `batch::GATHER_FALLBACK`. Below this the guided gather has rejected
 // every tap and its normalisation is meaningless.
 const GATHER_FALLBACK: f32 = 1.0e-4;
+
+// Mirrors `batch::KERNEL_FLOOR`. Softplus weights are strictly positive, so
+// this only guards against every one of them underflowing in f32.
+const KERNEL_FLOOR: f32 = 1.0e-20;
 
 fn qrot(q: vec4<f32>, v: vec3<f32>) -> vec3<f32> {
     return v + 2.0 * cross(q.xyz, cross(q.xyz, v) + q.w * v);
@@ -189,6 +193,32 @@ fn high_resolution_guided_base(destination: vec2<u32>) -> vec3<f32> {
     return spatial_sum / max(spatial_weight_sum, 1.0e-12);
 }
 
+// The whole reconstruction, for a kernel checkpoint: one weighted pass over
+// the input samples, with no filtered image in between. `residual` holds the
+// network's gather weights, channel `slot * taps + tap`, and the tap order is
+// `ModelConfig::tap_offset` — dy outer, dx inner, both from -radius.
+//
+// The CPU half is `batch::assemble_kernel`. They have to agree texel for
+// texel, so the loop bounds, the ordering, and the floor are all mirrored
+// rather than reimplemented.
+fn gather_kernel(source: vec2<i32>, slot: u32, plane_stride: u32, offset: u32) -> vec3<f32> {
+    let radius = i32(params.kernel_radius);
+    let taps = u32((2 * radius + 1) * (2 * radius + 1));
+    var sum = vec3<f32>(0.0);
+    var total = 0.0;
+    var tap = 0u;
+    for (var dy = -radius; dy <= radius; dy += 1) {
+        for (var dx = -radius; dx <= radius; dx += 1) {
+            let weight = residual[(slot * taps + tap) * plane_stride + offset];
+            let color = load_base(source + vec2<i32>(dx, dy));
+            sum += weight * vec3<f32>(compress(color.x), compress(color.y), compress(color.z));
+            total += weight;
+            tap += 1u;
+        }
+    }
+    return sum / max(total, KERNEL_FLOOR);
+}
+
 fn reconstruction_base(destination: vec2<u32>, source: vec2<i32>) -> vec3<f32> {
     if params.reconstruction_base == 0u {
         return load_base(source);
@@ -219,6 +249,22 @@ fn unpack(@builtin(global_invocation_id) id: vec3<u32>) {
     let plane_stride = params.width * params.height;
     let offset = id.y * params.width + id.x;
     let sub = params.scale * params.scale;
+
+    if params.reconstruction_base == 4u {
+        for (var dy = 0u; dy < params.scale; dy += 1u) {
+            for (var dx = 0u; dx < params.scale; dx += 1u) {
+                let gathered = gather_kernel(source, dy * params.scale + dx, plane_stride, offset);
+                let color = vec3<f32>(
+                    decompress(gathered.x),
+                    decompress(gathered.y),
+                    decompress(gathered.z),
+                );
+                let destination = id.xy * params.scale + vec2<u32>(dx, dy);
+                textureStore(output, vec2<i32>(destination), vec4<f32>(color, 1.0));
+            }
+        }
+        return;
+    }
 
     for (var dy = 0u; dy < params.scale; dy += 1u) {
         for (var dx = 0u; dx < params.scale; dx += 1u) {
