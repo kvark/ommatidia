@@ -93,6 +93,15 @@ fn hr_guided_config() -> ModelConfig {
     }
 }
 
+fn kernel_config() -> ModelConfig {
+    ModelConfig {
+        prediction: ommatidia::model::Prediction::SubpixelKernel,
+        reconstruction_base: ReconstructionBase::Sample,
+        kernel_radius: 2,
+        ..guided_config()
+    }
+}
+
 /// An untrained checkpoint is enough: the question is whether the two paths
 /// agree, not whether the weights are any good.
 fn write_checkpoint(config: &ModelConfig, stem: &std::path::Path, context: Arc<gpu::Context>) {
@@ -632,4 +641,176 @@ fn upscale_matches_the_cpu_path() {
     context.destroy_texture(hr_normal_texture);
     context.destroy_texture(hr_albedo_texture);
     context.destroy_command_encoder(&mut encoder);
+}
+
+/// The kernel path has no deterministic base, so nothing in the output is
+/// recognisable except through the gather itself. If `unpack.wgsl` and
+/// `batch::assemble_kernel` disagreed about tap order, sub-pixel order, or the
+/// space the weights apply in, training would still converge and the renderer
+/// would still produce an image — a plausible, wrong one. This is the test that
+/// catches that.
+#[test]
+#[ignore = "requires a GPU"]
+fn kernel_upscale_matches_the_cpu_path() {
+    let Some(context) = context() else { return };
+    let config = kernel_config();
+    let dir = std::env::temp_dir().join("ommatidia-gpu-runtime-kernel");
+    std::fs::create_dir_all(&dir).unwrap();
+    let stem = dir.join("model");
+    write_checkpoint(&config, &stem, Arc::clone(&context));
+
+    let mut upscaler =
+        Upscaler::from_checkpoint(Arc::clone(&context), &stem, 1, 100).expect("upscaler");
+    let (out_width, out_height) = upscaler.output_extent();
+
+    let mut rng = Rng::new(11);
+    let texels = (TILE * TILE) as usize;
+    // Round-tripped through f16, because that is what the dataset would store
+    // and what the CPU reference will read back.
+    let colors: Vec<f32> = (0..texels * 3)
+        .map(|_| f16::from_f32(rng.uniform() * 12.0).to_f32())
+        .collect();
+    let mut depths = vec![0.0f32; texels * 3];
+    let mut normals = vec![0.0f32; texels * 3];
+    let mut albedos = vec![0.0f32; texels * 3];
+    let specular = vec![0.25f32; texels * 3];
+    for y in 0..TILE as usize {
+        for x in 0..TILE as usize {
+            let index = y * TILE as usize + x;
+            depths[index * 3] = 2.0 + y as f32 * 0.25;
+            let (normal, albedo) = if x < TILE as usize / 2 {
+                ([0.0, 0.0, 1.0], [0.25, 0.5, 0.75])
+            } else {
+                ([0.6, 0.0, 0.8], [0.75, 0.25, 0.5])
+            };
+            normals[index * 3..index * 3 + 3].copy_from_slice(&normal);
+            albedos[index * 3..index * 3 + 3].copy_from_slice(&albedo);
+        }
+    }
+
+    let mut encoder = context.create_command_encoder(gpu::CommandEncoderDesc {
+        name: "kernel-upscale-test",
+        buffer_count: 2,
+        manual_barriers: false,
+    });
+    encoder.start();
+    let (_texture, view, _staging) = color_texture(&context, &mut encoder, &colors, TILE, TILE);
+    let (_dt, depth_view, _ds) = color_texture(&context, &mut encoder, &depths, TILE, TILE);
+    let (_nt, normal_view, _ns) = color_texture(&context, &mut encoder, &normals, TILE, TILE);
+    let (_at, albedo_view, _as) = color_texture(&context, &mut encoder, &albedos, TILE, TILE);
+    let (_st, specular_view, _ss) = color_texture(&context, &mut encoder, &specular, TILE, TILE);
+
+    let format = Upscaler::OUTPUT_FORMAT;
+    let out_size = gpu::Extent {
+        width: out_width,
+        height: out_height,
+        depth: 1,
+    };
+    let output = context.create_texture(gpu::TextureDesc {
+        name: "kernel-test-output",
+        format,
+        size: out_size,
+        dimension: gpu::TextureDimension::D2,
+        array_layer_count: 1,
+        mip_level_count: 1,
+        usage: gpu::TextureUsage::STORAGE | gpu::TextureUsage::COPY,
+        sample_count: 1,
+        external: None,
+    });
+    let output_view = context.create_texture_view(
+        output,
+        gpu::TextureViewDesc {
+            name: "kernel-test-output",
+            format,
+            dimension: gpu::ViewDimension::D2,
+            subresources: &gpu::TextureSubresources::default(),
+        },
+    );
+    encoder.init_texture(output);
+
+    upscaler.upscale(
+        &mut encoder,
+        &FrameInputs::from_textures(view, depth_view, normal_view, albedo_view, specular_view),
+        output_view,
+    );
+
+    let readback = context.create_buffer(gpu::BufferDesc {
+        name: "kernel-test-readback",
+        size: (out_width * out_height) as u64 * 8,
+        memory: gpu::Memory::Shared,
+    });
+    {
+        let mut transfer = encoder.transfer("readback");
+        transfer.copy_texture_to_buffer(output.into(), readback.into(), out_width * 8, out_size);
+    }
+    let sync_point = context.submit(&mut encoder);
+    assert!(context.wait_for(&sync_point, 30_000).unwrap());
+
+    let count = (out_width * out_height * 4) as usize;
+    let mut halves = vec![f16::ZERO; count];
+    unsafe {
+        std::ptr::copy_nonoverlapping(readback.data() as *const f16, halves.as_mut_ptr(), count);
+    }
+
+    // The same weights the network produced, gathered on the CPU.
+    let weights = upscaler.read_residual();
+    let layout = Layout {
+        scale: SCALE,
+        lr_width: TILE,
+        lr_height: TILE,
+        lr_source: ommatidia::dataset::InputSource::PathTrace,
+        lr_planes: PlaneSet::new().with(Plane::Color),
+        hr_planes: PlaneSet::new().with(Plane::Color),
+    };
+    let mut planar = vec![f16::ZERO; layout.lr_len()];
+    for component in 0..3 {
+        for index in 0..texels {
+            planar[component * texels + index] = f16::from_f32(colors[index * 3 + component]);
+        }
+    }
+    let sample = Sample {
+        lr: planar,
+        hr: vec![f16::ZERO; layout.hr_len()],
+    };
+    let expected = batch::assemble_kernel(
+        &sample,
+        &layout,
+        Crop {
+            x: 0,
+            y: 0,
+            tile: TILE,
+        },
+        &weights,
+        &config,
+    );
+
+    let mut worst = 0.0f32;
+    for texel in 0..(out_width * out_height) as usize {
+        for c in 0..3 {
+            let gpu_value = halves[texel * 4 + c].to_f32();
+            let cpu_value = expected[texel * 3 + c];
+            let difference = (gpu_value - cpu_value).abs() / cpu_value.abs().max(1.0);
+            assert!(
+                difference < 2e-2,
+                "texel {texel} channel {c}: gpu {gpu_value} vs cpu {cpu_value}"
+            );
+            worst = worst.max(difference);
+        }
+    }
+    println!("kernel upscale: worst relative difference from the CPU path = {worst:e}");
+
+    // A gather of non-negative samples with non-negative weights cannot leave
+    // the range of what it read, whatever the network learned.
+    let (low, high) = colors
+        .iter()
+        .fold((f32::MAX, f32::MIN), |(lo, hi), &v| (lo.min(v), hi.max(v)));
+    for texel in 0..(out_width * out_height) as usize {
+        for c in 0..3 {
+            let value = halves[texel * 4 + c].to_f32();
+            assert!(
+                value >= low - 1e-2 && value <= high + 1e-2,
+                "texel {texel} channel {c} left the input range: {value} not in [{low}, {high}]"
+            );
+        }
+    }
 }

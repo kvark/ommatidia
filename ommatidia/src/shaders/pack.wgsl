@@ -192,8 +192,11 @@ fn pack(@builtin(global_invocation_id) id: vec3<u32>) {
         channel += 1u;
     }
 
+    // A kernel checkpoint gathers the samples themselves, so it wants the
+    // colour untouched. Prefiltering here is exactly the second filtering pass
+    // that architecture exists to remove.
     var base_color = load_color(texel);
-    if params.reconstruction_base >= 2u {
+    if params.reconstruction_base == 2u || params.reconstruction_base == 3u {
         base_color = guided_color(texel);
     }
     base[0u * plane_stride + offset] = base_color.x;
