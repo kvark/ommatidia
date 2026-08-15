@@ -39,6 +39,10 @@ var output: texture_storage_2d<rgba16float, write>;
 
 const SKY_DEPTH: f32 = 1.0e6;
 
+// Mirrors `batch::GATHER_FALLBACK`. Below this the guided gather has rejected
+// every tap and its normalisation is meaningless.
+const GATHER_FALLBACK: f32 = 1.0e-4;
+
 fn qrot(q: vec4<f32>, v: vec3<f32>) -> vec3<f32> {
     return v + 2.0 * cross(q.xyz, cross(q.xyz, v) + q.w * v);
 }
@@ -153,12 +157,18 @@ fn high_resolution_guided_base(destination: vec2<u32>) -> vec3<f32> {
     let lower = vec2<i32>(floor(position));
     var sum = vec3<f32>(0.0);
     var weight_sum = 0.0;
+    // `guide_similarity` returns exactly zero for a tap whose normal faces away
+    // from the centre's, and for a background centre next to geometry. At a
+    // silhouette every tap can be rejected at once, so the guide-free gather is
+    // carried alongside to fall back to. See `batch::GATHER_FALLBACK`.
+    var spatial_sum = vec3<f32>(0.0);
+    var spatial_weight_sum = 0.0;
     for (var dy = -2; dy <= 2; dy += 1) {
         for (var dx = -2; dx <= 2; dx += 1) {
             let texel = clamp_low(lower + vec2<i32>(dx, dy));
             let delta = vec2<f32>(texel) - position;
-            var weight = exp(-dot(delta, delta) / 4.5);
-            weight *= guide_similarity(
+            let spatial = exp(-dot(delta, delta) / 4.5);
+            let weight = spatial * guide_similarity(
                 center_depth,
                 center_normal,
                 center_albedo,
@@ -166,11 +176,17 @@ fn high_resolution_guided_base(destination: vec2<u32>) -> vec3<f32> {
                 load_low_normal(texel),
                 textureLoad(t_albedo, texel, 0).xyz,
             );
-            sum += weight * load_base(texel);
+            let tap = load_base(texel);
+            sum += weight * tap;
+            spatial_sum += spatial * tap;
             weight_sum += weight;
+            spatial_weight_sum += spatial;
         }
     }
-    return sum / max(weight_sum, 1.0e-12);
+    if weight_sum > GATHER_FALLBACK {
+        return sum / weight_sum;
+    }
+    return spatial_sum / max(spatial_weight_sum, 1.0e-12);
 }
 
 fn reconstruction_base(destination: vec2<u32>, source: vec2<i32>) -> vec3<f32> {
