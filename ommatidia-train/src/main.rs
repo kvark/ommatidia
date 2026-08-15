@@ -885,15 +885,10 @@ impl Evaluator {
                         hr_guided.as_ref().expect("HR-guided model has an HR guide")
                     }
                 };
-                if let Some((motion, valid)) = eval::temporal_evidence(
-                    &input,
-                    &layout,
-                    crop,
-                    self.config
-                        .temporal
-                        .expect("temporal input has config")
-                        .frames,
-                ) {
+                if let Some(temporal) = self.config.temporal
+                    && let Some((motion, valid)) =
+                        eval::temporal_evidence(&input, &layout, crop, temporal.frames)
+                {
                     if let Some(previous) = &previous_temporal[crop_index] {
                         let extent = crop.tile as usize;
                         let scale = self.config.scale as usize;
