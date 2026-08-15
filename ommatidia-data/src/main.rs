@@ -11,6 +11,7 @@
 mod gbuffer;
 mod render;
 mod scene;
+mod texture;
 
 use std::path::PathBuf;
 
@@ -32,8 +33,10 @@ struct Args {
     camera_motion: f32,
     random_camera_motion: f32,
     object_motion: f32,
-    enclosed: bool,
+    canopy: bool,
     ground_patches: usize,
+    textures: bool,
+    gloss: bool,
     seed: u64,
     preview: Option<PathBuf>,
     gbuffer: bool,
@@ -61,8 +64,10 @@ impl Default for Args {
             camera_motion: 0.0,
             random_camera_motion: 0.0,
             object_motion: 0.0,
-            enclosed: false,
+            canopy: false,
             ground_patches: 0,
+            textures: false,
+            gloss: false,
             seed: 0,
             preview: None,
             gbuffer: true,
@@ -93,13 +98,21 @@ usage: ommatidia-data [options]
   --camera-motion F         world-X camera translation per sequence frame [0]
   --random-camera-motion F  deterministic curved camera motion, with nominal
                             translation F per frame [0]
-  --enclosed                put the scene in a room, so the emissive spheres
-                            are the only light. Without it the fallback
-                            environment is a white furnace and nothing in the
-                            frame can be in shadow
+  --canopy                  cover part of the scene, so some of it is in
+                            shadow. Without it the fallback environment is a
+                            white furnace and nothing in the frame can be in
+                            shadow at all
   --ground-patches N        subdivide the central ground into N by N patches
                             with independent albedo, giving the frame detail
                             finer than a whole object  [0]
+  --textures                give surfaces a procedural base-colour texture,
+                            through the same BC1 path a glTF material uses.
+                            Without it every surface is one flat colour, which
+                            a bilateral filter reconstructs almost exactly
+  --gloss                   give some surfaces a tight specular lobe. The
+                            roughness floor of 0.15 keeps estimator variance
+                            down and also removes the small bright highlights
+                            that over-smoothing destroys for free
   --object-motion F         move one sphere and one box independently, with
                             nominal translation F per frame [0]
   --seed N                  base seed for scenes and cameras  [0]
@@ -178,7 +191,9 @@ fn parse_args() -> Result<Args, String> {
                     .parse()
                     .map_err(|e| format!("--object-motion: {e}"))?
             }
-            "--enclosed" => args.enclosed = true,
+            "--canopy" => args.canopy = true,
+            "--textures" => args.textures = true,
+            "--gloss" => args.gloss = true,
             "--ground-patches" => {
                 args.ground_patches = value()?
                     .parse()
@@ -345,6 +360,93 @@ impl Harness {
         self.asset_hub.destroy();
         self.workers.clear();
         drop(self.choir);
+    }
+}
+
+/// Every procedural texture the generator can hand to a material, baked once.
+///
+/// `ProceduralGeometry` has no texture slot, so a model's materials are edited
+/// after `create_model` builds them — which is also the only moment at which
+/// the geometry order and the material order are known to line up.
+struct TexturePalette {
+    handles: Vec<(texture::Kind, blade_asset::Handle<blade_render::Texture>)>,
+}
+
+impl TexturePalette {
+    /// Variants of each pattern, so one scene is not a single texture repeated.
+    const VARIANTS: u64 = 2;
+
+    fn bake(harness: &Harness, seed: u64) -> Self {
+        let mut handles = Vec::new();
+        let mut tasks = Vec::new();
+        for kind in texture::KINDS {
+            for variant in 0..Self::VARIANTS {
+                let name = format!("{kind:?}{variant}.png").to_lowercase();
+                let bytes = texture::bake(kind, seed ^ variant.wrapping_mul(0x9E37_79B9_7F4A_7C15));
+                // The metadata a glTF base colour gets, so these reach the
+                // shader through the same BC1 compression and mip chain a real
+                // material would.
+                let (handle, task) = harness.asset_hub.textures.load_data(
+                    std::path::Path::new(&name),
+                    &bytes,
+                    blade_render::texture::Meta {
+                        format: gpu::TextureFormat::Bc1UnormSrgb,
+                        generate_mips: true,
+                        y_flip: false,
+                    },
+                );
+                tasks.push(task.clone());
+                handles.push((kind, handle));
+            }
+        }
+        for task in tasks {
+            task.join();
+        }
+        Self { handles }
+    }
+
+    fn handle(
+        &self,
+        kind: texture::Kind,
+        pick: usize,
+    ) -> blade_asset::Handle<blade_render::Texture> {
+        let matching: Vec<_> = self
+            .handles
+            .iter()
+            .filter(|(baked, _)| *baked == kind)
+            .map(|(_, handle)| *handle)
+            .collect();
+        matching[pick % matching.len()]
+    }
+
+    /// Build a model from surfaces, attaching each one's texture to the
+    /// material `create_model` produced for it.
+    fn build_model(
+        &self,
+        harness: &Harness,
+        name: &str,
+        surfaces: Vec<scene::Surface>,
+    ) -> blade_asset::Handle<blade_render::Model> {
+        let (geometries, textures): (Vec<_>, Vec<_>) = surfaces
+            .into_iter()
+            .map(|surface| (surface.geometry, surface.texture))
+            .unzip();
+        let mut model = harness
+            .asset_hub
+            .models
+            .baker
+            .create_model(name, geometries);
+        assert_eq!(
+            model.materials.len(),
+            textures.len(),
+            "create_model produces one material per geometry"
+        );
+        for (index, kind) in textures.into_iter().enumerate() {
+            if let Some(kind) = kind {
+                model.materials[index].base_color_texture = Some(self.handle(kind, index));
+            }
+        }
+        harness.asset_hub.models.insert(model)
     }
 }
 
@@ -618,8 +720,10 @@ fn main() {
     );
 
     let scene_config = scene::SceneConfig {
-        enclosed: args.enclosed,
+        canopy: args.canopy,
         ground_patches: args.ground_patches,
+        textures: args.textures,
+        gloss: args.gloss,
         ..scene::SceneConfig::default()
     };
     let mut rng = Rng::new(args.seed);
@@ -644,6 +748,8 @@ fn main() {
         context.device_information().device_name,
     );
 
+    let palette = TexturePalette::bake(&harness, args.seed);
+
     let mut active_sequence: Option<ActiveSequence> = None;
     for index in 0..record_count {
         let scene_index = index / args.sequence_frames;
@@ -655,29 +761,24 @@ fn main() {
                 &scene_config,
                 args.seed ^ (scene_index as u64).wrapping_mul(0x9E37_79B9),
             );
-            let (static_geometry, moving_geometry) = if args.object_motion == 0.0 {
+            let (static_surfaces, moving_surfaces) = if args.object_motion == 0.0 {
                 (geometries, Vec::new())
             } else {
                 scene::split_moving_geometry(geometries, args.seed ^ scene_index as u64)
             };
-            let mut objects = Vec::with_capacity(1 + moving_geometry.len());
-            let static_model = harness
-                .asset_hub
-                .models
-                .baker
-                .create_model(&format!("scene{scene_index}"), static_geometry);
-            objects.push(blade_render::Object::from(
-                harness.asset_hub.models.insert(static_model),
-            ));
+            let mut objects = Vec::with_capacity(1 + moving_surfaces.len());
+            objects.push(blade_render::Object::from(palette.build_model(
+                &harness,
+                &format!("scene{scene_index}"),
+                static_surfaces,
+            )));
             let moving_start = objects.len();
-            for (moving_index, geometry) in moving_geometry.into_iter().enumerate() {
-                let model = harness.asset_hub.models.baker.create_model(
+            for (moving_index, surface) in moving_surfaces.into_iter().enumerate() {
+                objects.push(blade_render::Object::from(palette.build_model(
+                    &harness,
                     &format!("scene{scene_index}-moving{moving_index}"),
-                    vec![geometry],
-                );
-                objects.push(blade_render::Object::from(
-                    harness.asset_hub.models.insert(model),
-                ));
+                    vec![surface],
+                )));
             }
             active_sequence = Some(ActiveSequence {
                 objects,

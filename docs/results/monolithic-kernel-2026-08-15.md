@@ -156,15 +156,19 @@ quarter of the range. Every material is a constant colour, so albedo
 demodulation, one of the larger wins in a production denoiser, measures here as
 0.01 dB. That is a fact about the data.
 
-`--enclosed` and `--ground-patches` address both, and are off by default so
-existing figures still mean what they meant. On a 16-scene probe, 32.1% of
-pixels now fall below 0.10 where none did, and they carry 40.2% of the
-displayed error against 15.0% of the error the project reports — the blindness
-above, now measurable. Sealing the scene into a room was tried first and is
-wrong: the environment is the only light the estimator importance-samples, so
-walling it off leaves three small emissive spheres to be found by chance, and
-bilinear on the resulting input scores 8.5 dB against 26.5 dB open. A canopy
-over part of the scene keeps the sampling conditioned.
+`--canopy`, `--textures`, `--gloss` and `--ground-patches` address all of it,
+off by default so existing figures still mean what they meant. On a 16-scene
+probe with all four on, 32.6% of pixels fall below 0.10 where none did, and
+they carry 22.8% of the displayed error against 5.6% of the error the project
+reports — the blindness above, now measurable. The reference carries 2.3× the
+gradient energy, and demodulation stops being free: 22 points of detail
+retention where it was worth none.
+
+Sealing the scene into a room was tried first and is wrong: the environment is
+the only light the estimator importance-samples, so walling it off leaves three
+small emissive spheres to be found by chance, and bilinear on the resulting
+input scores 8.5 dB against 26.5 dB open. A canopy over part of the scene keeps
+the sampling conditioned.
 
 Retraining on scenes that carry shadow and texture is the next measurement, and
 until it is done these numbers describe reconstruction of smooth, evenly lit

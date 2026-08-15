@@ -170,13 +170,21 @@ and relMSE keeps a bright region from deciding the score alone. Above 100%,
 detail is reporting noise rather than sharpness — which is what the b8 arm's
 99% means, and what b16 fixes.
 
-The scenes cannot fully discriminate these results yet. Blade's fallback
-environment is a white 1×1 texture, so an open scene is a uniform furnace in
-which nothing can be in shadow: none of the validation pixels fall below a
-displayed luminance of 0.10. Every material is a constant colour, so albedo
-demodulation measures as 0.01 dB. `--enclosed` and `--ground-patches` fix both
-and default off; on a probe set 32.1% of pixels now fall below 0.10, carrying
-40.2% of the displayed error against 15.0% of the reported error.
+The scenes could not discriminate these results. Blade's fallback environment
+is a white 1×1 texture, so an open scene is a uniform furnace in which nothing
+can be in shadow: none of the validation pixels fall below a displayed
+luminance of 0.10. Every material was a constant colour, so albedo
+demodulation — one of the larger wins in a production denoiser — measured as
+0.01 dB.
+
+The generator now takes `--canopy`, `--textures`, `--gloss` and
+`--ground-patches N`, all off by default so published figures still mean what
+they meant. Textures go through the same BC1 asset path a glTF material's base
+colour does. On a probe set that turns all four on, 32.6% of pixels fall below
+0.10 where none did, they carry 22.8% of the displayed error against 5.6% of
+the reported error, the reference carries 2.3× the gradient energy, and
+demodulation stops being free: it is worth 22 points of detail retention where
+it was worth none. Retraining on these is the next measurement.
 
 The checked-in July experiments below used SVGF-filtered inputs. They found the
 architecture and kernel optimizations, but their quality figures describe an
