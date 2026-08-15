@@ -890,6 +890,77 @@ mod tests {
     }
 
     #[test]
+    fn textures_reach_surfaces_but_never_the_lights() {
+        let plain = SceneConfig::default();
+        assert!(
+            build(&plain, 5).iter().all(|s| s.texture.is_none()),
+            "textures are off by default, so every published dataset still means what it meant"
+        );
+
+        let config = SceneConfig {
+            textures: true,
+            ..SceneConfig::default()
+        };
+        let scene = build(&config, 5);
+        let textured = scene.iter().filter(|s| s.texture.is_some()).count();
+        assert!(
+            textured >= 3,
+            "only {textured} of {} surfaces got a texture",
+            scene.len()
+        );
+        // An emissive sphere is the light, not a surface being lit, and
+        // multiplying its base colour by a pattern would do nothing anyway.
+        assert!(
+            scene
+                .iter()
+                .filter(|s| s.geometry.name.starts_with("light"))
+                .all(|s| s.texture.is_none()),
+            "a light was given a texture"
+        );
+        // One scene should not be one pattern repeated, or a network can learn
+        // the texture as a constant rather than reconstructing it.
+        let kinds: std::collections::BTreeSet<_> = scene
+            .iter()
+            .filter_map(|s| s.texture.map(|kind| format!("{kind:?}")))
+            .collect();
+        assert!(kinds.len() > 1, "the whole scene used {kinds:?}");
+    }
+
+    #[test]
+    fn gloss_adds_a_tight_lobe_without_removing_the_rough_ones() {
+        let config = SceneConfig {
+            gloss: true,
+            ..SceneConfig::default()
+        };
+        let scene = build(&config, 11);
+        let shaded: Vec<f32> = scene
+            .iter()
+            .filter(|s| s.geometry.name.starts_with("sphere") || s.geometry.name.starts_with("box"))
+            .map(|s| s.geometry.roughness)
+            .collect();
+        assert!(
+            shaded.iter().any(|&r| r < 0.15),
+            "no surface got a tight lobe: {shaded:?}"
+        );
+        assert!(
+            shaded.iter().any(|&r| r > 0.5),
+            "everything went glossy, which would make the input mostly variance: {shaded:?}"
+        );
+        // Without the flag the floor holds, because that is what keeps the
+        // sparse estimator's variance down on the existing sets.
+        let plain = build(&SceneConfig::default(), 11);
+        assert!(
+            plain
+                .iter()
+                .filter(|s| {
+                    s.geometry.name.starts_with("sphere") || s.geometry.name.starts_with("box")
+                })
+                .all(|s| s.geometry.roughness >= 0.15),
+            "the default roughness floor moved"
+        );
+    }
+
+    #[test]
     fn shaded_objects_rest_on_the_ground() {
         let config = SceneConfig::default();
         for surface in build(&config, 5).iter().filter(|surface| {
