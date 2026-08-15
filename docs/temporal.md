@@ -111,6 +111,16 @@ accumulation is radiometrically tied, while a supervised blend gate is much
 worse. The next larger experiment therefore needs paired consecutive outputs
 and a temporal loss; changing the backbone is still unsupported by evidence.
 
+The follow-up
+[`object-motion gate`](results/temporal-object-motion-2026-08-15.md) splits a
+random sphere and box into independently transformed Blade objects and adds a
+moving-pixel temporal score. The camera-trained model already improves that
+region by 0.63 dB. Mixed camera/object training plus a corrected 4,000-step
+Adam decay raises object-only quality from 34.46 to 34.52 dB and camera-only
+quality from 34.19 to 34.21 dB at the same 73.7k-parameter cost. An explicit
+velocity feature was worse and was removed. Object motion is therefore now a
+release gate; paired temporal loss remains the next justified model change.
+
 The runtime contract needs four additions:
 
 1. current-to-previous motion vectors with an explicit pixel/normalized scale

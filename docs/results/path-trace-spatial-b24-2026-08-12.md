@@ -4,6 +4,12 @@ This is a controlled negative result. It establishes what the current
 single-frame architecture can recover from genuinely sparse path tracing and
 why temporal history is now the next quality milestone.
 
+> Historical optimizer note (2026-08-15): the reported images and metrics are
+> valid outputs of the saved checkpoint, but `--lr-final` unintentionally
+> switched the trainer from Adam to SGD on its first scheduled update. This
+> run therefore does not establish an Adam convergence plateau. The later
+> guided and temporal controls supersede that interpretation.
+
 ## Setup
 
 - 2,400 procedural scenes at 128×128 input and 256×256 reference; 2,040 train

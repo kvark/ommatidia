@@ -265,6 +265,52 @@ pub fn build(config: &SceneConfig, seed: u64) -> Vec<blade_render::ProceduralGeo
     geometries
 }
 
+/// Separate two shaded objects so they can receive independent transforms.
+///
+/// The ground and emissive geometry remain in the static model. Picking one
+/// sphere and one box gives the motion gate both curved and hard silhouettes;
+/// the seed varies which material from each family is animated.
+pub fn split_moving_geometry(
+    geometries: Vec<blade_render::ProceduralGeometry>,
+    seed: u64,
+) -> (
+    Vec<blade_render::ProceduralGeometry>,
+    Vec<blade_render::ProceduralGeometry>,
+) {
+    let spheres: Vec<_> = geometries
+        .iter()
+        .enumerate()
+        .filter(|(_, geometry)| geometry.name.starts_with("sphere"))
+        .map(|(index, _)| index)
+        .collect();
+    let boxes: Vec<_> = geometries
+        .iter()
+        .enumerate()
+        .filter(|(_, geometry)| geometry.name.starts_with("box"))
+        .map(|(index, _)| index)
+        .collect();
+    let mut rng = Rng::new(seed ^ 0xE703_7ED1_A0B4_28DB);
+    let choose = |indices: &[usize], value: f32| {
+        (!indices.is_empty())
+            .then(|| indices[(value * indices.len() as f32) as usize % indices.len()])
+    };
+    let selected = [
+        choose(&spheres, rng.uniform()),
+        choose(&boxes, rng.uniform()),
+    ];
+
+    let mut static_geometry = Vec::with_capacity(geometries.len());
+    let mut moving_geometry = Vec::with_capacity(2);
+    for (index, geometry) in geometries.into_iter().enumerate() {
+        if selected.contains(&Some(index)) {
+            moving_geometry.push(geometry);
+        } else {
+            static_geometry.push(geometry);
+        }
+    }
+    (static_geometry, moving_geometry)
+}
+
 /// A camera somewhere on a hemisphere around the scene, aimed at a point near
 /// the origin.
 pub fn camera(config: &SceneConfig, rng: &mut Rng) -> blade_render::Camera {
@@ -320,6 +366,33 @@ pub fn camera_motion(seed: u64, frame: usize, step: f32) -> [f32; 3] {
         step * (t * cos - side * sin),
         step * vertical * t,
         step * (t * sin + side * cos),
+    ]
+}
+
+/// Independent, smoothly curving XZ translation for one moving object.
+///
+/// Geometry starts in its generated position, so frame zero is identity. Each
+/// object gets a distinct direction, speed, and bend while staying on the
+/// ground plane. Keeping the path deterministic lets a failed quality gate be
+/// reproduced from just the dataset seed.
+pub fn object_motion(seed: u64, object: usize, frame: usize, step: f32) -> [f32; 3] {
+    if frame == 0 || step == 0.0 {
+        return [0.0; 3];
+    }
+    let mut rng = Rng::new(
+        seed ^ (object as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15) ^ 0x8EBC_6AF0_9C88_C6E3,
+    );
+    let angle = std::f32::consts::TAU * rng.uniform();
+    let speed = 0.75 + 0.5 * rng.uniform();
+    let bend = 0.18 * (2.0 * rng.uniform() - 1.0);
+    let t = frame as f32;
+    let forward = speed * t;
+    let side = bend * t * (t - 1.0) * 0.5;
+    let (sin, cos) = angle.sin_cos();
+    [
+        step * (forward * cos - side * sin),
+        0.0,
+        step * (forward * sin + side * cos),
     ]
 }
 
@@ -462,6 +535,14 @@ mod tests {
     }
 
     #[test]
+    fn object_motion_is_independent_and_sequence_local() {
+        assert_eq!(object_motion(7, 0, 0, 0.1), [0.0; 3]);
+        assert_eq!(object_motion(7, 0, 2, 0.1), object_motion(7, 0, 2, 0.1));
+        assert_ne!(object_motion(7, 0, 2, 0.1), object_motion(7, 1, 2, 0.1));
+        assert_eq!(object_motion(7, 1, 3, 0.1)[1], 0.0);
+    }
+
+    #[test]
     fn look_at_keeps_the_horizon_level() {
         // With no roll, the camera's right axis stays in the world XZ plane.
         let q = look_at([3.0, 4.0, 5.0], [0.0, 0.0, 0.0]);
@@ -489,6 +570,32 @@ mod tests {
         );
         assert_eq!(a[1].roughness, b[1].roughness, "same seed, same scene");
         assert_ne!(a[1].roughness, c[1].roughness, "seeds should differ");
+    }
+
+    #[test]
+    fn moving_geometry_is_one_sphere_and_one_box() {
+        let config = SceneConfig::default();
+        let (static_geometry, moving_geometry) = split_moving_geometry(build(&config, 5), 7);
+        assert_eq!(
+            static_geometry.len() + moving_geometry.len(),
+            config.sphere_count + config.box_count + config.light_count + 1
+        );
+        assert_eq!(moving_geometry.len(), 2);
+        assert!(
+            moving_geometry
+                .iter()
+                .any(|geometry| geometry.name.starts_with("sphere"))
+        );
+        assert!(
+            moving_geometry
+                .iter()
+                .any(|geometry| geometry.name.starts_with("box"))
+        );
+        assert!(
+            static_geometry
+                .iter()
+                .any(|geometry| geometry.name == "ground")
+        );
     }
 
     #[test]

@@ -91,6 +91,16 @@ struct Args {
     temporal_features: ommatidia::temporal::Features,
 }
 
+const ADAM_BETA1: f32 = 0.9;
+const ADAM_BETA2: f32 = 0.999;
+const ADAM_EPSILON: f32 = 1e-8;
+
+fn cosine_learning_rate(initial: f32, final_rate: f32, step: usize, steps: usize) -> f32 {
+    let progress = step as f32 / (steps.max(2) - 1) as f32;
+    let cosine = 0.5 * (1.0 + (std::f32::consts::PI * progress).cos());
+    final_rate + (initial - final_rate) * cosine
+}
+
 impl Default for Args {
     fn default() -> Self {
         Self {
@@ -558,7 +568,7 @@ fn main() {
         session.device_information().device_name,
     );
     model.initialize(&mut session, args.seed);
-    session.set_adam(args.learning_rate, 0.9, 0.999, 1e-8);
+    session.set_adam(args.learning_rate, ADAM_BETA1, ADAM_BETA2, ADAM_EPSILON);
     // On by default. A run measured in hours has many more chances to meet the
     // one batch that blows the gradient up, and the cost of that is the whole
     // run rather than one step. Clipping every fifth step amortises the extra
@@ -596,9 +606,10 @@ fn main() {
             // exotic; the point is only that the last hour of a long run
             // settles rather than keeps bouncing at the rate that suited the
             // first one.
-            let progress = step as f32 / (args.steps.max(2) - 1) as f32;
-            let cosine = 0.5 * (1.0 + (std::f32::consts::PI * progress).cos());
-            session.set_learning_rate(final_rate + (args.learning_rate - final_rate) * cosine);
+            let rate = cosine_learning_rate(args.learning_rate, final_rate, step, args.steps);
+            // `set_learning_rate` configures SGD in Meganeura. Reconfigure
+            // Adam itself so the schedule preserves its moment estimates.
+            session.set_adam(rate, ADAM_BETA1, ADAM_BETA2, ADAM_EPSILON);
         }
 
         let batch = batcher.next().expect("cannot read a batch");
@@ -785,6 +796,9 @@ impl Evaluator {
         let mut temporal_network_total = 0.0f64;
         let mut temporal_counted = 0usize;
         let mut temporal_values = 0usize;
+        let mut moving_base_total = 0.0f64;
+        let mut moving_network_total = 0.0f64;
+        let mut moving_values = 0usize;
         let mut previous_temporal: Vec<Option<TemporalFrame>> =
             (0..crops.len()).map(|_| None).collect();
         let mut counted = 0usize;
@@ -907,6 +921,35 @@ impl Evaluator {
                             temporal_values += network_error.values;
                             temporal_counted += 1;
                         }
+                        let moving_valid: Vec<_> = valid
+                            .iter()
+                            .zip(motion.chunks_exact(2))
+                            .map(|(&valid, vector)| valid && (vector[0] != 0.0 || vector[1] != 0.0))
+                            .collect();
+                        let moving_network = ommatidia::metrics::temporal_error(
+                            [&predicted, &previous.network],
+                            [&reference, &previous.reference],
+                            &motion,
+                            &moving_valid,
+                            [extent, extent],
+                            scale,
+                        );
+                        let moving_base = ommatidia::metrics::temporal_error(
+                            [temporal_base, &previous.base],
+                            [&reference, &previous.reference],
+                            &motion,
+                            &moving_valid,
+                            [extent, extent],
+                            scale,
+                        );
+                        if let (Some(network_error), Some(base_error)) =
+                            (moving_network, moving_base)
+                        {
+                            assert_eq!(network_error.values, base_error.values);
+                            moving_network_total += network_error.squared_sum;
+                            moving_base_total += base_error.squared_sum;
+                            moving_values += network_error.values;
+                        }
                     }
                     previous_temporal[crop_index] = Some(TemporalFrame {
                         network: predicted.clone(),
@@ -1013,6 +1056,18 @@ impl Evaluator {
                  {base_name:<9} delta MSE {base:.6}\n  \
                  network   delta MSE {network:.6} ({gain:+.2} dB versus {base_name})"
             );
+            if moving_values != 0 {
+                let moving_base = moving_base_total / moving_values as f64;
+                let moving_network = moving_network_total / moving_values as f64;
+                let moving_gain = 10.0 * (moving_base / moving_network).log10();
+                let coverage = 100.0 * moving_values as f64 / temporal_values as f64;
+                println!(
+                    "  nonzero-motion pixels ({coverage:.1}% of valid):\n  \
+                     {base_name:<9} delta MSE {moving_base:.6}\n  \
+                     network   delta MSE {moving_network:.6} \
+                     ({moving_gain:+.2} dB versus {base_name})"
+                );
+            }
         }
         Some(gain as f32)
     }
@@ -1024,6 +1079,12 @@ mod cli_tests {
 
     fn parse(words: &[&str]) -> Result<Args, String> {
         parse_from(words.iter().map(|w| w.to_string()))
+    }
+
+    #[test]
+    fn cosine_rate_reaches_both_endpoints() {
+        assert!((cosine_learning_rate(2e-4, 2e-5, 0, 4000) - 2e-4).abs() < 1e-10);
+        assert!((cosine_learning_rate(2e-4, 2e-5, 3999, 4000) - 2e-5).abs() < 1e-10);
     }
 
     /// Every flag the usage text advertises has to actually be accepted.
