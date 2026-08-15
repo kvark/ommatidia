@@ -7,7 +7,9 @@
 //!   cargo test -p ommatidia --test gpu_model -- --ignored --nocapture
 //! ```
 
-use ommatidia::model::{ModelConfig, Objective, ReconstructionBase, build, build_for_extent};
+use ommatidia::model::{
+    ModelConfig, Objective, Prediction, ReconstructionBase, build, build_for_extent,
+};
 use ommatidia::rng::Rng;
 use ommatidia::{Plane, PlaneSet};
 
@@ -312,4 +314,73 @@ fn reports_the_selected_adapter() {
         "session landed on: {}",
         session.device_information().device_name
     );
+}
+
+/// What the single-operation reconstruction costs, against the shape it
+/// replaces.
+///
+/// Only the network is timed. The rest of the frame moves too: the kernel path
+/// drops the 13x13 guided filter from pack and the 25-tap bilateral from
+/// unpack, and adds a 25-tap gather in its place, so the fixed stages get
+/// cheaper as the network gets dearer.
+#[test]
+#[ignore = "requires a GPU"]
+fn kernel_reconstruction_frame_cost() {
+    ommatidia::gpu::warn_if_busy();
+    let extent = [960u32, 540];
+    let planes = PlaneSet::new()
+        .with(Plane::Color)
+        .with(Plane::Depth)
+        .with(Plane::Normal)
+        .with(Plane::DiffuseAlbedo)
+        .with(Plane::SpecularF0)
+        .with(Plane::Roughness);
+    let shapes = [
+        ("residual b8", 8, Prediction::SubpixelResidual),
+        ("kernel b8 r2", 8, Prediction::SubpixelKernel),
+        ("kernel b16 r2", 16, Prediction::SubpixelKernel),
+    ];
+    for (name, base_channels, prediction) in shapes {
+        let config = ModelConfig {
+            scale: 2,
+            tile: 64,
+            batch: 1,
+            base_channels,
+            cond_planes: planes,
+            prediction,
+            reconstruction_base: match prediction {
+                Prediction::SubpixelKernel => ReconstructionBase::Sample,
+                _ => ReconstructionBase::HighResolutionGuided,
+            },
+            kernel_radius: 2,
+            ..ModelConfig::default()
+        };
+        let model = build_for_extent(&config, false, extent).expect("build");
+        let mut session = ommatidia::gpu::inference_session(&model.graph, context(false));
+        model.initialize(&mut session, 1);
+
+        let mut rng = Rng::new(1);
+        session.set_input(
+            "cond",
+            &filled(&mut rng, config.cond_len_for_extent(extent), 0.5),
+        );
+        for _ in 0..5 {
+            session.step();
+            session.wait();
+        }
+        const RUNS: u32 = 20;
+        let started = std::time::Instant::now();
+        for _ in 0..RUNS {
+            session.step();
+            session.wait();
+        }
+        let per_frame = started.elapsed().as_secs_f64() / RUNS as f64;
+        let out_pixels = (extent[0] * config.scale) as f64 * (extent[1] * config.scale) as f64;
+        println!(
+            "{name:<14} {:5.2} ms, {:5.1} GFLOP, {} output channels",
+            per_frame * 1e3,
+            config.flops(out_pixels as usize),
+            config.target_channels(),
+        );
+    }
 }
