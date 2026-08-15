@@ -6,6 +6,7 @@
 //! material, layout, and viewpoint teach it the estimator's failure modes,
 //! which is what actually transfers.
 
+use crate::texture;
 use ommatidia::rng::Rng;
 
 const SPHERE_SEGMENTS: usize = 24;
@@ -62,6 +63,19 @@ fn sphere(center: [f32; 3], radius: f32) -> (Vec<blade_render::Vertex>, Vec<u32>
 /// the order it passes the two half-extents. Wound counter-clockwise seen from
 /// that side, matching the spheres and boxes.
 fn rect(center: [f32; 3], u: [f32; 3], v: [f32; 3]) -> (Vec<blade_render::Vertex>, Vec<u32>) {
+    // One texture repeat per world unit, so a texture on a large surface has
+    // the same feature size as one on a small surface. Without this a wall and
+    // a floor tile carry patterns an order of magnitude apart.
+    let repeats = |w: [f32; 3]| (w[0] * w[0] + w[1] * w[1] + w[2] * w[2]).sqrt().max(1.0);
+    tiled_rect(center, u, v, [repeats(u), repeats(v)])
+}
+
+fn tiled_rect(
+    center: [f32; 3],
+    u: [f32; 3],
+    v: [f32; 3],
+    repeats: [f32; 2],
+) -> (Vec<blade_render::Vertex>, Vec<u32>) {
     let face = normalize(cross(u, v));
     let normal = encode_normal(face);
     let tangent = encode_normal(normalize(u));
@@ -75,7 +89,7 @@ fn rect(center: [f32; 3], u: [f32; 3], v: [f32; 3]) -> (Vec<blade_render::Vertex
                 center[2] + su * u[2] + sv * v[2],
             ],
             bitangent_sign: 1.0,
-            tex_coords: [(su * 0.5 + 0.5), (sv * 0.5 + 0.5)],
+            tex_coords: [(su * 0.5 + 0.5) * repeats[0], (sv * 0.5 + 0.5) * repeats[1]],
             normal,
             tangent,
         })
@@ -142,6 +156,27 @@ fn box_shape(center: [f32; 3], half: [f32; 3], yaw: f32) -> (Vec<blade_render::V
     (vertices, indices)
 }
 
+/// One geometry and the texture, if any, its material should sample.
+///
+/// `ProceduralGeometry` carries only factors, so the texture is attached to the
+/// model's material after `create_model` has built it. Pairing the choice with
+/// the geometry here is what lets the generator move geometries between models
+/// — splitting the movers out of the static one — without losing track of which
+/// texture belonged to which surface.
+pub struct Surface {
+    pub geometry: blade_render::ProceduralGeometry,
+    pub texture: Option<texture::Kind>,
+}
+
+impl From<blade_render::ProceduralGeometry> for Surface {
+    fn from(geometry: blade_render::ProceduralGeometry) -> Self {
+        Self {
+            geometry,
+            texture: None,
+        }
+    }
+}
+
 /// How much variety to put into a generated scene.
 pub struct SceneConfig {
     /// Shaded spheres scattered over the ground.
@@ -154,6 +189,7 @@ pub struct SceneConfig {
     pub spread: f32,
     /// Put a canopy and two walls over part of the scene, so some of it is in
     /// shadow.
+    ///
     ///
     /// Blade's fallback environment is a white 1x1 texture, which means an open
     /// scene is lit by a uniform furnace of radiance one from every direction.
@@ -170,7 +206,7 @@ pub struct SceneConfig {
     /// that input scores 8.5 dB, against 26.5 dB on the open scenes. Covering
     /// part of the scene instead keeps the sky as the light source and the
     /// sampling well conditioned, while giving the frame somewhere dark.
-    pub enclosed: bool,
+    pub canopy: bool,
     /// Subdivide the central ground into this many patches per axis, each with
     /// its own albedo.
     ///
@@ -180,6 +216,21 @@ pub struct SceneConfig {
     /// is why demodulating by it — one of the larger wins available in a real
     /// renderer — measures as doing exactly nothing here.
     pub ground_patches: usize,
+    /// Give surfaces a procedural base-colour texture.
+    ///
+    /// See `texture` for why this matters more than it sounds: without it every
+    /// surface is one flat colour, so the ground truth inside an object is a
+    /// smooth function the G-buffer already segments, and there is very little
+    /// for any reconstruction to recover that a bilateral filter does not.
+    pub textures: bool,
+    /// Give some surfaces a tight specular lobe.
+    ///
+    /// The existing roughness floor of 0.15 was chosen to keep the real-time
+    /// estimator's variance down, which is the right call for an estimator and
+    /// the wrong one for a reference set. A sharp highlight is small, bright,
+    /// and destroyed by exactly the over-smoothing that costs nothing in PSNR,
+    /// so a set without any cannot see that failure.
+    pub gloss: bool,
 }
 
 impl Default for SceneConfig {
@@ -189,17 +240,37 @@ impl Default for SceneConfig {
             box_count: 5,
             light_count: 3,
             spread: 4.0,
-            enclosed: false,
+            canopy: false,
             ground_patches: 0,
+            textures: false,
+            gloss: false,
         }
     }
 }
 
 /// Build one scene. The same `seed` always produces the same geometry.
-pub fn build(config: &SceneConfig, seed: u64) -> Vec<blade_render::ProceduralGeometry> {
+pub fn build(config: &SceneConfig, seed: u64) -> Vec<Surface> {
     let mut rng = Rng::new(seed);
     let mut geometries =
         Vec::with_capacity(config.sphere_count + config.box_count + config.light_count + 1);
+    // Drawn per surface rather than per scene, so one frame contains several
+    // patterns and the network cannot learn the scene's texture as a constant.
+    let pick_texture = |rng: &mut Rng, chance: f32| {
+        (config.textures && rng.uniform() < chance).then(|| {
+            texture::KINDS
+                [(rng.uniform() * texture::KINDS.len() as f32) as usize % texture::KINDS.len()]
+        })
+    };
+    // Most surfaces stay rough. A tight lobe is the interesting case precisely
+    // because it is the rare one, and making it common would make the sparse
+    // input mostly variance.
+    let pick_roughness = |rng: &mut Rng| {
+        if config.gloss && rng.uniform() < 0.3 {
+            0.04 + 0.1 * rng.uniform()
+        } else {
+            0.15 + 0.75 * rng.uniform()
+        }
+    };
 
     let ground_tone = 0.25 + 0.45 * rng.uniform();
     let ground_color = |rng: &mut Rng| {
@@ -213,7 +284,7 @@ pub fn build(config: &SceneConfig, seed: u64) -> Vec<blade_render::ProceduralGeo
     let extent = config.spread * 3.0;
     if config.ground_patches == 0 {
         let (vertices, indices) = ground(extent, 0.0);
-        geometries.push(blade_render::ProceduralGeometry {
+        let geometry = blade_render::ProceduralGeometry {
             name: "ground".into(),
             vertices,
             indices,
@@ -223,14 +294,36 @@ pub fn build(config: &SceneConfig, seed: u64) -> Vec<blade_render::ProceduralGeo
             // the geometry.
             base_color_factor: ground_color(&mut rng),
             metalness: 0.0,
-            roughness: 0.4 + 0.55 * rng.uniform(),
+            // A polished floor reflects the objects and the lights, which is
+            // structure no amount of denoising the diffuse term recovers.
+            roughness: if config.gloss && rng.uniform() < 0.4 {
+                0.05 + 0.1 * rng.uniform()
+            } else {
+                0.4 + 0.55 * rng.uniform()
+            },
             emissive_factor: [0.0; 3],
-        });
+        };
+        let texture = pick_texture(&mut rng, 0.9);
+        geometries.push(Surface { geometry, texture });
     } else {
-        geometries.extend(patched_ground(config, extent, ground_tone, &mut rng));
+        geometries.extend(
+            patched_ground(config, extent, ground_tone, &mut rng)
+                .into_iter()
+                .map(|geometry| {
+                    let texture = pick_texture(&mut rng, 0.6);
+                    Surface { geometry, texture }
+                }),
+        );
     }
-    if config.enclosed {
-        geometries.extend(canopy(config, &mut rng));
+    if config.canopy {
+        geometries.extend(
+            canopy_geometry(config, &mut rng)
+                .into_iter()
+                .map(|geometry| {
+                    let texture = pick_texture(&mut rng, 0.7);
+                    Surface { geometry, texture }
+                }),
+        );
     }
 
     for i in 0..config.sphere_count {
@@ -239,7 +332,7 @@ pub fn build(config: &SceneConfig, seed: u64) -> Vec<blade_render::ProceduralGeo
         let radius = 0.3 + 0.5 * rng.uniform();
         let center = [distance * angle.cos(), radius, distance * angle.sin()];
         let (vertices, indices) = sphere(center, radius);
-        geometries.push(blade_render::ProceduralGeometry {
+        let geometry = blade_render::ProceduralGeometry {
             name: format!("sphere{i}"),
             vertices,
             indices,
@@ -252,12 +345,11 @@ pub fn build(config: &SceneConfig, seed: u64) -> Vec<blade_render::ProceduralGeo
             // Materials cluster at the ends of the metalness range in
             // practice, and the mixed middle is not physical anyway.
             metalness: if rng.uniform() < 0.4 { 1.0 } else { 0.0 },
-            // Kept off the mirror end: a near-zero roughness lobe is one the
-            // real-time estimator cannot resolve at all, so those pixels teach
-            // the network noise rather than structure.
-            roughness: 0.15 + 0.75 * rng.uniform(),
+            roughness: pick_roughness(&mut rng),
             emissive_factor: [0.0; 3],
-        });
+        };
+        let texture = pick_texture(&mut rng, 0.5);
+        geometries.push(Surface { geometry, texture });
     }
 
     for i in 0..config.box_count {
@@ -272,7 +364,7 @@ pub fn build(config: &SceneConfig, seed: u64) -> Vec<blade_render::ProceduralGeo
         // not line up with the pixel grid.
         let center = [distance * angle.cos(), half[1], distance * angle.sin()];
         let (vertices, indices) = box_shape(center, half, std::f32::consts::TAU * rng.uniform());
-        geometries.push(blade_render::ProceduralGeometry {
+        let geometry = blade_render::ProceduralGeometry {
             name: format!("box{i}"),
             vertices,
             indices,
@@ -283,9 +375,11 @@ pub fn build(config: &SceneConfig, seed: u64) -> Vec<blade_render::ProceduralGeo
                 1.0,
             ],
             metalness: if rng.uniform() < 0.4 { 1.0 } else { 0.0 },
-            roughness: 0.15 + 0.75 * rng.uniform(),
+            roughness: pick_roughness(&mut rng),
             emissive_factor: [0.0; 3],
-        });
+        };
+        let texture = pick_texture(&mut rng, 0.5);
+        geometries.push(Surface { geometry, texture });
     }
 
     for i in 0..config.light_count {
@@ -301,9 +395,9 @@ pub fn build(config: &SceneConfig, seed: u64) -> Vec<blade_render::ProceduralGeo
         // Bright enough to matter against the ambient dummy environment, and
         // brighter still where a canopy has taken most of that away, since
         // under it these are close to the only light left.
-        let shaded = if config.enclosed { 3.0 } else { 1.0 };
+        let shaded = if config.canopy { 3.0 } else { 1.0 };
         let strength = shaded * (6.0 + 10.0 * rng.uniform());
-        geometries.push(blade_render::ProceduralGeometry {
+        geometries.push(Surface::from(blade_render::ProceduralGeometry {
             name: format!("light{i}"),
             vertices,
             indices,
@@ -315,7 +409,7 @@ pub fn build(config: &SceneConfig, seed: u64) -> Vec<blade_render::ProceduralGeo
                 strength * (0.6 + 0.4 * rng.uniform()),
                 strength * (0.6 + 0.4 * rng.uniform()),
             ],
-        });
+        }));
     }
 
     geometries
@@ -328,7 +422,7 @@ pub fn build(config: &SceneConfig, seed: u64) -> Vec<blade_render::ProceduralGeo
 /// under the slab sees almost none of it. That is the same arrangement a real
 /// frame has when part of it is indoors, and it produces the contact shadows,
 /// the falloff, and the dark corners that a uniform environment cannot.
-fn canopy(config: &SceneConfig, rng: &mut Rng) -> Vec<blade_render::ProceduralGeometry> {
+fn canopy_geometry(config: &SceneConfig, rng: &mut Rng) -> Vec<blade_render::ProceduralGeometry> {
     /// A name and the three vectors `rect` needs.
     type Face = (&'static str, [f32; 3], [f32; 3], [f32; 3]);
     let half = config.spread;
@@ -467,23 +561,17 @@ fn patched_ground(
 /// The ground and emissive geometry remain in the static model. Picking one
 /// sphere and one box gives the motion gate both curved and hard silhouettes;
 /// the seed varies which material from each family is animated.
-pub fn split_moving_geometry(
-    geometries: Vec<blade_render::ProceduralGeometry>,
-    seed: u64,
-) -> (
-    Vec<blade_render::ProceduralGeometry>,
-    Vec<blade_render::ProceduralGeometry>,
-) {
+pub fn split_moving_geometry(geometries: Vec<Surface>, seed: u64) -> (Vec<Surface>, Vec<Surface>) {
     let spheres: Vec<_> = geometries
         .iter()
         .enumerate()
-        .filter(|(_, geometry)| geometry.name.starts_with("sphere"))
+        .filter(|(_, surface)| surface.geometry.name.starts_with("sphere"))
         .map(|(index, _)| index)
         .collect();
     let boxes: Vec<_> = geometries
         .iter()
         .enumerate()
-        .filter(|(_, geometry)| geometry.name.starts_with("box"))
+        .filter(|(_, surface)| surface.geometry.name.starts_with("box"))
         .map(|(index, _)| index)
         .collect();
     let mut rng = Rng::new(seed ^ 0xE703_7ED1_A0B4_28DB);
@@ -765,8 +853,14 @@ mod tests {
             a.len(),
             config.sphere_count + config.box_count + config.light_count + 1
         );
-        assert_eq!(a[1].roughness, b[1].roughness, "same seed, same scene");
-        assert_ne!(a[1].roughness, c[1].roughness, "seeds should differ");
+        assert_eq!(
+            a[1].geometry.roughness, b[1].geometry.roughness,
+            "same seed, same scene"
+        );
+        assert_ne!(
+            a[1].geometry.roughness, c[1].geometry.roughness,
+            "seeds should differ"
+        );
     }
 
     #[test]
@@ -781,27 +875,27 @@ mod tests {
         assert!(
             moving_geometry
                 .iter()
-                .any(|geometry| geometry.name.starts_with("sphere"))
+                .any(|surface| surface.geometry.name.starts_with("sphere"))
         );
         assert!(
             moving_geometry
                 .iter()
-                .any(|geometry| geometry.name.starts_with("box"))
+                .any(|surface| surface.geometry.name.starts_with("box"))
         );
         assert!(
             static_geometry
                 .iter()
-                .any(|geometry| geometry.name == "ground")
+                .any(|surface| surface.geometry.name == "ground")
         );
     }
 
     #[test]
     fn shaded_objects_rest_on_the_ground() {
         let config = SceneConfig::default();
-        for geometry in build(&config, 5)
-            .iter()
-            .filter(|g| g.name.starts_with("sphere") || g.name.starts_with("box"))
-        {
+        for surface in build(&config, 5).iter().filter(|surface| {
+            surface.geometry.name.starts_with("sphere") || surface.geometry.name.starts_with("box")
+        }) {
+            let geometry = &surface.geometry;
             let lowest = geometry
                 .vertices
                 .iter()

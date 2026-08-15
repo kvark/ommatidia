@@ -814,26 +814,32 @@ fn main() {
     );
 
     if let Some(prefix) = dump {
-        let (_, index, crop_index) = per_crop[0];
-        let sample = reader.sample(index).unwrap();
-        let crop = crops[crop_index];
-        let reference = batch::crop_reference(&sample, &layout, crop);
-        let base = batch::high_resolution_guided_base(&sample, &layout, crop, guide);
-        let low = batch::crop_color(&sample, &layout, crop);
-        let up = bilinear_upsample(&low, tile as usize, layout.scale as usize);
-        for (name, image) in [
-            ("reference", &reference),
-            ("shipped", &base),
-            ("input", &up),
+        // The worst crop and a typical one. Looking only at the worst says
+        // nothing about what the frame usually looks like, and looking only at
+        // the median hides the artifact worth finding.
+        for (label, &(_, index, crop_index)) in [
+            ("worst", &per_crop[0]),
+            ("median", &per_crop[per_crop.len() / 2]),
         ] {
-            let path = format!("{prefix}-{name}.png");
-            write_png(&path, image, extent, 3).unwrap();
-            println!("wrote {path}");
+            let sample = reader.sample(index).unwrap();
+            let crop = crops[crop_index];
+            let reference = batch::crop_reference(&sample, &layout, crop);
+            let base = batch::high_resolution_guided_base(&sample, &layout, crop, guide);
+            let low = batch::crop_color(&sample, &layout, crop);
+            let up = bilinear_upsample(&low, tile as usize, layout.scale as usize);
+            for (name, image) in [
+                ("reference", &reference),
+                ("shipped", &base),
+                ("input", &up),
+            ] {
+                let path = format!("{prefix}-{label}-{name}.png");
+                write_png(&path, image, extent, 3).unwrap();
+                println!("wrote {path}");
+            }
         }
     }
 }
 
-/// Separable box blur of a plain signed signal, with no colour transform.
 fn box_blur_raw(image: &[f32], extent: usize, radius: usize) -> Vec<f32> {
     let mut mid = vec![0.0f32; image.len()];
     let mut out = vec![0.0f32; image.len()];
