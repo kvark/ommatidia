@@ -20,6 +20,10 @@ struct UnpackParams {
     decode_blade_gbuffer: u32,
     decode_hr_blade_gbuffer: u32,
     kernel_radius: u32,
+    demodulate: u32,
+    // How far demodulation may rescale a pixel. See
+    // `ModelConfig::demodulation_offset`.
+    demodulation_offset: f32,
     guide_spatial_denominator: f32,
     guide_depth_denominator: f32,
     guide_normal_power: f32,
@@ -46,6 +50,7 @@ const GATHER_FALLBACK: f32 = 1.0e-4;
 // Mirrors `batch::KERNEL_FLOOR`. Softplus weights are strictly positive, so
 // this only guards against every one of them underflowing in f32.
 const KERNEL_FLOOR: f32 = 1.0e-20;
+
 
 fn qrot(q: vec4<f32>, v: vec3<f32>) -> vec3<f32> {
     return v + 2.0 * cross(q.xyz, cross(q.xyz, v) + q.w * v);
@@ -210,7 +215,11 @@ fn gather_kernel(source: vec2<i32>, slot: u32, plane_stride: u32, offset: u32) -
     for (var dy = -radius; dy <= radius; dy += 1) {
         for (var dx = -radius; dx <= radius; dx += 1) {
             let weight = residual[(slot * taps + tap) * plane_stride + offset];
-            let color = load_base(source + vec2<i32>(dx, dy));
+            let texel = clamp_low(source + vec2<i32>(dx, dy));
+            var color = load_base(texel);
+            if params.demodulate != 0u {
+                color /= textureLoad(t_albedo, texel, 0).xyz + params.demodulation_offset;
+            }
             sum += weight * vec3<f32>(compress(color.x), compress(color.y), compress(color.z));
             total += weight;
             tap += 1u;
@@ -254,12 +263,19 @@ fn unpack(@builtin(global_invocation_id) id: vec3<u32>) {
         for (var dy = 0u; dy < params.scale; dy += 1u) {
             for (var dx = 0u; dx < params.scale; dx += 1u) {
                 let gathered = gather_kernel(source, dy * params.scale + dx, plane_stride, offset);
-                let color = vec3<f32>(
+                var color = vec3<f32>(
                     decompress(gathered.x),
                     decompress(gathered.y),
                     decompress(gathered.z),
                 );
                 let destination = id.xy * params.scale + vec2<u32>(dx, dy);
+                if params.demodulate != 0u {
+                    // The exact output-resolution albedo, which is what puts
+                    // the texture back at a resolution the gather never had to
+                    // reconstruct it at.
+                    color *= textureLoad(t_hr_albedo, vec2<i32>(destination), 0).xyz
+                        + params.demodulation_offset;
+                }
                 textureStore(output, vec2<i32>(destination), vec4<f32>(color, 1.0));
             }
         }

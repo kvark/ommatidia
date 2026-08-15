@@ -220,6 +220,43 @@ target needs the 13×13 guided filter evaluated on the CPU for every crop of
 every batch and the kernel target does not. Removing the deterministic filter
 removed most of the training cost with it.
 
+## Demodulating the albedo
+
+The albedo is known exactly at output resolution, so a reconstruction that
+carries it through the filter is being asked to recover something it was already
+told. Dividing it out before the gather and multiplying it back afterwards
+leaves the smoother illumination term to reconstruct. Standard in production
+denoisers, and on the deterministic base here it was worth eighteen points of
+detail retention.
+
+The loss stays in demodulated space, so the modulation is entirely outside the
+graph and outside the gradient — the target is the canonical frame divided by
+the same output-resolution albedo.
+
+| external validation, 128 crops | PSNR | SSIM | relMSE | worst crop | detail |
+|---|---:|---:|---:|---:|---:|
+| HR guide 5×5 | 28.36 dB | 0.8736 | 0.187 | 5.80 | 47% |
+| kernel b16 r2 | **30.26 dB** | 0.8563 | 0.044 | 0.47 | 67% |
+| kernel b16 r2, demodulated, offset 0.05 | 28.74 dB | 0.8711 | 0.054 | 1.45 | 104% |
+| **kernel b16 r2, demodulated, offset 0.25** | 30.21 dB | **0.8840** | **0.032** | **0.29** | **83%** |
+
+The first attempt lost 1.5 dB, and the reason is worth keeping. The offset
+bounds how far demodulation can rescale a pixel, and at 0.05 that is a factor of
+twenty. The gather runs in a compressed space tuned for radiance; moving a pixel
+twenty times up it lands where that space has almost no precision left, and the
+detail figure of 104% is the tell — above the reference means noise, not
+sharpness. At 0.25 the bound is four, and the same change is a clear win.
+
+Against the plain kernel the demodulated one is level on PSNR, 26% better on
+relative error, 38% better in its worst crop, and sixteen points better on
+detail. It is also the first reconstruction here that beats the deterministic
+base on SSIM as well, so for once all four measures agree. Its worst crop is
+0.29 against the base's 5.80: twenty times better in the case that matters most.
+
+The offset is carried in the checkpoint rather than living in WGSL, for the same
+reason the guide coefficients are — a runtime that changed it would silently
+reinterpret weights that were fitted against a different reconstruction.
+
 ## The scenes, and why they had to change
 
 The scenes cannot really discriminate these results. Blade's fallback
