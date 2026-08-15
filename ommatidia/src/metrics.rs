@@ -14,6 +14,59 @@ pub fn error(a: &[f32], b: &[f32]) -> f32 {
     sum / a.len() as f32
 }
 
+/// Relative mean squared error, after Rousselle.
+///
+/// [`error`] is an absolute difference in a compressed space, so a scene's
+/// bright regions decide its value. Dividing by the reference lets a dark
+/// region be wrong by a visible fraction of itself and have that count.
+pub fn relative_error(a: &[f32], b: &[f32]) -> f64 {
+    assert_eq!(a.len(), b.len());
+    let sum: f64 = a
+        .iter()
+        .zip(b.iter())
+        .map(|(&x, &y)| {
+            let d = (x - y) as f64;
+            d * d / (y as f64 * y as f64 + 0.01)
+        })
+        .sum();
+    sum / a.len() as f64
+}
+
+/// Mean gradient magnitude of displayed luminance: how much detail an image
+/// carries, in the space it is looked at.
+///
+/// The metric [`error`] does not contain. Regression toward a blurred image is
+/// what least-squares reconstruction does when the input is noisy, and it costs
+/// almost nothing in PSNR — a box blur that removes a further eighth of the
+/// reference's gradient energy moves [`error`] by 0.06 dB and improves the same
+/// measure taken in display space. Comparing this against the reference's own
+/// value says whether a gain came from reconstructing the frame or from giving
+/// up on it.
+///
+/// A gradient cannot tell detail from noise, so this only means what it sounds
+/// like between images that have already been denoised. Above the reference's
+/// own value it is reporting the opposite: an unfiltered 4-spp input scores
+/// several hundred percent of the canonical frame, all of it sample noise.
+/// Read it as "kept 63%" for a reconstruction and as "still noisy" beyond 100%.
+pub fn detail(image: &[f32], width: usize, height: usize) -> f64 {
+    assert_eq!(image.len(), width * height * 3);
+    assert!(width > 1 && height > 1, "a gradient needs two pixels");
+    let at = |x: usize, y: usize| {
+        let rgb = &image[(y * width + x) * 3..];
+        (0.2126 * crate::transform::display(rgb[0])
+            + 0.7152 * crate::transform::display(rgb[1])
+            + 0.0722 * crate::transform::display(rgb[2])) as f64
+    };
+    let mut sum = 0.0;
+    for y in 0..height - 1 {
+        for x in 0..width - 1 {
+            let here = at(x, y);
+            sum += ((at(x + 1, y) - here).powi(2) + (at(x, y + 1) - here).powi(2)).sqrt();
+        }
+    }
+    sum / ((width - 1) * (height - 1)) as f64
+}
+
 /// Structural similarity over 8×8 luminance windows in compressed space.
 pub fn ssim(a: &[f32], b: &[f32], width: usize, height: usize) -> f32 {
     assert_eq!(a.len(), width * height * 3);
@@ -160,6 +213,87 @@ pub fn temporal_error(
         squared_sum: sum,
         values: count,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{detail, error, relative_error};
+
+    const EXTENT: usize = 32;
+
+    fn box_blur(image: &[f32]) -> Vec<f32> {
+        let mut out = vec![0.0; image.len()];
+        for y in 0..EXTENT {
+            for x in 0..EXTENT {
+                for c in 0..3 {
+                    let mut sum = 0.0;
+                    for dy in -1i32..=1 {
+                        let sy = (y as i32 + dy).clamp(0, EXTENT as i32 - 1) as usize;
+                        for dx in -1i32..=1 {
+                            let sx = (x as i32 + dx).clamp(0, EXTENT as i32 - 1) as usize;
+                            sum += image[(sy * EXTENT + sx) * 3 + c];
+                        }
+                    }
+                    out[(y * EXTENT + x) * 3 + c] = sum / 9.0;
+                }
+            }
+        }
+        out
+    }
+
+    /// The reason [`detail`] exists.
+    ///
+    /// A rendered frame is mostly smooth with sparse edges, so an area-averaged
+    /// score is decided by the smooth part while the eye is drawn to the edges.
+    /// Softening every edge here leaves the reported error at a value the
+    /// project would call a good result, and takes most of the detail with it.
+    #[test]
+    fn detail_moves_where_error_barely_does() {
+        let mut reference = vec![0.4f32; EXTENT * EXTENT * 3];
+        for y in 0..EXTENT {
+            for x in [10usize, 21] {
+                for c in 0..3 {
+                    reference[(y * EXTENT + x) * 3 + c] = 0.6;
+                }
+            }
+        }
+        let blurred = box_blur(&reference);
+
+        let psnr = -10.0 * (error(&blurred, &reference) as f64).log10();
+        assert!(
+            psnr > 30.0,
+            "the premise is that this blur is cheap in error, but it cost {psnr:.2} dB"
+        );
+        let kept = detail(&blurred, EXTENT, EXTENT) / detail(&reference, EXTENT, EXTENT);
+        assert!(
+            kept < 0.7,
+            "a {psnr:.2} dB blur kept {:.0}% of the detail, and only this metric says so",
+            100.0 * kept
+        );
+    }
+
+    /// What [`relative_error`] is for: the same proportional mistake costs the
+    /// same wherever it is made. Compressed error instead calls the brighter of
+    /// two identical mistakes an order of magnitude smaller, because it squashes
+    /// the top of the range hardest.
+    #[test]
+    fn relative_error_scores_the_same_ratio_alike() {
+        let (dim, dim_reference) = (vec![2.0f32], vec![1.0f32]);
+        let (bright, bright_reference) = (vec![20.0f32], vec![10.0f32]);
+
+        let dim_relative = relative_error(&dim, &dim_reference);
+        let bright_relative = relative_error(&bright, &bright_reference);
+        assert!(
+            (dim_relative - bright_relative).abs() < 0.05 * bright_relative,
+            "both are a factor of two wrong: {dim_relative:.4} against {bright_relative:.4}"
+        );
+
+        let ratio = error(&dim, &dim_reference) / error(&bright, &bright_reference);
+        assert!(
+            ratio > 5.0,
+            "compressed error should rank the bright mistake far cheaper, got {ratio:.1}x"
+        );
+    }
 }
 
 #[cfg(test)]
