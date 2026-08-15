@@ -11,11 +11,17 @@ a sparse low-resolution path trace provides the primary input and a converged
 high-resolution path trace provides ground truth. ReSTIR+SVGF is a comparison
 control only; the product does not assume sample reuse or a prior denoiser.
 
-> **Status:** early. The current v0.3.1 checkpoint is trained from independent
-> sparse paths, uses no sample reuse, and accepts output-resolution primary
-> surfaces for sharper silhouettes. The v0.1 raw-ReSTIR checkpoint remains as
-> historical provenance. Temporal history is designed but not yet implemented;
-> see [`docs/temporal.md`](docs/temporal.md).
+> **Status:** early. Reconstruction is now a single operation: the network
+> predicts a gather kernel over the sparse samples themselves, so denoising and
+> upscaling stop being two stages with a filtered image between them. On the
+> held-out set that is **+1.74 dB over the previous deterministic base, with
+> 43% less relative error and 86% of the reference's detail rather than 63%**.
+> The published v0.3.1 checkpoint is still the two-stage residual model and
+> remains the default until the kernel path is retrained on scenes that carry
+> shadow and texture. See the
+> [`single-operation result`](docs/results/monolithic-kernel-2026-08-15.md).
+> Temporal history is designed but not yet implemented; see
+> [`docs/temporal.md`](docs/temporal.md).
 
 ![Ommatidium architecture: sparse path trace and low-resolution G-buffer through GPU packing and a multi-scale low-resolution reconstructor; output-resolution primary surfaces guide sub-pixel unpacking, with future compact temporal feature feedback](docs/architecture.svg)
 
@@ -123,6 +129,54 @@ neighboring objects. NVIDIA likewise treats multi-bounce reuse as a separate
 [ReSTIR GI](https://research.nvidia.com/publication/2021-06_restir-gi-path-resampling-real-time-path-tracing)
 algorithm. The table above therefore labels ReSTIR+SVGF as a direct-light
 comparison control and never presents raw ReSTIR as Ommatidium source data.
+
+### Reconstruction is one operation
+
+The learned residual over a deterministic filter was worth 0.02 dB, and the
+frame was visibly soft. Neither was a limit of the network. Asking a
+least-squares model for the residual of a filter asks it to predict that
+filter's error, which is dominated by the noise the renderer happened to draw
+and whose conditional mean is almost exactly zero — so a 74k model and a 649k
+model agreed, and the conclusion drawn was that spatial reconstruction had
+saturated.
+
+An oracle that only picks which of the *already shipped* filter footprints to
+use per texel is worth +0.83 to +2.23 dB at 4 spp, bracketed by forcing the
+choice constant over 4×4 and 16×16 blocks so it cannot exploit the noise draw.
+The tuned global filter width is the right one for 14.7% of texels.
+
+`Prediction::SubpixelKernel` therefore has the network emit gather weights over
+the input samples, one set per output sub-pixel, with nothing filtered
+beforehand and no base to correct. The output is a convex combination of
+measured radiance, so it cannot overshoot, invent energy, or emit the black
+pixels a rejected bilateral gather produces. Measured on the same held-out set:
+
+| reconstruction | PSNR | SSIM | relMSE | detail |
+|---|---:|---:|---:|---:|
+| texel-centre bilinear | 26.51 dB | 0.5776 | 0.08941 | 394% |
+| HR guide 5×5 (v0.3.1 base) | 34.87 dB | 0.9579 | 0.01043 | 63% |
+| kernel b8 r2 | 35.38 dB | 0.9338 | 0.00815 | 99% |
+| **kernel b16 r2** | **36.61 dB** | 0.9514 | **0.00595** | **86%** |
+
+Capacity matters again: b8 → b16 is worth +1.23 dB, where under the residual
+parameterisation an 8.8× larger model was worth 0.03 dB. What had saturated was
+how the question was asked.
+
+Two metrics were added to see this at all. PSNR and SSIM cannot: a box blur
+that removes an eighth of the frame's remaining detail costs 0.06 dB and
+0.002 SSIM, and *improves* the same error measured in display space. Detail
+retention is displayed gradient energy as a fraction of the canonical frame's,
+and relMSE keeps a bright region from deciding the score alone. Above 100%,
+detail is reporting noise rather than sharpness — which is what the b8 arm's
+99% means, and what b16 fixes.
+
+The scenes cannot fully discriminate these results yet. Blade's fallback
+environment is a white 1×1 texture, so an open scene is a uniform furnace in
+which nothing can be in shadow: none of the validation pixels fall below a
+displayed luminance of 0.10. Every material is a constant colour, so albedo
+demodulation measures as 0.01 dB. `--enclosed` and `--ground-patches` fix both
+and default off; on a probe set 32.1% of pixels now fall below 0.10, carrying
+40.2% of the displayed error against 15.0% of the reported error.
 
 The checked-in July experiments below used SVGF-filtered inputs. They found the
 architecture and kernel optimizations, but their quality figures describe an
