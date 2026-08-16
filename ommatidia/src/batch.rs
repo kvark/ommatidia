@@ -676,6 +676,165 @@ pub fn write_residual(
     }
 }
 
+/// Sub-pixel planar layout to an interleaved output-resolution image.
+fn spread(planar: &[f32], tile: usize, scale: usize) -> Vec<f32> {
+    let extent = tile * scale;
+    let sub = scale * scale;
+    let mut out = vec![0.0; extent * extent * 3];
+    for c in 0..3 {
+        for dy in 0..scale {
+            for dx in 0..scale {
+                let plane = (c * sub + dy * scale + dx) * tile * tile;
+                for y in 0..tile {
+                    for x in 0..tile {
+                        out[((y * scale + dy) * extent + x * scale + dx) * 3 + c] =
+                            planar[plane + y * tile + x];
+                    }
+                }
+            }
+        }
+    }
+    out
+}
+
+/// The inverse of [`spread`].
+fn collect(image: &[f32], tile: usize, scale: usize) -> Vec<f32> {
+    let extent = tile * scale;
+    let sub = scale * scale;
+    let mut out = vec![0.0; 3 * sub * tile * tile];
+    for c in 0..3 {
+        for dy in 0..scale {
+            for dx in 0..scale {
+                let plane = (c * sub + dy * scale + dx) * tile * tile;
+                for y in 0..tile {
+                    for x in 0..tile {
+                        out[plane + y * tile + x] =
+                            image[((y * scale + dy) * extent + x * scale + dx) * 3 + c];
+                    }
+                }
+            }
+        }
+    }
+    out
+}
+
+/// Motion-compensated bilinear resample of an interleaved output-resolution
+/// image, in output coordinates.
+///
+/// Takes and returns compressed values, but interpolates in linear radiance,
+/// because that is what [`crate::metrics::temporal_error`] does — it is handed
+/// linear images and compresses only after sampling. Interpolating in the
+/// compressed space instead is a different quantity by about a percent, and a
+/// loss that reprojects differently from the metric optimises something the
+/// report never shows.
+fn reproject(image: &[f32], motion: &[f32], tile: usize, scale: usize) -> Vec<f32> {
+    let extent = tile * scale;
+    let mut out = vec![0.0; image.len()];
+    for y in 0..extent {
+        for x in 0..extent {
+            let texel = (y / scale) * tile + x / scale;
+            let previous_x = x as f32 + motion[texel * 2] * scale as f32;
+            let previous_y = y as f32 + motion[texel * 2 + 1] * scale as f32;
+            let (x0, y0) = (previous_x.floor(), previous_y.floor());
+            let (tx, ty) = (previous_x - x0, previous_y - y0);
+            for c in 0..3 {
+                let at = |dx: f32, dy: f32| {
+                    let sx = (x0 + dx).clamp(0.0, extent as f32 - 1.0) as usize;
+                    let sy = (y0 + dy).clamp(0.0, extent as f32 - 1.0) as usize;
+                    transform::decompress(image[(sy * extent + sx) * 3 + c])
+                };
+                let top = at(0.0, 0.0) + tx * (at(1.0, 0.0) - at(0.0, 0.0));
+                let bottom = at(0.0, 1.0) + tx * (at(1.0, 1.0) - at(0.0, 1.0));
+                out[(y * extent + x) * 3 + c] = transform::compress(top + ty * (bottom - top));
+            }
+        }
+    }
+    out
+}
+
+/// This frame's canonical sub-pixel colour minus the reprojected previous
+/// frame's: the change the reconstruction is allowed to show.
+pub fn reference_change(
+    current: &[f32],
+    previous: &[f32],
+    motion: &[f32],
+    tile: usize,
+    scale: usize,
+) -> Vec<f32> {
+    let reprojected = collect(
+        &reproject(&spread(previous, tile, scale), motion, tile, scale),
+        tile,
+        scale,
+    );
+    current
+        .iter()
+        .zip(reprojected.iter())
+        .map(|(&now, &then)| now - then)
+        .collect()
+}
+
+/// Motion-compensate one slot's previous output onto this frame's grid, and
+/// build the target the temporal loss compares against.
+///
+/// Everything is in the compressed sub-pixel layout the gather produces.
+/// `motion` is current-to-previous in input pixels and `valid` rejects
+/// disocclusions, both at input resolution, exactly as
+/// [`crate::metrics::temporal_error`] takes them.
+///
+/// Returns the masked target and the mask. A pixel whose history was rejected,
+/// or whose reprojection leaves the crop, gets a zero in both, so it
+/// contributes nothing rather than something wrong.
+pub fn temporal_target(
+    previous: &[f32],
+    reference_change: &[f32],
+    motion: &[f32],
+    valid: &[bool],
+    tile: usize,
+    scale: usize,
+) -> (Vec<f32>, Vec<f32>) {
+    assert_eq!(previous.len(), 3 * scale * scale * tile * tile);
+    assert_eq!(previous.len(), reference_change.len());
+    assert_eq!(motion.len(), tile * tile * 2);
+    assert_eq!(valid.len(), tile * tile);
+
+    let reprojected = collect(
+        &reproject(&spread(previous, tile, scale), motion, tile, scale),
+        tile,
+        scale,
+    );
+    let extent = tile * scale;
+    let mut target = vec![0.0; previous.len()];
+    let mut mask = vec![0.0; previous.len()];
+    let sub = scale * scale;
+    for channel in 0..3 * sub {
+        // The bounds test is per output pixel, not per input texel, because
+        // that is where the metric applies it — two sub-pixels of one texel can
+        // fall on opposite sides of the edge.
+        let (dy, dx) = ((channel % sub) / scale, (channel % sub) % scale);
+        for y in 0..tile {
+            for x in 0..tile {
+                let texel = y * tile + x;
+                if !valid[texel] {
+                    continue;
+                }
+                let previous_x = (x * scale + dx) as f32 + motion[texel * 2] * scale as f32;
+                let previous_y = (y * scale + dy) as f32 + motion[texel * 2 + 1] * scale as f32;
+                if previous_x < 0.0
+                    || previous_y < 0.0
+                    || previous_x > (extent - 1) as f32
+                    || previous_y > (extent - 1) as f32
+                {
+                    continue;
+                }
+                let index = channel * tile * tile + texel;
+                target[index] = reprojected[index] + reference_change[index];
+                mask[index] = 1.0;
+            }
+        }
+    }
+    (target, mask)
+}
+
 /// Write the target selected by [`ModelConfig::prediction`].
 pub fn write_target(
     sample: &Sample,
@@ -1354,6 +1513,89 @@ mod tests {
         for (actual, expected) in rebuilt.iter().zip(reference) {
             assert!((actual - expected).abs() < 1e-3);
         }
+    }
+
+    /// The temporal loss has to be the temporal metric, or optimising one says
+    /// nothing about the other. The metric compares this frame's change against
+    /// the reference's; the loss is a squared error against a target. They are
+    /// the same expression rearranged, and this checks that they agree
+    /// numerically on a case with real motion and a real rejection.
+    #[test]
+    fn the_temporal_target_is_the_temporal_metric_rearranged() {
+        const TILE: usize = 8;
+        const SCALE: usize = 2;
+        let mut rng = Rng::new(21);
+        let planes = 3 * SCALE * SCALE * TILE * TILE;
+        // Compressed values, kept off 1.0 where the inverse the metric needs
+        // stops being well conditioned.
+        let draw = |rng: &mut Rng| {
+            (0..planes)
+                .map(|_| 0.05 + 0.8 * rng.uniform())
+                .collect::<Vec<f32>>()
+        };
+        let previous_out = draw(&mut rng);
+        let current_out = draw(&mut rng);
+        let previous_ref = draw(&mut rng);
+        let current_ref = draw(&mut rng);
+
+        // Fractional, varying motion, so the bilinear path is exercised rather
+        // than a lucky integer alignment.
+        let mut motion = vec![0.0f32; TILE * TILE * 2];
+        for texel in 0..TILE * TILE {
+            motion[texel * 2] = 0.4 + 0.2 * rng.uniform();
+            motion[texel * 2 + 1] = -0.3 - 0.2 * rng.uniform();
+        }
+        let valid: Vec<bool> = (0..TILE * TILE).map(|i| !i.is_multiple_of(5)).collect();
+
+        let change = reference_change(&current_ref, &previous_ref, &motion, TILE, SCALE);
+        let (target, mask) = temporal_target(&previous_out, &change, &motion, &valid, TILE, SCALE);
+
+        // What the graph computes: mean over every element of the masked error.
+        let loss: f64 = current_out
+            .iter()
+            .zip(target.iter())
+            .zip(mask.iter())
+            .map(|((&out, &want), &keep)| {
+                let d = (out * keep - want) as f64;
+                d * d
+            })
+            .sum::<f64>()
+            / planes as f64;
+
+        // What the metric computes, over the pixels the mask kept. It takes
+        // linear radiance and compresses internally, where everything the
+        // gather touches is already compressed, so the inputs are pushed back
+        // through the inverse first.
+        let counted = mask.iter().filter(|&&keep| keep != 0.0).count();
+        let linear = |planar: &[f32]| -> Vec<f32> {
+            spread(planar, TILE, SCALE)
+                .iter()
+                .map(|&v| transform::decompress(v))
+                .collect()
+        };
+        let metric = crate::metrics::temporal_error(
+            [&linear(&current_out), &linear(&previous_out)],
+            [&linear(&current_ref), &linear(&previous_ref)],
+            &motion,
+            &valid,
+            [TILE, TILE],
+            SCALE,
+        )
+        .expect("some pixels survive");
+
+        // The graph averages over every element and the metric over the kept
+        // ones, so the loss is the metric scaled by how much of the crop
+        // survived. Anything else means they are not the same quantity.
+        let scaled = metric.mean() * counted as f64 / planes as f64;
+        assert_eq!(
+            counted, metric.values,
+            "the two disagree about which pixels"
+        );
+        assert!(
+            (loss - scaled).abs() < 1e-6 * scaled,
+            "loss {loss:.6e} against metric {scaled:.6e}"
+        );
+        assert!(metric.mean() > 1e-3, "the test case has to have real error");
     }
 
     /// History arrives as one more tap, and the current frame arrives from a

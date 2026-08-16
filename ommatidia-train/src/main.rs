@@ -80,6 +80,8 @@ struct Args {
     demodulate: bool,
     demodulation_offset: f32,
     head_kernel: u32,
+    temporal_weight: f32,
+    teacher_every: usize,
     seed: u64,
     log_every: usize,
     eval_out: Option<PathBuf>,
@@ -129,6 +131,8 @@ impl Default for Args {
             demodulate: false,
             demodulation_offset: 0.25,
             head_kernel: 3,
+            temporal_weight: 0.0,
+            teacher_every: 250,
             seed: 0,
             log_every: 50,
             eval_out: None,
@@ -178,6 +182,12 @@ usage: ommatidia-train [options]
   --demodulate         gather radiance divided by albedo and multiply the exact
                        output-resolution albedo back, so the texture is put
                        back rather than reconstructed. Kernel checkpoints only
+  --temporal-weight F  weight of the temporal term in the loss. A per-frame
+                       squared error is indifferent to whether consecutive
+                       frames agree, so without this a reconstruction fitted to
+                       one will flicker whenever its input does  [0]
+  --teacher-every N    steps between resynchronising the detached copy of the
+                       network that the temporal target is built from  [250]
   --head-kernel N      kernel size of the output convolution. A kernel head is
                        wide, so at 3 it is a quarter of the arithmetic; the
                        features it reads already have a wide receptive field  [3]
@@ -292,6 +302,16 @@ fn parse_from(argv: impl Iterator<Item = String>) -> Result<Args, String> {
                 args.head_kernel = value()?
                     .parse()
                     .map_err(|e| format!("--head-kernel: {e}"))?
+            }
+            "--temporal-weight" => {
+                args.temporal_weight = value()?
+                    .parse()
+                    .map_err(|e| format!("--temporal-weight: {e}"))?
+            }
+            "--teacher-every" => {
+                args.teacher_every = value()?
+                    .parse()
+                    .map_err(|e| format!("--teacher-every: {e}"))?
             }
             "--demodulate" => args.demodulate = true,
             "--demodulation-offset" => {
@@ -492,6 +512,7 @@ fn main() {
         demodulate,
         demodulation_offset,
         head_kernel: args.head_kernel,
+        temporal_weight: args.temporal_weight,
         reconstruction_base,
         temporal,
         ..ModelConfig::default()
@@ -633,6 +654,22 @@ fn main() {
     );
     model.initialize(&mut session, args.seed);
     session.set_adam(args.learning_rate, ADAM_BETA1, ADAM_BETA2, ADAM_EPSILON);
+
+    // The temporal loss compares this frame against the network's own answer
+    // for the previous one. That answer has to come from somewhere the gradient
+    // does not flow through, and a reprojection is not something the graph can
+    // express, so it comes from a detached copy run on the host side and
+    // resynchronised every `--teacher-every` steps. At step zero the copy is
+    // initialised identically, so the target is self-consistent from the start
+    // rather than arbitrary.
+    let mut teacher = config.temporal_weight.ne(&0.0).then(|| {
+        let inference = model::build_ending(&config, model::Ending::Image, [config.tile; 2])
+            .expect("the training configuration already validated");
+        let mut session = ommatidia::gpu::inference_session(&inference.graph, context.clone());
+        inference.initialize(&mut session, args.seed);
+        session
+    });
+    let teacher_checkpoint = std::env::temp_dir().join("ommatidia-teacher.safetensors");
     // On by default. A run measured in hours has many more chances to meet the
     // one batch that blows the gradient up, and the cost of that is the whole
     // run rather than one step. Clipping every fifth step amortises the extra
@@ -681,6 +718,43 @@ fn main() {
         session.set_input("target", &batch.target);
         if !batch.taps.is_empty() {
             session.set_input("taps", &batch.taps);
+        }
+        if let (Some(teacher), Some(temporal)) = (teacher.as_mut(), batch.temporal.as_ref()) {
+            if step.is_multiple_of(args.teacher_every)
+                && let Err(e) = session
+                    .save_checkpoint(&teacher_checkpoint)
+                    .and_then(|()| teacher.load_checkpoint(&teacher_checkpoint))
+            {
+                eprintln!("cannot resynchronise the temporal teacher: {e}");
+                std::process::exit(1);
+            }
+            teacher.set_input("cond", &temporal.cond);
+            teacher.set_input("taps", &temporal.taps);
+            teacher.step();
+            teacher.wait();
+            let previous = teacher.read_output(config.loss_len());
+
+            let tile = config.tile as usize;
+            let scale = config.scale as usize;
+            let per_slot = (config.image_channels() * config.tile * config.tile) as usize;
+            let mut target = vec![0.0; config.loss_len()];
+            let mut mask = vec![0.0; config.loss_len()];
+            for slot in 0..config.batch as usize {
+                let span = slot * per_slot..(slot + 1) * per_slot;
+                let texels = slot * tile * tile..(slot + 1) * tile * tile;
+                let (slot_target, slot_mask) = batch::temporal_target(
+                    &previous[span.clone()],
+                    &temporal.reference_change[span.clone()],
+                    &temporal.motion[texels.start * 2..texels.end * 2],
+                    &temporal.valid[texels],
+                    tile,
+                    scale,
+                );
+                target[span.clone()].copy_from_slice(&slot_target);
+                mask[span].copy_from_slice(&slot_mask);
+            }
+            session.set_input("temporal_target", &target);
+            session.set_input("temporal_mask", &mask);
         }
         if diffusing {
             session.set_input("x_t", &batch.x_t);
@@ -1160,6 +1234,17 @@ mod cli_tests {
                     vec!["--prediction", "kernel", "--reconstruction-base", "sample"],
                 ],
                 "--head-kernel" => vec![vec!["--head-kernel", "1"]],
+                "--teacher-every" => vec![vec!["--teacher-every", "100"]],
+                "--temporal-weight" => vec![vec![
+                    "--temporal-weight",
+                    "1",
+                    "--history-frames",
+                    "4",
+                    "--prediction",
+                    "kernel",
+                    "--reconstruction-base",
+                    "sample",
+                ]],
                 "--demodulation-offset" => vec![vec![
                     "--demodulation-offset",
                     "0.25",
