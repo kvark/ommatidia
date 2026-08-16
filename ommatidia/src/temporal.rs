@@ -82,6 +82,7 @@ pub struct PreparedSample {
     pub deviation: Vec<f32>,
 }
 
+#[derive(Clone)]
 struct History {
     color: Vec<f32>,
     count: Vec<f32>,
@@ -296,18 +297,72 @@ pub fn prepare(
         history = accumulate(&current, &previous, &layout, &history, config);
         previous = current;
     }
+    Ok(finish(previous, history, &layout, config))
+}
 
-    let current_color = initial(&previous, &layout).color;
+/// Prepare both `index` and the frame before it, in one walk.
+///
+/// A temporal loss needs the network's answer for the previous frame as well as
+/// this one, and preparing them separately walks the sequence twice — up to
+/// `2 * frames` reads of a 1.4 MB record for every crop of every batch. Walking
+/// once and snapshotting costs one extra read instead.
+///
+/// The window starts one frame earlier than [`prepare`] alone would need, so
+/// the earlier snapshot has as much history behind it as the later one and the
+/// two are the same kind of estimate.
+pub fn prepare_pair(
+    reader: &mut Reader,
+    index: usize,
+    config: Config,
+) -> Result<(PreparedSample, PreparedSample), crate::dataset::Error> {
+    assert!(
+        config.frames >= 2,
+        "temporal accumulation needs at least two frames"
+    );
+    let layout = *reader.layout();
+    let sequence_length = reader.sequence_length();
+    assert!(sequence_length > 1, "the dataset has no frame sequences");
+    let sequence_start = index / sequence_length * sequence_length;
+    assert!(
+        index > sequence_start,
+        "the first frame of a sequence has no predecessor"
+    );
+    let first = (index + 1)
+        .saturating_sub(config.frames as usize + 1)
+        .max(sequence_start);
+
+    let mut previous = reader.sample(first)?;
+    let mut history = initial(&previous, &layout);
+    // When `index` is the second frame of its sequence the walk starts on the
+    // frame before it, so that snapshot is taken before the first accumulation
+    // rather than inside the loop.
+    let mut earlier =
+        (first + 1 == index).then(|| finish(previous.clone(), history.clone(), &layout, config));
+    for frame in first + 1..=index {
+        let current = reader.sample(frame)?;
+        history = accumulate(&current, &previous, &layout, &history, config);
+        previous = current;
+        if frame + 1 == index {
+            earlier = Some(finish(previous.clone(), history.clone(), &layout, config));
+        }
+    }
+    let earlier = earlier.expect("the frame before index is inside the walk");
+    Ok((earlier, finish(previous, history, &layout, config)))
+}
+
+/// Turn a sample and the history accumulated up to it into a prepared frame.
+fn finish(mut sample: Sample, history: History, layout: &Layout, config: Config) -> PreparedSample {
+    let current_color = initial(&sample, layout).color;
     let texels = layout.lr_texels();
     let base = layout.lr_planes.channel_offset(Plane::Color).unwrap();
     for channel in 0..3 {
         for index in 0..texels {
-            previous.lr[(base + channel) * texels + index] =
+            sample.lr[(base + channel) * texels + index] =
                 f16::from_f32(history.color[index * 3 + channel]);
         }
     }
-    Ok(PreparedSample {
-        sample: previous,
+    PreparedSample {
+        sample,
         current_color,
         confidence: history
             .count
@@ -320,7 +375,7 @@ pub fn prepare(
             .zip(&history.luminance)
             .map(|(&square, &mean)| (square - mean * mean).max(0.0).sqrt())
             .collect(),
-    })
+    }
 }
 
 #[cfg(test)]

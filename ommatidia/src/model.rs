@@ -244,6 +244,19 @@ pub struct ModelConfig {
     /// be buying nothing; 1 makes that a measurement rather than an assumption.
     #[serde(default = "legacy_head_kernel")]
     pub head_kernel: u32,
+    /// Weight of the temporal term in the training loss. Zero leaves it out.
+    ///
+    /// A per-frame squared error is indifferent to whether consecutive frames
+    /// agree, so a reconstruction fitted to one will flicker whenever its inputs
+    /// do — measured at 1.12 dB worse than deterministic accumulation overall
+    /// and 3.19 dB worse on moving pixels, while every individual frame was
+    /// 1.81 dB better. Stability is not a property of a single frame and does
+    /// not appear in a single-frame objective.
+    ///
+    /// This is not carried by inference, but it is carried by the checkpoint,
+    /// because it is part of how the weights came to be what they are.
+    #[serde(default)]
+    pub temporal_weight: f32,
     /// Half-width, in input pixels, of the neighbourhood a
     /// [`Prediction::SubpixelKernel`] gathers from. Ignored by the other
     /// targets, and carried in the checkpoint because the runtime has to read
@@ -288,6 +301,7 @@ impl Default for ModelConfig {
             demodulate: false,
             demodulation_offset: legacy_demodulation_offset(),
             head_kernel: legacy_head_kernel(),
+            temporal_weight: 0.0,
             temporal: None,
         }
     }
@@ -600,6 +614,20 @@ impl ModelConfig {
                         "guided reconstruction requires the {plane:?} conditioning plane"
                     ));
                 }
+            }
+        }
+        if self.temporal_weight != 0.0 {
+            if !self.temporal_weight.is_finite() || self.temporal_weight < 0.0 {
+                return Err(format!(
+                    "temporal weight {} must be finite and non-negative",
+                    self.temporal_weight
+                ));
+            }
+            if self.prediction != Prediction::SubpixelKernel {
+                return Err("the temporal loss is defined on the gathered image".into());
+            }
+            if self.temporal.is_none() {
+                return Err("a temporal loss needs a sequence dataset".into());
             }
         }
         if self.head_kernel == 0 || self.head_kernel.is_multiple_of(2) {
@@ -958,6 +986,21 @@ fn gather(graph: &mut Graph, config: &ModelConfig, weights: NodeId, extent: [u32
     image.expect("a kernel checkpoint reconstructs at least one channel")
 }
 
+/// What the built graph produces.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Ending {
+    /// The network's own output: a residual, or a kernel checkpoint's weights.
+    /// What the runtime wants, since the shader does the gather.
+    Prediction,
+    /// The reconstructed image. Only a kernel checkpoint can end here, and only
+    /// the temporal loss's detached teacher asks for it — it needs the picture
+    /// the previous frame produced, not the kernel that produced it.
+    Image,
+    /// The loss, with the graph carrying whatever inputs it needs to compute
+    /// one.
+    Loss,
+}
+
 /// Build the network.
 ///
 /// With `training`, the graph gains a `target` input and an MSE loss, and
@@ -986,6 +1029,23 @@ pub fn build_for_extent(
     training: bool,
     extent: [u32; 2],
 ) -> Result<Model, String> {
+    let ending = if training {
+        Ending::Loss
+    } else {
+        Ending::Prediction
+    };
+    build_ending(config, ending, extent)
+}
+
+/// Build the network for a chosen ending.
+pub fn build_ending(
+    config: &ModelConfig,
+    ending: Ending,
+    extent: [u32; 2],
+) -> Result<Model, String> {
+    if ending == Ending::Image && config.prediction != Prediction::SubpixelKernel {
+        return Err("only a kernel checkpoint's graph reaches an image".into());
+    }
     config.validate()?;
     config.validate_extent(extent)?;
 
@@ -1160,15 +1220,54 @@ pub fn build_for_extent(
     };
 
     let params = builder.params;
+    if ending == Ending::Image {
+        let image = gather(&mut graph, config, output, extent);
+        graph.set_outputs(vec![image]);
+        return Ok(Model {
+            graph,
+            config: config.clone(),
+            input_extent: extent,
+            output: image,
+            loss: None,
+            params,
+        });
+    }
+    let training = ending == Ending::Loss;
     let loss = if training {
         let loss = match config.prediction {
             Prediction::SubpixelKernel => {
                 let image = gather(&mut graph, config, output, extent);
-                let target = graph.input(
-                    "target",
-                    &[(batch * config.image_channels() * spatial) as usize],
-                );
-                graph.mse_loss(image, target)
+                let len = (batch * config.image_channels() * spatial) as usize;
+                let target = graph.input("target", &[len]);
+                let spatial_loss = graph.mse_loss(image, target);
+                if config.temporal_weight == 0.0 {
+                    spatial_loss
+                } else {
+                    // The temporal metric compares this frame's change against
+                    // the reference's, motion-compensated:
+                    //
+                    //   (out - reproj(out_prev)) - (ref - reproj(ref_prev))
+                    //
+                    // which rearranges to `out - target`, with
+                    //
+                    //   target = reproj(out_prev) + ref - reproj(ref_prev)
+                    //
+                    // so the whole term is an ordinary squared error against a
+                    // target the host assembles. `out_prev` comes from a
+                    // detached copy of the network, which is why no gradient
+                    // has to flow through a reprojection the graph could not
+                    // express anyway.
+                    //
+                    // Both sides arrive masked, so a pixel whose history was
+                    // rejected contributes zero rather than a wrong number.
+                    let mask = graph.input("temporal_mask", &[len]);
+                    let target = graph.input("temporal_target", &[len]);
+                    let masked = graph.mul(image, mask);
+                    let temporal_loss = graph.mse_loss(masked, target);
+                    let weight = graph.scalar(config.temporal_weight);
+                    let scaled = graph.mul(temporal_loss, weight);
+                    graph.add(spatial_loss, scaled)
+                }
             }
             _ => {
                 let target = graph.input("target", &[config.target_len_for_extent(extent)]);

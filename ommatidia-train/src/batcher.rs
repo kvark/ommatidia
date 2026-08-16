@@ -28,6 +28,24 @@ pub struct Batch {
     /// `[batch, 3 * taps, tile, tile]`: the sparse samples a predicted kernel
     /// gathers. Empty unless the checkpoint predicts kernels.
     pub taps: Vec<f32>,
+    /// Everything the temporal loss needs, empty unless it is switched on.
+    pub temporal: Option<TemporalBatch>,
+}
+
+/// The previous frame, and what the reconstruction of it is allowed to differ
+/// from this one by.
+pub struct TemporalBatch {
+    /// Conditioning and taps for the frame before, so a detached copy of the
+    /// network can be run on it.
+    pub cond: Vec<f32>,
+    pub taps: Vec<f32>,
+    /// Per slot, at input resolution: current-to-previous motion and whether
+    /// history was accepted.
+    pub motion: Vec<f32>,
+    pub valid: Vec<bool>,
+    /// Per slot, in sub-pixel layout: the canonical change between the two
+    /// frames, which is the change the reconstruction is allowed to show.
+    pub reference_change: Vec<f32>,
 }
 
 /// One record after applying the checkpoint's input contract.
@@ -74,6 +92,8 @@ impl InputSample {
 }
 
 pub struct Batcher {
+    /// Whether batches carry the previous frame for the temporal loss.
+    paired: bool,
     reader: Reader,
     layout: Layout,
     config: ModelConfig,
@@ -118,6 +138,7 @@ impl Batcher {
         let per_slot = (config.target_channels() * config.tile * config.tile) as usize;
         let loss_per_slot = (config.loss_channels() * config.tile * config.tile) as usize;
         Self {
+            paired: config.temporal_weight != 0.0,
             reader,
             layout,
             config,
@@ -150,6 +171,53 @@ impl Batcher {
         self.config.temporal.is_none() || !index.is_multiple_of(self.reader.sequence_length())
     }
 
+    /// Motion, validity, and the canonical change between the two frames.
+    fn write_temporal_evidence(
+        &mut self,
+        current: &InputSample,
+        earlier: &InputSample,
+        crop: Crop,
+        slot: usize,
+        config: &ModelConfig,
+        out: &mut TemporalBatch,
+    ) {
+        let tile = crop.tile as usize;
+        let scale = config.scale as usize;
+        let width = self.layout.lr_width as usize;
+        let frames = config.temporal.expect("temporal").frames as f32;
+        let motion_x = current
+            .sample()
+            .lr_channel(&self.layout, ommatidia::Plane::Motion, 0)
+            .expect("a sequence dataset carries motion");
+        let motion_y = current
+            .sample()
+            .lr_channel(&self.layout, ommatidia::Plane::Motion, 1)
+            .expect("a sequence dataset carries motion");
+        let InputSample::Temporal(prepared) = current else {
+            unreachable!("the temporal loss only runs on prepared samples")
+        };
+        for y in 0..tile {
+            for x in 0..tile {
+                let source = (crop.y as usize + y) * width + crop.x as usize + x;
+                let texel = slot * tile * tile + y * tile + x;
+                out.motion[texel * 2] = motion_x[source].to_f32();
+                out.motion[texel * 2 + 1] = motion_y[source].to_f32();
+                // The same test the temporal metric applies: history counts
+                // only where more than one frame survived rejection.
+                out.valid[texel] = prepared.confidence[source] * frames > 1.001;
+            }
+        }
+
+        let per_slot = (config.image_channels() * crop.tile * crop.tile) as usize;
+        let mut now = vec![0.0; per_slot];
+        let mut then = vec![0.0; per_slot];
+        batch::write_kernel_target(current.sample(), &self.layout, crop, 0, config, &mut now);
+        batch::write_kernel_target(earlier.sample(), &self.layout, crop, 0, config, &mut then);
+        let slot_motion = &out.motion[slot * tile * tile * 2..(slot + 1) * tile * tile * 2];
+        let change = batch::reference_change(&now, &then, slot_motion, tile, scale);
+        out.reference_change[slot * per_slot..(slot + 1) * per_slot].copy_from_slice(&change);
+    }
+
     /// A crop position that fits inside the sample.
     fn random_crop(&mut self) -> Crop {
         let tile = self.config.tile;
@@ -177,6 +245,16 @@ impl Batcher {
             t_emb: Vec::new(),
             target: vec![0.0; config.loss_len()],
             taps: vec![0.0; config.tap_len()],
+            temporal: self.paired.then(|| {
+                let texels = (config.batch * config.tile * config.tile) as usize;
+                TemporalBatch {
+                    cond: vec![0.0; config.cond_len()],
+                    taps: vec![0.0; config.tap_len()],
+                    motion: vec![0.0; texels * 2],
+                    valid: vec![false; texels],
+                    reference_change: vec![0.0; config.loss_len()],
+                }
+            }),
         };
         let diffusing = config.objective == Objective::Diffusion;
         if diffusing {
@@ -194,7 +272,19 @@ impl Batcher {
             } else {
                 self.train.start + self.rng.below(self.train.len() as u32) as usize
             };
-            let sample = self.sample(index)?;
+            let (earlier, sample) = if self.paired {
+                let (earlier, current) = ommatidia::temporal::prepare_pair(
+                    &mut self.reader,
+                    index,
+                    config.temporal.expect("a temporal loss needs history"),
+                )?;
+                (
+                    Some(InputSample::Temporal(earlier)),
+                    InputSample::Temporal(current),
+                )
+            } else {
+                (None, self.sample(index)?)
+            };
             let crop = self.random_crop();
 
             let guided =
@@ -229,6 +319,19 @@ impl Batcher {
                     sample.current_color(),
                     &mut out.taps,
                 );
+            }
+            if let (Some(earlier), Some(temporal)) = (&earlier, out.temporal.as_mut()) {
+                earlier.write_conditioning(&self.layout, &config, crop, slot, &mut temporal.cond);
+                batch::write_taps(
+                    earlier.sample(),
+                    &self.layout,
+                    crop,
+                    slot,
+                    &config,
+                    earlier.current_color(),
+                    &mut temporal.taps,
+                );
+                self.write_temporal_evidence(&sample, earlier, crop, slot, &config, temporal);
             }
 
             if diffusing {
