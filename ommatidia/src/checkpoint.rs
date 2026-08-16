@@ -85,6 +85,72 @@ pub fn load_config(stem: impl AsRef<Path>) -> Result<(ModelConfig, Paths), Error
 }
 
 #[cfg(test)]
+mod compatibility_tests {
+    use crate::model::{ModelConfig, Prediction, ReconstructionBase};
+
+    /// The published v0.3.1 sidecar, byte for byte.
+    ///
+    /// Every field added since has a serde default, and a default that was
+    /// wrong would not fail to load — it would reinterpret trained weights
+    /// against a reconstruction they were never fitted to and produce a wrong
+    /// image quietly. Seven fields have been added to this struct; this is what
+    /// says they all still resolve to the behaviour these weights expect.
+    const PUBLISHED: &str = r#"(
+    scale: 2,
+    tile: 64,
+    batch: 8,
+    cond_planes: (63),
+    base_channels: 8,
+    level_multipliers: [1, 2, 4],
+    blocks_per_level: 1,
+    num_groups: 8,
+    gn_eps: 0.00001,
+    time_input_dim: 64,
+    time_embed_dim: 256,
+    residual_gain: 33.931183,
+    objective: Direct,
+    reconstruction_base: GuidedBilinear,
+    guide: (
+        spatial_sigma: 4.5,
+        depth_sigma: 0.01,
+        normal_power: 24.0,
+        albedo_sigma: 0.2,
+    ),
+)"#;
+
+    #[test]
+    fn a_published_sidecar_still_means_what_it_meant() {
+        let config: ModelConfig = ron::from_str(PUBLISHED).expect("the published sidecar loads");
+
+        // What it says.
+        assert_eq!(
+            config.reconstruction_base,
+            ReconstructionBase::GuidedBilinear
+        );
+        assert!((config.residual_gain - 33.931_183).abs() < 1e-4);
+
+        // What it does not say, and must not acquire.
+        assert_eq!(
+            config.prediction,
+            Prediction::SubpixelResidual,
+            "these weights predict a sub-pixel residual"
+        );
+        assert!(
+            !config.demodulate,
+            "these weights were fitted to raw radiance"
+        );
+        assert_eq!(config.head_kernel, 3, "these weights are a 3x3 head");
+        assert!(config.temporal.is_none());
+        assert!(config.validate().is_ok(), "{:?}", config.validate());
+
+        // The kernel-only fields are inert here, but still have to be valid, or
+        // `validate` would reject a checkpoint that predates them.
+        assert!(config.kernel_radius > 0);
+        assert!(config.demodulation_offset > 0.0);
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::dataset::{Plane, PlaneSet};

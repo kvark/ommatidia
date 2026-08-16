@@ -138,6 +138,10 @@ fn legacy_demodulation_offset() -> f32 {
     0.25
 }
 
+fn legacy_head_kernel() -> u32 {
+    3
+}
+
 /// How a parameter should be filled before training starts.
 #[derive(Clone, Debug, PartialEq)]
 pub enum InitKind {
@@ -232,6 +236,14 @@ pub struct ModelConfig {
     /// albedo is zero, from dividing by nothing.
     #[serde(default = "legacy_demodulation_offset")]
     pub demodulation_offset: f32,
+    /// Kernel size of the output convolution.
+    ///
+    /// A kernel checkpoint's head is wide — 100 channels at radius two — so at
+    /// 3x3 it is a quarter of the whole network's arithmetic. The features it
+    /// reads already carry a large receptive field, so the spatial extent may
+    /// be buying nothing; 1 makes that a measurement rather than an assumption.
+    #[serde(default = "legacy_head_kernel")]
+    pub head_kernel: u32,
     /// Half-width, in input pixels, of the neighbourhood a
     /// [`Prediction::SubpixelKernel`] gathers from. Ignored by the other
     /// targets, and carried in the checkpoint because the runtime has to read
@@ -275,6 +287,7 @@ impl Default for ModelConfig {
             kernel_radius: legacy_kernel_radius(),
             demodulate: false,
             demodulation_offset: legacy_demodulation_offset(),
+            head_kernel: legacy_head_kernel(),
             temporal: None,
         }
     }
@@ -437,7 +450,7 @@ impl ModelConfig {
             }
         }
 
-        total += conv(pixels, channels, self.target_channels(), 3); // head
+        total += conv(pixels, channels, self.target_channels(), self.head_kernel); // head
         total / 1e9
     }
 
@@ -563,6 +576,12 @@ impl ModelConfig {
                     ));
                 }
             }
+        }
+        if self.head_kernel == 0 || self.head_kernel.is_multiple_of(2) {
+            return Err(format!(
+                "head kernel {} must be odd and non-zero, for \"same\" padding",
+                self.head_kernel
+            ));
         }
         if !self.residual_gain.is_finite() || self.residual_gain <= 0.0 {
             return Err(format!(
@@ -1069,9 +1088,10 @@ pub fn build_for_extent(
     // untrained network passes the input through unchanged.
     let h = builder.group_norm(h, "head.norm", shape);
     let h = builder.g.silu(h);
+    let head_kernel = config.head_kernel;
     let head_weight = builder.param(
         "head.conv.weight",
-        (config.target_channels() * shape.channels * 9) as usize,
+        (config.target_channels() * shape.channels * head_kernel * head_kernel) as usize,
         InitKind::Zeros,
     );
     let output = builder.g.conv2d(
@@ -1082,10 +1102,10 @@ pub fn build_for_extent(
         shape.h,
         shape.w,
         config.target_channels(),
-        3,
-        3,
+        head_kernel,
+        head_kernel,
         1,
-        1,
+        head_kernel / 2,
     );
 
     // Kernel prediction turns the head's logits into strictly positive weights.
