@@ -138,7 +138,7 @@ pub fn write_temporal_conditioning(
     crop: Crop,
     slot: usize,
     out: &mut [f32],
-) -> Vec<f32> {
+) -> Option<Vec<f32>> {
     assert!(config.temporal.is_some(), "checkpoint is not temporal");
     let tile = crop.tile as usize;
     let texels = tile * tile;
@@ -174,18 +174,27 @@ pub fn write_temporal_conditioning(
             destination[base + y * tile + x] = prepared.confidence[source_row + x];
         }
     }
-    let guided = guided_color(&prepared.sample, layout, crop, config.guide);
-    for component in 0..3 {
-        let base = (stored_channels + 4 + component) * texels;
-        for y in 0..tile {
-            for x in 0..tile {
-                destination[base + y * tile + x] =
-                    transform::compress(guided[(y * tile + x) * 3 + component]);
+    // A gather checkpoint has no base to describe, so it is not given one.
+    let guided = (config.prediction != Prediction::SubpixelKernel).then(|| {
+        let guided = guided_color(&prepared.sample, layout, crop, config.guide);
+        for component in 0..3 {
+            let base = (stored_channels + 4 + component) * texels;
+            for y in 0..tile {
+                for x in 0..tile {
+                    destination[base + y * tile + x] =
+                        transform::compress(guided[(y * tile + x) * 3 + component]);
+                }
             }
         }
-    }
+        guided
+    });
     if config.temporal.unwrap().features == crate::temporal::Features::Variance {
-        let base = (stored_channels + 7) * texels;
+        let deviation_channel = if config.prediction == Prediction::SubpixelKernel {
+            4
+        } else {
+            7
+        };
+        let base = (stored_channels + deviation_channel) * texels;
         for y in 0..tile {
             let source_row = (crop.y as usize + y) * stride + crop.x as usize;
             for x in 0..tile {
@@ -760,10 +769,12 @@ pub fn write_taps(
     crop: Crop,
     slot: usize,
     config: &ModelConfig,
+    current: Option<&[f32]>,
     out: &mut [f32],
 ) {
     let tile = crop.tile as usize;
-    let taps = config.taps() as usize;
+    let spatial_taps = config.taps() as usize;
+    let taps = config.gather_taps() as usize;
     let per_slot = 3 * taps * tile * tile;
     assert!(
         out.len() >= (slot + 1) * per_slot,
@@ -789,16 +800,29 @@ pub fn write_taps(
     });
 
     for c in 0..3 {
+        // Without history the sample's own colour plane is the current frame.
+        // With it, that plane holds the accumulated estimate and the current
+        // frame arrives separately.
         let source = &sample.lr[(base + c) * texels..(base + c + 1) * texels];
         for tap in 0..taps {
-            let (dx, dy) = config.tap_offset(tap as u32);
+            // The history tap reads the accumulated estimate where it stands,
+            // since it has already been reprojected onto this pixel.
+            let history = tap >= spatial_taps;
+            let (dx, dy) = if history {
+                (0, 0)
+            } else {
+                config.tap_offset(tap as u32)
+            };
             let channel = c * taps + tap;
             for y in 0..tile {
                 let source_y = (crop.y as i32 + y as i32 + dy).clamp(0, height - 1) as usize;
                 for x in 0..tile {
                     let source_x = (crop.x as i32 + x as i32 + dx).clamp(0, width - 1) as usize;
                     let offset = source_y * stride + source_x;
-                    let mut value = source[offset].to_f32();
+                    let mut value = match (history, current) {
+                        (false, Some(current)) => current[offset * 3 + c],
+                        _ => source[offset].to_f32(),
+                    };
                     if let Some(albedo) = &albedo {
                         value /= albedo[c][offset].to_f32() + config.demodulation_offset;
                     }
@@ -825,10 +849,12 @@ pub fn assemble_kernel(
     crop: Crop,
     weights: &[f32],
     config: &ModelConfig,
+    current: Option<&[f32]>,
 ) -> Vec<f32> {
     let tile = crop.tile as usize;
     let scale = config.scale as usize;
-    let taps = config.taps() as usize;
+    let spatial_taps = config.taps() as usize;
+    let taps = config.gather_taps() as usize;
     let slots = scale * scale;
     assert_eq!(weights.len(), slots * taps * tile * tile);
     let base = layout
@@ -863,12 +889,20 @@ pub fn assemble_kernel(
                 let mut total = 0.0f32;
                 for tap in 0..taps {
                     let weight = weights[((slot * taps + tap) * tile + y) * tile + x];
-                    let (dx, dy) = config.tap_offset(tap as u32);
+                    let history = tap >= spatial_taps;
+                    let (dx, dy) = if history {
+                        (0, 0)
+                    } else {
+                        config.tap_offset(tap as u32)
+                    };
                     let source_y = (crop.y as i32 + y as i32 + dy).clamp(0, height - 1) as usize;
                     let source_x = (crop.x as i32 + x as i32 + dx).clamp(0, width - 1) as usize;
                     let offset = source_y * stride + source_x;
                     for c in 0..3 {
-                        let mut value = planes[c][offset].to_f32();
+                        let mut value = match (history, current) {
+                            (false, Some(current)) => current[offset * 3 + c],
+                            _ => planes[c][offset].to_f32(),
+                        };
                         if let Some(albedo) = &albedo {
                             value /= albedo[c][offset].to_f32() + config.demodulation_offset;
                         }
@@ -1322,6 +1356,71 @@ mod tests {
         }
     }
 
+    /// History arrives as one more tap, and the current frame arrives from a
+    /// different buffer than it does without history — the sample's colour
+    /// plane holds the accumulated estimate by then. Reading the wrong one of
+    /// those two would train and run and simply reconstruct the past.
+    #[test]
+    fn a_history_tap_reads_history_and_the_rest_read_the_current_frame() {
+        const ACCUMULATED: f32 = 4.0;
+        const CURRENT: f32 = 1.0;
+        let mut config = kernel_config(1);
+        config.temporal = Some(crate::temporal::Config {
+            frames: 4,
+            rejection: crate::temporal::RejectionConfig::default(),
+            features: crate::temporal::Features::Variance,
+        });
+        assert_eq!(config.history_taps(), 1);
+        assert_eq!(config.gather_taps(), config.taps() + 1);
+        assert_eq!(
+            config.target_channels(),
+            config.scale * config.scale * (config.taps() + 1)
+        );
+
+        let l = layout(2, 8, 8);
+        let s = Sample {
+            lr: vec![f16::from_f32(ACCUMULATED); l.lr_len()],
+            hr: vec![f16::from_f32(0.0); l.hr_len()],
+        };
+        let current = vec![CURRENT; l.lr_texels() * 3];
+        let crop = Crop {
+            x: 0,
+            y: 0,
+            tile: 8,
+        };
+        let taps = config.gather_taps() as usize;
+        let mut out = vec![0.0; 3 * taps * 64];
+        write_taps(&s, &l, crop, 0, &config, Some(&current), &mut out);
+
+        let spatial = config.taps() as usize;
+        for channel in 0..3 * taps {
+            let tap = channel % taps;
+            let expected = if tap < spatial { CURRENT } else { ACCUMULATED };
+            let got = transform::decompress(out[channel * 64]);
+            assert!(
+                (got - expected).abs() < 1e-3,
+                "tap {tap} of channel {channel} read {got}, wanted {expected}"
+            );
+        }
+
+        // And the gather has to agree about which is which, or the trainer and
+        // the reconstruction disagree about what the weights mean.
+        let mut weights = vec![0.0f32; (config.scale * config.scale) as usize * taps * 64];
+        // All the weight on the history tap: the output is then the past.
+        for slot in 0..(config.scale * config.scale) as usize {
+            for texel in 0..64 {
+                weights[((slot * taps + taps - 1) * 8 + texel / 8) * 8 + texel % 8] = 1.0;
+            }
+        }
+        let out = assemble_kernel(&s, &l, crop, &weights, &config, Some(&current));
+        for (index, &value) in out.iter().enumerate() {
+            assert!(
+                (value - ACCUMULATED).abs() < 1e-2,
+                "element {index} came back as {value}, not the history it was told to use"
+            );
+        }
+    }
+
     /// The guide rejects taps by multiplying their weight to exactly zero, and
     /// at a silhouette it can reject all of them. Dividing by a floor then puts
     /// a black pixel on the edge: rare, invisible to PSNR, and the first thing
@@ -1423,7 +1522,7 @@ mod tests {
             tile: 8,
         };
         let weights = untrained_weights(&config, 8);
-        let out = assemble_kernel(&s, &l, crop, &weights, &config);
+        let out = assemble_kernel(&s, &l, crop, &weights, &config, None);
         assert_eq!(out.len(), 16 * 16 * 3);
         for (index, &value) in out.iter().enumerate() {
             assert!(
@@ -1514,7 +1613,7 @@ mod tests {
             tile: 8,
         };
         let weights = untrained_weights(&config, 8);
-        let gathered = assemble_kernel(&s, &l, crop, &weights, &config);
+        let gathered = assemble_kernel(&s, &l, crop, &weights, &config, None);
         let low = crop_color(&s, &l, crop);
 
         // Compare against the same bilinear the project reports as its

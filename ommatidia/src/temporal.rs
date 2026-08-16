@@ -49,6 +49,16 @@ impl Config {
     pub fn auxiliary_channels(self) -> u32 {
         7 + u32::from(self.features == Features::Variance)
     }
+
+    /// The same, for a checkpoint that gathers the samples itself.
+    ///
+    /// The guided RGB is dropped. It exists to tell a residual model what it is
+    /// correcting, and a kernel checkpoint corrects nothing — carrying it would
+    /// put the 13x13 filter back into a pipeline built to remove it, to describe
+    /// a base that is no longer there.
+    pub fn gather_auxiliary_channels(self) -> u32 {
+        4 + u32::from(self.features == Features::Variance)
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]

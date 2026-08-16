@@ -82,9 +82,14 @@ pub fn reconstruct(
     match config.prediction {
         // One operation: the weights the network emitted are applied straight
         // to the sparse samples, with nothing filtered beforehand.
-        Prediction::SubpixelKernel => {
-            batch::assemble_kernel(sample, layout, crop, &residual, config)
-        }
+        Prediction::SubpixelKernel => batch::assemble_kernel(
+            sample,
+            layout,
+            crop,
+            &residual,
+            config,
+            input.current_color(),
+        ),
         Prediction::SubpixelResidual => {
             batch::assemble(&low, guided, &residual, [crop.tile as usize; 2], config)
         }
