@@ -81,6 +81,7 @@ struct Args {
     demodulation_offset: f32,
     head_kernel: u32,
     temporal_weight: f32,
+    temporal_motion_bias: f32,
     teacher_every: usize,
     seed: u64,
     log_every: usize,
@@ -132,6 +133,7 @@ impl Default for Args {
             demodulation_offset: 0.25,
             head_kernel: 3,
             temporal_weight: 0.0,
+            temporal_motion_bias: 0.0,
             teacher_every: 250,
             seed: 0,
             log_every: 50,
@@ -186,6 +188,11 @@ usage: ommatidia-train [options]
                        squared error is indifferent to whether consecutive
                        frames agree, so without this a reconstruction fitted to
                        one will flicker whenever its input does  [0]
+  --temporal-motion-bias F
+                       extra temporal weight per unit of motion. Moving pixels
+                       carry the flicker and are a small minority, so at an
+                       even weight the term is decided by pixels that were
+                       never going to be unstable  [0]
   --teacher-every N    steps between resynchronising the detached copy of the
                        network that the temporal target is built from  [250]
   --head-kernel N      kernel size of the output convolution. A kernel head is
@@ -307,6 +314,11 @@ fn parse_from(argv: impl Iterator<Item = String>) -> Result<Args, String> {
                 args.temporal_weight = value()?
                     .parse()
                     .map_err(|e| format!("--temporal-weight: {e}"))?
+            }
+            "--temporal-motion-bias" => {
+                args.temporal_motion_bias = value()?
+                    .parse()
+                    .map_err(|e| format!("--temporal-motion-bias: {e}"))?
             }
             "--teacher-every" => {
                 args.teacher_every = value()?
@@ -513,6 +525,7 @@ fn main() {
         demodulation_offset,
         head_kernel: args.head_kernel,
         temporal_weight: args.temporal_weight,
+        temporal_motion_bias: args.temporal_motion_bias,
         reconstruction_base,
         temporal,
         ..ModelConfig::default()
@@ -749,6 +762,7 @@ fn main() {
                     &temporal.valid[texels],
                     tile,
                     scale,
+                    config.temporal_motion_bias,
                 );
                 target[span.clone()].copy_from_slice(&slot_target);
                 mask[span].copy_from_slice(&slot_mask);
@@ -1235,6 +1249,18 @@ mod cli_tests {
                 ],
                 "--head-kernel" => vec![vec!["--head-kernel", "1"]],
                 "--teacher-every" => vec![vec!["--teacher-every", "100"]],
+                "--temporal-motion-bias" => vec![vec![
+                    "--temporal-motion-bias",
+                    "8",
+                    "--temporal-weight",
+                    "1",
+                    "--history-frames",
+                    "4",
+                    "--prediction",
+                    "kernel",
+                    "--reconstruction-base",
+                    "sample",
+                ]],
                 "--temporal-weight" => vec![vec![
                     "--temporal-weight",
                     "1",

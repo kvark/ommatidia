@@ -219,15 +219,25 @@ Every underperforming arm in this work sat above it.
 
 Reprojected history extends the formulation naturally — the accumulated estimate
 is one more tap, and how much to trust it is one more weight — but a single-frame
-objective never asks for it. The learned bias for that tap does not move off its
+objective never asks for it. The learned bias for that tap did not move off its
 initialisation in 8,000 steps: twenty-five current-frame taps already denoise a
-4-spp frame, so history buys nothing a per-frame squared error can see. Each
-frame is then reconstructed independently and the sequence flickers, 1.12 dB
-worse than the deterministic accumulation and 3.19 dB worse where anything
-moves, while every individual frame is 1.81 dB better. The residual model looks
-stable by comparison, but it is borrowing that from the accumulation it corrects
-rather than learning it — and its relative error there is 73, with a worst crop
-of 2,801. Temporal stability needs the objective to contain it; see the
+4-spp frame, so history buys nothing a per-frame squared error can see, and the
+sequence flickered while every individual frame improved.
+
+Stability had to go into the objective. The temporal metric rearranges into a
+squared error against a host-assembled target, so it costs the graph six
+operations rather than a per-pixel gather it cannot express, with the previous
+frame's answer coming from a detached copy of the network. Temporal error then
+moves monotonically with its weight, and at weight 1 the reconstruction gives up
+0.31 dB of PSNR for 0.95 dB of stability while also improving relative error,
+worst case, and SSIM — 1.49 dB better per frame than the deterministic
+accumulation, five times better on relative error, sixteen times better in its
+worst crop, and within 0.17 dB on stability.
+
+Weighting that term toward moving pixels seemed obvious and is wrong: the target
+is least trustworthy exactly where motion is largest, so it amplifies target
+error rather than a deficiency, monotonically. Moving pixels remain the
+unsolved case. See the
 [`single-operation result`](docs/results/monolithic-kernel-2026-08-15.md).
 
 SSIM should not be read on this content. Split by crop brightness, the darkest

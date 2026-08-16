@@ -72,6 +72,7 @@ fn config() -> ModelConfig {
         demodulation_offset: 0.25,
         head_kernel: 3,
         temporal_weight: 0.0,
+        temporal_motion_bias: 0.0,
         temporal: None,
     }
 }

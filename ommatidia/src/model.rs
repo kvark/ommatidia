@@ -257,6 +257,13 @@ pub struct ModelConfig {
     /// because it is part of how the weights came to be what they are.
     #[serde(default)]
     pub temporal_weight: f32,
+    /// Extra weight the temporal loss gives a pixel per unit of motion.
+    ///
+    /// Zero weights every pixel with accepted history alike, which sounds fair
+    /// and is not: moving pixels are 2.7% of them on these sequences, so they
+    /// contribute 2.7% of the term while carrying all of the flicker.
+    #[serde(default)]
+    pub temporal_motion_bias: f32,
     /// Half-width, in input pixels, of the neighbourhood a
     /// [`Prediction::SubpixelKernel`] gathers from. Ignored by the other
     /// targets, and carried in the checkpoint because the runtime has to read
@@ -302,6 +309,7 @@ impl Default for ModelConfig {
             demodulation_offset: legacy_demodulation_offset(),
             head_kernel: legacy_head_kernel(),
             temporal_weight: 0.0,
+            temporal_motion_bias: 0.0,
             temporal: None,
         }
     }
