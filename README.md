@@ -217,6 +217,19 @@ every knob is really "how much smoothing", PSNR always prefers more of it, and
 detail retention crossing 100% is what marks a variant that failed to denoise.
 Every underperforming arm in this work sat above it.
 
+Reprojected history extends the formulation naturally — the accumulated estimate
+is one more tap, and how much to trust it is one more weight — but a single-frame
+objective never asks for it. The learned bias for that tap does not move off its
+initialisation in 8,000 steps: twenty-five current-frame taps already denoise a
+4-spp frame, so history buys nothing a per-frame squared error can see. Each
+frame is then reconstructed independently and the sequence flickers, 1.12 dB
+worse than the deterministic accumulation and 3.19 dB worse where anything
+moves, while every individual frame is 1.81 dB better. The residual model looks
+stable by comparison, but it is borrowing that from the accumulation it corrects
+rather than learning it — and its relative error there is 73, with a worst crop
+of 2,801. Temporal stability needs the objective to contain it; see the
+[`single-operation result`](docs/results/monolithic-kernel-2026-08-15.md).
+
 SSIM should not be read on this content. Split by crop brightness, the darkest
 third scores 0.9810 and the brightest 0.7905: C2 is absolute, and where the
 local variance falls below it the structure term reports agreement whatever the
