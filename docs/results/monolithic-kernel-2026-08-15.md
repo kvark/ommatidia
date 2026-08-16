@@ -369,6 +369,59 @@ is already the thing it would minimise.
 What this does not need is a bigger network or more taps. It needs the objective
 to contain the axis the failure is on.
 
+## Putting stability into the objective
+
+The temporal metric rearranges into a squared error against a target the host
+assembles, so the graph gains six operations rather than a per-pixel gather it
+has no primitive for. The previous frame's answer comes from a detached copy of
+the network, resynchronised every 250 steps and initialised from the same seed.
+Same data, same 8,000 steps, scored on the same unseen sequences.
+
+| arm | PSNR | SSIM | relMSE | worst crop | detail | temporal | moving |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| four-frame HR guide | 28.54 dB | 0.8808 | 0.186 | 3.46 | 42% | — | — |
+| low-colour residual | 30.57 dB | **0.9003** | 73.29 | 2800.6 | 43% | +0.11 | **+0.99** |
+| kernel, no temporal term | **30.35 dB** | 0.8746 | 0.041 | 0.65 | **80%** | −1.12 | −3.19 |
+| **kernel, weight 1** | 30.04 dB | 0.8802 | **0.036** | **0.22** | 76% | −0.17 | −2.24 |
+| kernel, weight 4 | 27.73 dB | 0.8729 | 0.047 | 0.29 | 77% | **+0.53** | −1.39 |
+| kernel, weight 1, motion bias 8 | 28.40 dB | 0.8560 | 0.049 | 0.98 | 85% | −0.94 | −2.48 |
+| kernel, weight 1, motion bias 32 | 25.49 dB | 0.8212 | 0.072 | 0.44 | 99% | −1.35 | −2.88 |
+
+**The term does what it was built to do.** Temporal error moves monotonically
+with its weight, −1.12 dB to −0.17 to +0.53, and at weight 4 the gather is more
+stable than the deterministic accumulation it replaced. Nothing else tried in
+this work moved that column at all.
+
+**The exchange rate is steep.** 1.65 dB of stability costs 2.62 dB of per-frame
+quality, and at weight 4 the reconstruction has fallen below the deterministic
+base on PSNR. Stability is not free, which is the expected shape — a
+reconstruction that agrees with its own past is constrained relative to one
+free to re-decide every frame.
+
+**Weight 1 is where to stand.** It gives up 0.31 dB of PSNR for 0.95 dB of
+stability, and comes out ahead on everything else at the same time: relative
+error 0.036 against 0.041, a worst crop of 0.22 against 0.65, and SSIM above
+the untermed arm. Against the deterministic base it is 1.49 dB better per
+frame, five times better on relative error, sixteen times better in its worst
+crop, and within 0.17 dB on stability.
+
+**Weighting the term toward moving pixels fails, and monotonically.** The
+reasoning for trying it was sound — moving pixels are 2.7% of the valid ones and
+carry all of the flicker, so at an even weight they contribute 2.7% of the
+gradient. The reasoning against it is stronger and was not anticipated: the
+target is least trustworthy exactly where motion is largest, because that is
+where the motion vectors are least accurate and the reprojected teacher is
+furthest from the truth. Amplifying those pixels amplifies target error rather
+than a deficiency, and biases of 8 and 32 are worse than none on every column
+including the one they were meant to help.
+
+**What is still not solved.** Moving pixels never beat the deterministic base
+under any setting here. The residual model does beat it there, by 0.99 dB — but
+with a relative error of 73 and a worst crop of 2,801, so it is not a
+counterexample so much as a different failure. The gap is real and it is where
+the next work is; a better motion-compensated target, rather than a heavier
+weight on the one that exists, is what the bias result points at.
+
 ## The scenes, and why they had to change
 
 The scenes cannot really discriminate these results. Blade's fallback

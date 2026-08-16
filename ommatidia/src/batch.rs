@@ -781,6 +781,9 @@ pub fn reference_change(
 /// disocclusions, both at input resolution, exactly as
 /// [`crate::metrics::temporal_error`] takes them.
 ///
+/// `motion_bias` raises the weight of pixels that moved, which is where flicker
+/// lives and where an even weight leaves almost no gradient.
+///
 /// Returns the masked target and the mask. A pixel whose history was rejected,
 /// or whose reprojection leaves the crop, gets a zero in both, so it
 /// contributes nothing rather than something wrong.
@@ -791,6 +794,7 @@ pub fn temporal_target(
     valid: &[bool],
     tile: usize,
     scale: usize,
+    motion_bias: f32,
 ) -> (Vec<f32>, Vec<f32>) {
     assert_eq!(previous.len(), 3 * scale * scale * tile * tile);
     assert_eq!(previous.len(), reference_change.len());
@@ -826,9 +830,18 @@ pub fn temporal_target(
                 {
                     continue;
                 }
+                // Flicker concentrates where things move, and moving pixels are
+                // a small minority — 2.7% of the valid ones on these sequences,
+                // so at an even weight they contribute 2.7% of the gradient and
+                // the term is decided by pixels that were never going to be
+                // unstable. The mask multiplies both sides, so it enters the
+                // squared error squared; the square root keeps `motion_bias` a
+                // weight rather than the root of one.
+                let speed = (motion[texel * 2].powi(2) + motion[texel * 2 + 1].powi(2)).sqrt();
                 let index = channel * tile * tile + texel;
-                target[index] = reprojected[index] + reference_change[index];
-                mask[index] = 1.0;
+                let weight = (1.0 + motion_bias * speed).sqrt();
+                target[index] = (reprojected[index] + reference_change[index]) * weight;
+                mask[index] = weight;
             }
         }
     }
@@ -1548,7 +1561,8 @@ mod tests {
         let valid: Vec<bool> = (0..TILE * TILE).map(|i| !i.is_multiple_of(5)).collect();
 
         let change = reference_change(&current_ref, &previous_ref, &motion, TILE, SCALE);
-        let (target, mask) = temporal_target(&previous_out, &change, &motion, &valid, TILE, SCALE);
+        let (target, mask) =
+            temporal_target(&previous_out, &change, &motion, &valid, TILE, SCALE, 0.0);
 
         // What the graph computes: mean over every element of the masked error.
         let loss: f64 = current_out
