@@ -320,6 +320,55 @@ work that underperformed — the b8 kernel at 99%, offset 0.05 at 104%, radius 1
 at 105%, the 1×1 head at 103% — is a variant that failed to denoise, and the
 detail figure said so in every case while PSNR alone did not.
 
+## History as one more tap
+
+The accumulated estimate becomes tap 25 and how much to trust it becomes a
+weight the network predicts, rather than a base a residual model corrects.
+Trained on 1,024 four-frame sequences with both camera and object motion on the
+textured, shadowed scenes; scored on 128 unseen sequences, against the same
+b16 capacity in the architecture the project previously selected.
+
+| | PSNR | SSIM | relMSE | worst crop | detail | temporal | moving pixels |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| four-frame HR guide | 28.54 dB | 0.8808 | 0.186 | 3.46 | 42% | — | — |
+| kernel + history tap | 30.35 dB | 0.8746 | **0.041** | **0.65** | **80%** | **−1.12 dB** | **−3.19 dB** |
+| low-colour residual | **30.57 dB** | **0.9003** | 73.29 | 2800.57 | 43% | +0.11 dB | +0.99 dB |
+
+Neither of these is a result to ship, and they fail in opposite directions.
+
+**The kernel model does not use history, and the reason is the loss.** Its
+learned bias for the history tap is 0.0105 — the floor it was initialised at,
+unmoved after 8,000 steps, 0.9% of the weight against the current frame's 1.20.
+Twenty-five current-frame taps already denoise a 4-spp frame, so history buys
+almost nothing on a per-frame squared error, and a per-frame squared error is
+the entire objective. It is not that history was unavailable; it is that nothing
+ever asked for it.
+
+The consequence is that each frame's kernel is predicted independently from that
+frame's own noisy input, so the weights move frame to frame and the output moves
+with them. Every frame is individually good — 1.81 dB over the deterministic
+base, four times less relative error, nearly twice the detail — and the sequence
+flickers, by 1.12 dB overall and 3.19 dB where anything is moving.
+
+**The residual model is stable, but it did not learn that either.** Its
+stability is inherited: the accumulated history it corrects is stable by
+construction, and a small correction on top of a stable base is stable. What it
+did learn is unbounded, and here that is not a nuance — relative error of 73
+against the base's 0.186, with a worst crop of 2,801. It is the same failure as
+on the spatial sets, an order of magnitude further along.
+
+So the honest reading is that the residual formulation was borrowing temporal
+stability from the deterministic accumulation, and the kernel formulation, by
+removing the deterministic stage, gave up the loan. Stability is not a property
+of a single frame, and it will not appear in a single-frame objective no matter
+which parameterisation is used. The project's own earlier note — that the next
+architecture experiment is paired sequence training with a differentiable
+temporal loss — is what this measures the need for, and `metrics::temporal_error`
+is already the thing it would minimise.
+
+What this does not need is a bigger network or more taps. It needs the objective
+to contain the axis the failure is on.
+
 ## The scenes, and why they had to change
 
 The scenes cannot really discriminate these results. Blade's fallback
