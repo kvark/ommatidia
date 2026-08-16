@@ -257,6 +257,69 @@ The offset is carried in the checkpoint rather than living in WGSL, for the same
 reason the guide coefficients are — a runtime that changed it would silently
 reinterpret weights that were fitted against a different reconstruction.
 
+## Three sweeps
+
+All on the textured, shadowed scenes, b16, demodulated, 8,000 steps, scored on
+the separate 128-scene set. The control arm reproduces the earlier figure
+exactly, so these differ only in what they say they differ in.
+
+### How far demodulation may rescale a pixel
+
+| offset | PSNR | SSIM | relMSE | worst crop | detail |
+|---:|---:|---:|---:|---:|---:|
+| 0.05 | 28.74 dB | 0.8711 | 0.0544 | 1.45 | 104% |
+| 0.10 | 29.38 dB | 0.8775 | 0.0390 | 0.54 | 94% |
+| **0.25** | 30.21 dB | **0.8840** | 0.0325 | **0.29** | 83% |
+| 0.40 | 30.47 dB | 0.8832 | **0.0324** | 0.41 | 78% |
+| 0.70 | **30.55 dB** | 0.8771 | 0.0360 | 0.50 | 75% |
+| none | 30.26 dB | 0.8563 | 0.0437 | 0.47 | 67% |
+
+A large offset makes demodulation a no-op, so the last row is where the column
+is heading. PSNR climbs all the way to 0.70 and then has to come back down;
+relative error bottoms out between 0.25 and 0.40; SSIM and the worst crop both
+prefer 0.25. The default stays at 0.25, which loses 0.34 dB against the
+PSNR-optimal point and keeps the best worst case and five more points of detail
+— consistent with everything else here about which of those numbers to believe.
+
+### Tap radius
+
+| radius | taps | head channels | PSNR | SSIM | relMSE | worst crop | detail |
+|---:|---:|---:|---:|---:|---:|---:|---:|
+| 1 | 9 | 36 | 28.73 dB | 0.8439 | 0.0408 | 0.35 | 105% |
+| **2** | 25 | 100 | 30.21 dB | 0.8840 | 0.0325 | 0.29 | 83% |
+| 3 | 49 | 196 | **30.53 dB** | **0.8963** | **0.0318** | 0.29 | 76% |
+
+Nine taps cannot denoise four samples per pixel — 105% detail is the metric
+saying the noise came straight through. Twenty-five is the knee. Forty-nine buys
+0.32 dB for twice the head, which is available if it is ever wanted and is not
+the first thing to spend on.
+
+### Head kernel
+
+The head is 100 channels wide at radius two, a quarter of the network's
+arithmetic, reading features that already carry the whole receptive field. A 1×1
+head therefore looked like free money.
+
+| head | PSNR | SSIM | relMSE | worst crop | detail | GFLOP | ms |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| 1×1 | 29.48 dB | 0.8580 | 0.0391 | 0.34 | 103% | 47.4 | 13.19 |
+| **3×3** | **30.21 dB** | **0.8840** | **0.0325** | **0.29** | 83% | 60.7 | 14.41 |
+
+It is not. It costs 0.73 dB, and the saving is smaller than it looks: 22% of the
+arithmetic is 8.5% of the frame, because a wide head is bound by what it writes
+rather than by what it multiplies. The spatial extent is doing real work —
+without it each pixel's kernel depends only on its own features, and
+neighbouring output pixels get uncorrelated kernels, which is the 103%.
+
+### What the three have in common
+
+Every knob here is the same knob. More taps, more offset, more head context all
+mean more smoothing, PSNR always prefers more of it, and detail retention falls
+monotonically as it is added. The useful landmark is 100%: every variant in this
+work that underperformed — the b8 kernel at 99%, offset 0.05 at 104%, radius 1
+at 105%, the 1×1 head at 103% — is a variant that failed to denoise, and the
+detail figure said so in every case while PSNR alone did not.
+
 ## The scenes, and why they had to change
 
 The scenes cannot really discriminate these results. Blade's fallback

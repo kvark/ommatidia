@@ -209,6 +209,14 @@ sounds: at 0.05 it allows a factor of twenty, which lands pixels where the
 compressed gather has no precision left and costs 1.5 dB. At 0.25 it allows
 four.
 
+Three sweeps settled the rest. Nine taps cannot denoise four samples per pixel;
+twenty-five is the knee and forty-nine buys 0.32 dB for twice the head. A 1×1
+head looked like free money and costs 0.73 dB — and saves less than it appears,
+since 22% of the arithmetic is 8.5% of the frame. They have one thing in common:
+every knob is really "how much smoothing", PSNR always prefers more of it, and
+detail retention crossing 100% is what marks a variant that failed to denoise.
+Every underperforming arm in this work sat above it.
+
 SSIM should not be read on this content. Split by crop brightness, the darkest
 third scores 0.9810 and the brightest 0.7905: C2 is absolute, and where the
 local variance falls below it the structure term reports agreement whatever the
