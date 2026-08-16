@@ -37,6 +37,15 @@ pub enum InputSample {
 }
 
 impl InputSample {
+    /// The current frame's own radiance, when history has displaced it out of
+    /// the sample's colour plane.
+    pub fn current_color(&self) -> Option<&[f32]> {
+        match self {
+            Self::Spatial(_) => None,
+            Self::Temporal(prepared) => Some(&prepared.current_color),
+        }
+    }
+
     pub fn sample(&self) -> &Sample {
         match self {
             Self::Spatial(sample) => sample,
@@ -57,9 +66,9 @@ impl InputSample {
                 batch::write_conditioning(sample, layout, config.cond_planes, crop, slot, out);
                 None
             }
-            Self::Temporal(prepared) => Some(batch::write_temporal_conditioning(
-                prepared, layout, config, crop, slot, out,
-            )),
+            Self::Temporal(prepared) => {
+                batch::write_temporal_conditioning(prepared, layout, config, crop, slot, out)
+            }
         }
     }
 }
@@ -217,6 +226,7 @@ impl Batcher {
                     crop,
                     slot,
                     &config,
+                    sample.current_color(),
                     &mut out.taps,
                 );
             }

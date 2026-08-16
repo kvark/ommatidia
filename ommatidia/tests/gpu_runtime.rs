@@ -867,6 +867,7 @@ fn check_kernel_parity(config: &ModelConfig, label: &str) {
         },
         &weights,
         config,
+        None,
     );
 
     let mut worst = 0.0f32;

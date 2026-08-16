@@ -301,10 +301,35 @@ impl ModelConfig {
 
     /// Conditioning channels, from the plane set.
     pub fn cond_channels(&self) -> u32 {
-        self.cond_planes.channels() as u32
-            + self
-                .temporal
-                .map_or(0, temporal::Config::auxiliary_channels)
+        self.cond_planes.channels() as u32 + self.temporal_auxiliary_channels()
+    }
+
+    /// Extra conditioning a temporal checkpoint appends after the stored
+    /// planes. Zero when there is no history.
+    pub fn temporal_auxiliary_channels(&self) -> u32 {
+        match self.temporal {
+            None => 0,
+            Some(temporal) if self.prediction == Prediction::SubpixelKernel => {
+                temporal.gather_auxiliary_channels()
+            }
+            Some(temporal) => temporal.auxiliary_channels(),
+        }
+    }
+
+    /// Reprojected-history taps the gather reads, beyond the spatial ones.
+    ///
+    /// One: the accumulated estimate at this pixel. Making it a tap rather than
+    /// a base is the whole idea — how much to trust history becomes a weight the
+    /// network predicts per output sub-pixel, alongside the weights it gives the
+    /// current frame's samples, and a history it does not trust simply gets a
+    /// small one.
+    pub fn history_taps(&self) -> u32 {
+        u32::from(self.temporal.is_some() && self.prediction == Prediction::SubpixelKernel)
+    }
+
+    /// Every tap the gather reads.
+    pub fn gather_taps(&self) -> u32 {
+        self.taps() + self.history_taps()
     }
 
     /// Input samples one output sub-pixel gathers from.
@@ -338,7 +363,7 @@ impl ModelConfig {
             Prediction::SubpixelResidual => 3 * self.scale * self.scale,
             Prediction::LowResolutionResidual => 3,
             // One weight per sub-pixel per tap, sub-pixel major.
-            Prediction::SubpixelKernel => self.scale * self.scale * self.taps(),
+            Prediction::SubpixelKernel => self.scale * self.scale * self.gather_taps(),
         }
     }
 
@@ -370,7 +395,7 @@ impl ModelConfig {
     pub fn tap_len(&self) -> usize {
         match self.prediction {
             Prediction::SubpixelKernel => {
-                (self.batch * 3 * self.taps() * self.tile * self.tile) as usize
+                (self.batch * 3 * self.gather_taps() * self.tile * self.tile) as usize
             }
             _ => 0,
         }
@@ -842,7 +867,8 @@ pub(crate) fn bilinear_kernel_bias(config: &ModelConfig) -> Vec<f32> {
     let inverse_softplus = |w: f32| w.exp_m1().ln();
 
     let scale = config.scale as f32;
-    let taps = config.taps();
+    let spatial_taps = config.taps();
+    let taps = config.gather_taps();
     let mut out = vec![0.0; config.target_channels() as usize];
     for slot in 0..config.scale * config.scale {
         let (sub_x, sub_y) = config.sub_pixel(slot);
@@ -851,9 +877,16 @@ pub(crate) fn bilinear_kernel_bias(config: &ModelConfig) -> Vec<f32> {
         let center_x = (sub_x as f32 + 0.5) / scale - 0.5;
         let center_y = (sub_y as f32 + 0.5) / scale - 0.5;
         for tap in 0..taps {
-            let (dx, dy) = config.tap_offset(tap);
-            let weight = (1.0 - (dx as f32 - center_x).abs()).max(0.0)
-                * (1.0 - (dy as f32 - center_y).abs()).max(0.0);
+            // History starts at the floor: an untrained network reconstructs
+            // the current frame and leaves the past alone, so any use it makes
+            // of history later is something training found.
+            let weight = if tap >= spatial_taps {
+                0.0
+            } else {
+                let (dx, dy) = config.tap_offset(tap);
+                (1.0 - (dx as f32 - center_x).abs()).max(0.0)
+                    * (1.0 - (dy as f32 - center_y).abs()).max(0.0)
+            };
             out[(slot * taps + tap) as usize] = inverse_softplus(weight.max(FLOOR));
         }
     }
@@ -875,7 +908,7 @@ fn gather(graph: &mut Graph, config: &ModelConfig, weights: NodeId, extent: [u32
     let batch = config.batch;
     let [width, height] = extent;
     let spatial = width * height;
-    let taps = config.taps();
+    let taps = config.gather_taps();
     let slots = config.scale * config.scale;
 
     // Peel one group of `group` channels at a time off the front.
