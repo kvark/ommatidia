@@ -336,11 +336,13 @@ fn kernel_reconstruction_frame_cost() {
         .with(Plane::SpecularF0)
         .with(Plane::Roughness);
     let shapes = [
-        ("residual b8", 8, Prediction::SubpixelResidual),
-        ("kernel b8 r2", 8, Prediction::SubpixelKernel),
-        ("kernel b16 r2", 16, Prediction::SubpixelKernel),
+        ("residual b8", 8, Prediction::SubpixelResidual, 3),
+        ("kernel b8 r2", 8, Prediction::SubpixelKernel, 3),
+        ("kernel b16 r2", 16, Prediction::SubpixelKernel, 3),
+        // The head is a quarter of the arithmetic at 3x3 and a wide output.
+        ("kernel b16 r2 head1", 16, Prediction::SubpixelKernel, 1),
     ];
-    for (name, base_channels, prediction) in shapes {
+    for (name, base_channels, prediction, head_kernel) in shapes {
         let config = ModelConfig {
             scale: 2,
             tile: 64,
@@ -353,6 +355,7 @@ fn kernel_reconstruction_frame_cost() {
                 _ => ReconstructionBase::HighResolutionGuided,
             },
             kernel_radius: 2,
+            head_kernel,
             ..ModelConfig::default()
         };
         let model = build_for_extent(&config, false, extent).expect("build");
@@ -377,7 +380,7 @@ fn kernel_reconstruction_frame_cost() {
         let per_frame = started.elapsed().as_secs_f64() / RUNS as f64;
         let out_pixels = (extent[0] * config.scale) as f64 * (extent[1] * config.scale) as f64;
         println!(
-            "{name:<14} {:5.2} ms, {:5.1} GFLOP, {} output channels",
+            "{name:<20} {:5.2} ms, {:5.1} GFLOP, {} output channels",
             per_frame * 1e3,
             config.flops(out_pixels as usize),
             config.target_channels(),

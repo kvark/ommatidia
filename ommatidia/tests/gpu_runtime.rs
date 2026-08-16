@@ -70,6 +70,7 @@ fn config() -> ModelConfig {
         kernel_radius: 2,
         demodulate: false,
         demodulation_offset: 0.25,
+        head_kernel: 3,
         temporal: None,
     }
 }

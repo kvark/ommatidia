@@ -79,6 +79,7 @@ struct Args {
     kernel_radius: u32,
     demodulate: bool,
     demodulation_offset: f32,
+    head_kernel: u32,
     seed: u64,
     log_every: usize,
     eval_out: Option<PathBuf>,
@@ -127,6 +128,7 @@ impl Default for Args {
             kernel_radius: 2,
             demodulate: false,
             demodulation_offset: 0.25,
+            head_kernel: 3,
             seed: 0,
             log_every: 50,
             eval_out: None,
@@ -176,6 +178,9 @@ usage: ommatidia-train [options]
   --demodulate         gather radiance divided by albedo and multiply the exact
                        output-resolution albedo back, so the texture is put
                        back rather than reconstructed. Kernel checkpoints only
+  --head-kernel N      kernel size of the output convolution. A kernel head is
+                       wide, so at 3 it is a quarter of the arithmetic; the
+                       features it reads already have a wide receptive field  [3]
   --demodulation-offset F
                        added to the albedo on both sides, bounding how far a
                        pixel can be rescaled. 0.05 allows 20x and loses 1.5 dB
@@ -282,6 +287,11 @@ fn parse_from(argv: impl Iterator<Item = String>) -> Result<Args, String> {
                 args.kernel_radius = value()?
                     .parse()
                     .map_err(|e| format!("--kernel-radius: {e}"))?
+            }
+            "--head-kernel" => {
+                args.head_kernel = value()?
+                    .parse()
+                    .map_err(|e| format!("--head-kernel: {e}"))?
             }
             "--demodulate" => args.demodulate = true,
             "--demodulation-offset" => {
@@ -481,6 +491,7 @@ fn main() {
         kernel_radius,
         demodulate,
         demodulation_offset,
+        head_kernel: args.head_kernel,
         reconstruction_base,
         temporal,
         ..ModelConfig::default()
@@ -1148,6 +1159,7 @@ mod cli_tests {
                     vec!["--prediction", "subpixel"],
                     vec!["--prediction", "kernel", "--reconstruction-base", "sample"],
                 ],
+                "--head-kernel" => vec![vec!["--head-kernel", "1"]],
                 "--demodulation-offset" => vec![vec![
                     "--demodulation-offset",
                     "0.25",
