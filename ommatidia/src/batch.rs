@@ -718,8 +718,7 @@ fn collect(image: &[f32], tile: usize, scale: usize) -> Vec<f32> {
     out
 }
 
-/// Motion-compensated bilinear resample of an interleaved output-resolution
-/// image, in output coordinates.
+/// Motion-compensated resample of an interleaved output-resolution image.
 ///
 /// Takes and returns compressed values, but interpolates in linear radiance,
 /// because that is what [`crate::metrics::temporal_error`] does — it is handed
@@ -727,29 +726,48 @@ fn collect(image: &[f32], tile: usize, scale: usize) -> Vec<f32> {
 /// compressed space instead is a different quantity by about a percent, and a
 /// loss that reprojects differently from the metric optimises something the
 /// report never shows.
-fn reproject(image: &[f32], motion: &[f32], tile: usize, scale: usize) -> Vec<f32> {
+///
+/// Occlusion is decided here, on the high-resolution surfaces, not inherited
+/// from the sample-history mask. Each output pixel keeps only the bilinear
+/// taps that match its current surface; a pixel with none is marked invalid
+/// and written as zero.
+fn reproject(
+    image: &[f32],
+    warp: crate::temporal::Reprojection<'_>,
+    tile: usize,
+    scale: usize,
+) -> (Vec<f32>, Vec<bool>) {
     let extent = tile * scale;
+    assert_eq!(warp.current.len(), extent * extent);
+    assert_eq!(warp.previous.len(), extent * extent);
+    let linear: Vec<f32> = image.iter().map(|&v| transform::decompress(v)).collect();
     let mut out = vec![0.0; image.len()];
+    let mut valid = vec![false; extent * extent];
     for y in 0..extent {
         for x in 0..extent {
             let texel = (y / scale) * tile + x / scale;
-            let previous_x = x as f32 + motion[texel * 2] * scale as f32;
-            let previous_y = y as f32 + motion[texel * 2 + 1] * scale as f32;
-            let (x0, y0) = (previous_x.floor(), previous_y.floor());
-            let (tx, ty) = (previous_x - x0, previous_y - y0);
+            let position = [
+                x as f32 + warp.motion[texel * 2] * scale as f32,
+                y as f32 + warp.motion[texel * 2 + 1] * scale as f32,
+            ];
+            let Some(rgb) = crate::temporal::sample_reprojected(
+                &linear,
+                warp.previous,
+                warp.current[y * extent + x],
+                position,
+                extent,
+                extent,
+                warp.rejection,
+            ) else {
+                continue;
+            };
+            valid[y * extent + x] = true;
             for c in 0..3 {
-                let at = |dx: f32, dy: f32| {
-                    let sx = (x0 + dx).clamp(0.0, extent as f32 - 1.0) as usize;
-                    let sy = (y0 + dy).clamp(0.0, extent as f32 - 1.0) as usize;
-                    transform::decompress(image[(sy * extent + sx) * 3 + c])
-                };
-                let top = at(0.0, 0.0) + tx * (at(1.0, 0.0) - at(0.0, 0.0));
-                let bottom = at(0.0, 1.0) + tx * (at(1.0, 1.0) - at(0.0, 1.0));
-                out[(y * extent + x) * 3 + c] = transform::compress(top + ty * (bottom - top));
+                out[(y * extent + x) * 3 + c] = transform::compress(rgb[c]);
             }
         }
     }
-    out
+    (out, valid)
 }
 
 /// This frame's canonical sub-pixel colour minus the reprojected previous
@@ -757,15 +775,12 @@ fn reproject(image: &[f32], motion: &[f32], tile: usize, scale: usize) -> Vec<f3
 pub fn reference_change(
     current: &[f32],
     previous: &[f32],
-    motion: &[f32],
+    warp: crate::temporal::Reprojection<'_>,
     tile: usize,
     scale: usize,
 ) -> Vec<f32> {
-    let reprojected = collect(
-        &reproject(&spread(previous, tile, scale), motion, tile, scale),
-        tile,
-        scale,
-    );
+    let (reprojected, _) = reproject(&spread(previous, tile, scale), warp, tile, scale);
+    let reprojected = collect(&reprojected, tile, scale);
     current
         .iter()
         .zip(reprojected.iter())
@@ -777,57 +792,46 @@ pub fn reference_change(
 /// build the target the temporal loss compares against.
 ///
 /// Everything is in the compressed sub-pixel layout the gather produces.
-/// `motion` is current-to-previous in input pixels and `valid` rejects
-/// disocclusions, both at input resolution, exactly as
-/// [`crate::metrics::temporal_error`] takes them.
+/// `motion` is current-to-previous in input pixels. Occlusion is decided by
+/// the high-resolution surfaces, exactly as
+/// [`crate::metrics::temporal_error`] decides it — the sample-history mask
+/// is not consulted.
 ///
 /// `motion_bias` raises the weight of pixels that moved, which is where flicker
 /// lives and where an even weight leaves almost no gradient.
 ///
-/// Returns the masked target and the mask. A pixel whose history was rejected,
-/// or whose reprojection leaves the crop, gets a zero in both, so it
-/// contributes nothing rather than something wrong.
+/// Returns the masked target and the mask. A pixel the teacher cannot
+/// reproject — out of the crop, or every bilinear tap on a different
+/// surface — gets a zero in both, so it contributes nothing rather than
+/// something wrong.
 pub fn temporal_target(
     previous: &[f32],
     reference_change: &[f32],
-    motion: &[f32],
-    valid: &[bool],
+    warp: crate::temporal::Reprojection<'_>,
     tile: usize,
     scale: usize,
     motion_bias: f32,
 ) -> (Vec<f32>, Vec<f32>) {
     assert_eq!(previous.len(), 3 * scale * scale * tile * tile);
     assert_eq!(previous.len(), reference_change.len());
-    assert_eq!(motion.len(), tile * tile * 2);
-    assert_eq!(valid.len(), tile * tile);
+    assert_eq!(warp.motion.len(), tile * tile * 2);
 
-    let reprojected = collect(
-        &reproject(&spread(previous, tile, scale), motion, tile, scale),
-        tile,
-        scale,
-    );
+    let (reprojected_image, pixel_valid) =
+        reproject(&spread(previous, tile, scale), warp, tile, scale);
+    let reprojected = collect(&reprojected_image, tile, scale);
     let extent = tile * scale;
     let mut target = vec![0.0; previous.len()];
     let mut mask = vec![0.0; previous.len()];
     let sub = scale * scale;
     for channel in 0..3 * sub {
-        // The bounds test is per output pixel, not per input texel, because
-        // that is where the metric applies it — two sub-pixels of one texel can
-        // fall on opposite sides of the edge.
+        // Validity is per output pixel, not per input texel, because two
+        // sub-pixels of one texel can land on opposite sides of a silhouette.
         let (dy, dx) = ((channel % sub) / scale, (channel % sub) % scale);
         for y in 0..tile {
             for x in 0..tile {
                 let texel = y * tile + x;
-                if !valid[texel] {
-                    continue;
-                }
-                let previous_x = (x * scale + dx) as f32 + motion[texel * 2] * scale as f32;
-                let previous_y = (y * scale + dy) as f32 + motion[texel * 2 + 1] * scale as f32;
-                if previous_x < 0.0
-                    || previous_y < 0.0
-                    || previous_x > (extent - 1) as f32
-                    || previous_y > (extent - 1) as f32
-                {
+                let pixel = (y * scale + dy) * extent + x * scale + dx;
+                if !pixel_valid[pixel] {
                     continue;
                 }
                 // Flicker concentrates where things move, and moving pixels are
@@ -837,7 +841,8 @@ pub fn temporal_target(
                 // unstable. The mask multiplies both sides, so it enters the
                 // squared error squared; the square root keeps `motion_bias` a
                 // weight rather than the root of one.
-                let speed = (motion[texel * 2].powi(2) + motion[texel * 2 + 1].powi(2)).sqrt();
+                let speed =
+                    (warp.motion[texel * 2].powi(2) + warp.motion[texel * 2 + 1].powi(2)).sqrt();
                 let index = channel * tile * tile + texel;
                 let weight = (1.0 + motion_bias * speed).sqrt();
                 target[index] = (reprojected[index] + reference_change[index]) * weight;
@@ -846,6 +851,129 @@ pub fn temporal_target(
         }
     }
     (target, mask)
+}
+
+/// Warp a compressed sub-pixel image onto this frame, same layout.
+///
+/// Pixels the teacher cannot reproject stay zero. The gather then sees a
+/// black history tap there and has to use the current samples instead.
+pub fn warp_previous_output(
+    previous: &[f32],
+    warp: crate::temporal::Reprojection<'_>,
+    tile: usize,
+    scale: usize,
+) -> Vec<f32> {
+    let (reprojected, _) = reproject(&spread(previous, tile, scale), warp, tile, scale);
+    collect(&reprojected, tile, scale)
+}
+
+/// Convert an interleaved linear crop into compressed sub-pixel layout.
+///
+/// Evaluation stores the assembled picture in display-linear RGB. The gather
+/// reads compressed, possibly demodulated, values, so the previous frame has
+/// to go back through that transform before it can be a tap.
+pub fn compress_linear_crop(
+    linear: &[f32],
+    sample: &Sample,
+    layout: &Layout,
+    crop: Crop,
+    config: &ModelConfig,
+) -> Vec<f32> {
+    let tile = crop.tile as usize;
+    let scale = config.scale as usize;
+    let sub = scale * scale;
+    let extent = tile * scale;
+    assert_eq!(linear.len(), extent * extent * 3);
+    let mut out = vec![0.0; 3 * sub * tile * tile];
+    for c in 0..3 {
+        for dy in 0..scale {
+            for dx in 0..scale {
+                let channel = c * sub + dy * scale + dx;
+                for y in 0..tile {
+                    for x in 0..tile {
+                        let px = x * scale + dx;
+                        let py = y * scale + dy;
+                        let mut value = linear[(py * extent + px) * 3 + c];
+                        if config.demodulate {
+                            value /= hr_plane_value(
+                                sample,
+                                layout,
+                                Plane::DiffuseAlbedo,
+                                c,
+                                crop.x as usize * scale + px,
+                                crop.y as usize * scale + py,
+                            ) + config.demodulation_offset;
+                        }
+                        out[(channel * tile + y) * tile + x] = transform::compress(value);
+                    }
+                }
+            }
+        }
+    }
+    out
+}
+
+/// Write one slot of warped previous-output history, compressed sub-pixel.
+pub fn fill_history_slot(
+    history: &mut [f32],
+    previous: &[f32],
+    slot: usize,
+    tile: usize,
+    scale: usize,
+) {
+    let per_slot = 3 * scale * scale * tile * tile;
+    assert_eq!(previous.len(), per_slot);
+    history[slot * per_slot..(slot + 1) * per_slot].copy_from_slice(previous);
+}
+
+/// History reset: current-frame colour in compressed sub-pixel layout.
+///
+/// A pair's first frame has no previous reconstruction. Copying the current
+/// sample into every sub-pixel makes a mix gate a no-op rather than a hole.
+pub fn write_reset_history(
+    sample: &Sample,
+    layout: &Layout,
+    crop: Crop,
+    slot: usize,
+    config: &ModelConfig,
+    current: Option<&[f32]>,
+    out: &mut [f32],
+) {
+    let tile = crop.tile as usize;
+    let scale = config.scale as usize;
+    let sub = scale * scale;
+    let per_slot = 3 * sub * tile * tile;
+    let texels = layout.lr_texels();
+    let stride = layout.lr_width as usize;
+    let base = layout
+        .lr_planes
+        .channel_offset(Plane::Color)
+        .expect("dataset has no low resolution colour");
+    let albedo = config.demodulate.then(|| {
+        let base = layout
+            .lr_planes
+            .channel_offset(Plane::DiffuseAlbedo)
+            .expect("demodulation needs the low resolution albedo");
+        (0..3)
+            .map(|c| &sample.lr[(base + c) * texels..(base + c + 1) * texels])
+            .collect::<Vec<_>>()
+    });
+    for c in 0..3 {
+        let source = &sample.lr[(base + c) * texels..(base + c + 1) * texels];
+        for y in 0..tile {
+            for x in 0..tile {
+                let offset = (crop.y as usize + y) * stride + crop.x as usize + x;
+                let mut value = current.map_or(source[offset].to_f32(), |cur| cur[offset * 3 + c]);
+                if let Some(albedo) = &albedo {
+                    value /= albedo[c][offset].to_f32() + config.demodulation_offset;
+                }
+                let compressed = transform::compress(value);
+                for s in 0..sub {
+                    out[slot * per_slot + (c * sub + s) * tile * tile + y * tile + x] = compressed;
+                }
+            }
+        }
+    }
 }
 
 /// Write the target selected by [`ModelConfig::prediction`].
@@ -930,6 +1058,44 @@ pub fn write_kernel_target(
     }
 }
 
+/// Colour the gather reads that is not in the sample's colour plane.
+#[derive(Clone, Copy, Default)]
+pub struct ExtraTaps<'a> {
+    /// Current-frame RGB, interleaved, when history has displaced it.
+    pub current: Option<&'a [f32]>,
+    /// Un-rejected reprojected history, interleaved, when that tap exists.
+    pub unrejected: Option<&'a [f32]>,
+    /// Warped previous reconstruction in compressed sub-pixel layout.
+    /// Mixed with the spatial gather after it, not read as extra taps.
+    pub previous_output: Option<&'a [f32]>,
+}
+
+fn tap_color(
+    history: bool,
+    tap: usize,
+    spatial_taps: usize,
+    extra: ExtraTaps<'_>,
+    accumulated: f32,
+    offset: usize,
+    channel: usize,
+) -> f32 {
+    if !history {
+        return extra
+            .current
+            .map_or(accumulated, |current| current[offset * 3 + channel]);
+    }
+    // Tap `spatial_taps` is the rejected accumulation, already in the
+    // sample's colour plane. The next one is the un-rejected
+    // reprojection, when the checkpoint asked for it.
+    if tap == spatial_taps + 1 {
+        extra
+            .unrejected
+            .expect("an un-rejected tap needs the un-rejected colour")[offset * 3 + channel]
+    } else {
+        accumulated
+    }
+}
+
 /// Write the sparse samples a gather kernel combines, one shifted copy per tap.
 ///
 /// Channel `c * taps + tap`, which is the order `model::gather` peels them in.
@@ -941,7 +1107,7 @@ pub fn write_taps(
     crop: Crop,
     slot: usize,
     config: &ModelConfig,
-    current: Option<&[f32]>,
+    extra: ExtraTaps<'_>,
     out: &mut [f32],
 ) {
     let tile = crop.tile as usize;
@@ -977,24 +1143,29 @@ pub fn write_taps(
         // frame arrives separately.
         let source = &sample.lr[(base + c) * texels..(base + c + 1) * texels];
         for tap in 0..taps {
-            // The history tap reads the accumulated estimate where it stands,
-            // since it has already been reprojected onto this pixel.
             let history = tap >= spatial_taps;
+            let channel = c * taps + tap;
+            // The accumulated-history tap reads the estimate where it stands,
+            // since it has already been reprojected onto this pixel.
             let (dx, dy) = if history {
                 (0, 0)
             } else {
                 config.tap_offset(tap as u32)
             };
-            let channel = c * taps + tap;
             for y in 0..tile {
                 let source_y = (crop.y as i32 + y as i32 + dy).clamp(0, height - 1) as usize;
                 for x in 0..tile {
                     let source_x = (crop.x as i32 + x as i32 + dx).clamp(0, width - 1) as usize;
                     let offset = source_y * stride + source_x;
-                    let mut value = match (history, current) {
-                        (false, Some(current)) => current[offset * 3 + c],
-                        _ => source[offset].to_f32(),
-                    };
+                    let mut value = tap_color(
+                        history,
+                        tap,
+                        spatial_taps,
+                        extra,
+                        source[offset].to_f32(),
+                        offset,
+                        c,
+                    );
                     if let Some(albedo) = &albedo {
                         value /= albedo[c][offset].to_f32() + config.demodulation_offset;
                     }
@@ -1021,14 +1192,19 @@ pub fn assemble_kernel(
     crop: Crop,
     weights: &[f32],
     config: &ModelConfig,
-    current: Option<&[f32]>,
+    extra: ExtraTaps<'_>,
 ) -> Vec<f32> {
     let tile = crop.tile as usize;
     let scale = config.scale as usize;
     let spatial_taps = config.taps() as usize;
     let taps = config.gather_taps() as usize;
     let slots = scale * scale;
-    assert_eq!(weights.len(), slots * taps * tile * tile);
+    let mix_ch = config.history_mix_channels() as usize;
+    assert_eq!(
+        weights.len(),
+        (slots * taps + mix_ch) * tile * tile,
+        "weight tensor must match the head: spatial gather plus mix gates"
+    );
     let base = layout
         .lr_planes
         .channel_offset(Plane::Color)
@@ -1071,10 +1247,15 @@ pub fn assemble_kernel(
                     let source_x = (crop.x as i32 + x as i32 + dx).clamp(0, width - 1) as usize;
                     let offset = source_y * stride + source_x;
                     for c in 0..3 {
-                        let mut value = match (history, current) {
-                            (false, Some(current)) => current[offset * 3 + c],
-                            _ => planes[c][offset].to_f32(),
-                        };
+                        let mut value = tap_color(
+                            history,
+                            tap,
+                            spatial_taps,
+                            extra,
+                            planes[c][offset].to_f32(),
+                            offset,
+                            c,
+                        );
                         if let Some(albedo) = &albedo {
                             value /= albedo[c][offset].to_f32() + config.demodulation_offset;
                         }
@@ -1085,8 +1266,19 @@ pub fn assemble_kernel(
                 let (sub_x, sub_y) = config.sub_pixel(slot as u32);
                 let (out_x, out_y) = (x * scale + sub_x as usize, y * scale + sub_y as usize);
                 let destination = (out_y * out_width + out_x) * 3;
+                let gate = if mix_ch != 0 && extra.previous_output.is_some() {
+                    let m = weights[((slots * taps + slot) * tile + y) * tile + x];
+                    m / (m + 1.0)
+                } else {
+                    0.0
+                };
                 for c in 0..3 {
-                    let mut value = transform::decompress(sum[c] / total.max(KERNEL_FLOOR));
+                    let mut gathered = sum[c] / total.max(KERNEL_FLOOR);
+                    if let Some(prev) = extra.previous_output {
+                        gathered = (1.0 - gate) * gathered
+                            + gate * prev[(c * slots + slot) * tile * tile + y * tile + x];
+                    }
+                    let mut value = transform::decompress(gathered);
                     if config.demodulate {
                         // Multiplying by the exact output-resolution albedo is
                         // what puts the texture back, at a resolution the
@@ -1386,6 +1578,63 @@ pub fn crop_color(sample: &Sample, layout: &Layout, crop: Crop) -> Vec<f32> {
     out
 }
 
+/// Crop the high-resolution primary surface the teacher's reprojection uses.
+///
+/// History rejection reads the noisy low-resolution G-buffer. The teacher
+/// reads this instead: the same three planes, at output resolution, from
+/// the converged frame.
+pub fn crop_hr_surfaces(
+    sample: &Sample,
+    layout: &Layout,
+    crop: Crop,
+) -> Vec<crate::temporal::Surface> {
+    let scale = layout.scale as usize;
+    let tile = crop.tile as usize * scale;
+    let stride = layout.hr_width() as usize;
+    let depth = sample
+        .hr_channel(layout, Plane::Depth, 0)
+        .expect("teacher reprojection needs high-resolution depth");
+    let nx = sample
+        .hr_channel(layout, Plane::Normal, 0)
+        .expect("teacher reprojection needs high-resolution normals");
+    let ny = sample
+        .hr_channel(layout, Plane::Normal, 1)
+        .expect("teacher reprojection needs high-resolution normals");
+    let nz = sample
+        .hr_channel(layout, Plane::Normal, 2)
+        .expect("teacher reprojection needs high-resolution normals");
+    let ax = sample
+        .hr_channel(layout, Plane::DiffuseAlbedo, 0)
+        .expect("teacher reprojection needs high-resolution albedo");
+    let ay = sample
+        .hr_channel(layout, Plane::DiffuseAlbedo, 1)
+        .expect("teacher reprojection needs high-resolution albedo");
+    let az = sample
+        .hr_channel(layout, Plane::DiffuseAlbedo, 2)
+        .expect("teacher reprojection needs high-resolution albedo");
+
+    let mut out = vec![
+        crate::temporal::Surface {
+            depth: 0.0,
+            normal: [0.0; 3],
+            albedo: [0.0; 3],
+        };
+        tile * tile
+    ];
+    for y in 0..tile {
+        let row = (crop.y as usize * scale + y) * stride + crop.x as usize * scale;
+        for x in 0..tile {
+            let src = row + x;
+            out[y * tile + x] = crate::temporal::Surface {
+                depth: depth[src].to_f32(),
+                normal: [nx[src].to_f32(), ny[src].to_f32(), nz[src].to_f32()],
+                albedo: [ax[src].to_f32(), ay[src].to_f32(), az[src].to_f32()],
+            };
+        }
+    }
+    out
+}
+
 /// Extract one crop's high resolution colour as interleaved linear RGB.
 pub fn crop_reference(sample: &Sample, layout: &Layout, crop: Crop) -> Vec<f32> {
     let scale = layout.scale as usize;
@@ -1528,17 +1777,26 @@ mod tests {
         }
     }
 
+    fn flat_surface(depth: f32) -> crate::temporal::Surface {
+        crate::temporal::Surface {
+            depth,
+            normal: [0.0, 0.0, 1.0],
+            albedo: [0.5, 0.5, 0.5],
+        }
+    }
+
     /// The temporal loss has to be the temporal metric, or optimising one says
     /// nothing about the other. The metric compares this frame's change against
     /// the reference's; the loss is a squared error against a target. They are
     /// the same expression rearranged, and this checks that they agree
-    /// numerically on a case with real motion and a real rejection.
+    /// numerically on a case with real motion and a real occlusion.
     #[test]
     fn the_temporal_target_is_the_temporal_metric_rearranged() {
         const TILE: usize = 8;
         const SCALE: usize = 2;
         let mut rng = Rng::new(21);
         let planes = 3 * SCALE * SCALE * TILE * TILE;
+        let extent = TILE * SCALE;
         // Compressed values, kept off 1.0 where the inverse the metric needs
         // stops being well conditioned.
         let draw = |rng: &mut Rng| {
@@ -1558,11 +1816,21 @@ mod tests {
             motion[texel * 2] = 0.4 + 0.2 * rng.uniform();
             motion[texel * 2 + 1] = -0.3 - 0.2 * rng.uniform();
         }
-        let valid: Vec<bool> = (0..TILE * TILE).map(|i| !i.is_multiple_of(5)).collect();
+        // A real occlusion, not a hand-me-down low-resolution mask: every
+        // fifth output pixel sees a different previous surface.
+        let current_surfaces = vec![flat_surface(1.0); extent * extent];
+        let previous_surfaces: Vec<_> = (0..extent * extent)
+            .map(|i| flat_surface(if i.is_multiple_of(5) { 10.0 } else { 1.0 }))
+            .collect();
+        let warp = crate::temporal::Reprojection {
+            motion: &motion,
+            current: &current_surfaces,
+            previous: &previous_surfaces,
+            rejection: crate::temporal::RejectionConfig::default(),
+        };
 
-        let change = reference_change(&current_ref, &previous_ref, &motion, TILE, SCALE);
-        let (target, mask) =
-            temporal_target(&previous_out, &change, &motion, &valid, TILE, SCALE, 0.0);
+        let change = reference_change(&current_ref, &previous_ref, warp, TILE, SCALE);
+        let (target, mask) = temporal_target(&previous_out, &change, warp, TILE, SCALE, 0.0);
 
         // What the graph computes: mean over every element of the masked error.
         let loss: f64 = current_out
@@ -1590,8 +1858,8 @@ mod tests {
         let metric = crate::metrics::temporal_error(
             [&linear(&current_out), &linear(&previous_out)],
             [&linear(&current_ref), &linear(&previous_ref)],
-            &motion,
-            &valid,
+            warp,
+            None,
             [TILE, TILE],
             SCALE,
         )
@@ -1610,6 +1878,10 @@ mod tests {
             "loss {loss:.6e} against metric {scaled:.6e}"
         );
         assert!(metric.mean() > 1e-3, "the test case has to have real error");
+        assert!(
+            counted < planes,
+            "the occlusion has to reject something or this is just bilinear"
+        );
     }
 
     /// History arrives as one more tap, and the current frame arrives from a
@@ -1625,6 +1897,8 @@ mod tests {
             frames: 4,
             rejection: crate::temporal::RejectionConfig::default(),
             features: crate::temporal::Features::Variance,
+            unrejected_tap: false,
+            previous_output: false,
         });
         assert_eq!(config.history_taps(), 1);
         assert_eq!(config.gather_taps(), config.taps() + 1);
@@ -1646,7 +1920,19 @@ mod tests {
         };
         let taps = config.gather_taps() as usize;
         let mut out = vec![0.0; 3 * taps * 64];
-        write_taps(&s, &l, crop, 0, &config, Some(&current), &mut out);
+        write_taps(
+            &s,
+            &l,
+            crop,
+            0,
+            &config,
+            ExtraTaps {
+                current: Some(&current),
+                unrejected: None,
+                previous_output: None,
+            },
+            &mut out,
+        );
 
         let spatial = config.taps() as usize;
         for channel in 0..3 * taps {
@@ -1668,11 +1954,188 @@ mod tests {
                 weights[((slot * taps + taps - 1) * 8 + texel / 8) * 8 + texel % 8] = 1.0;
             }
         }
-        let out = assemble_kernel(&s, &l, crop, &weights, &config, Some(&current));
+        let out = assemble_kernel(
+            &s,
+            &l,
+            crop,
+            &weights,
+            &config,
+            ExtraTaps {
+                current: Some(&current),
+                unrejected: None,
+                previous_output: None,
+            },
+        );
         for (index, &value) in out.iter().enumerate() {
             assert!(
                 (value - ACCUMULATED).abs() < 1e-2,
                 "element {index} came back as {value}, not the history it was told to use"
+            );
+        }
+    }
+
+    /// Previous-output history is mixed after the spatial gather, one gate
+    /// per sub-pixel. A gate of 1 copies that sub-pixel; a gate of 0 ignores
+    /// it. The gather itself has no extra history taps.
+    #[test]
+    fn previous_output_taps_are_per_subpixel() {
+        let mut config = kernel_config(1);
+        config.temporal = Some(crate::temporal::Config {
+            frames: 4,
+            rejection: crate::temporal::RejectionConfig::default(),
+            features: crate::temporal::Features::Variance,
+            unrejected_tap: false,
+            previous_output: true,
+        });
+        assert_eq!(config.history_taps(), 0);
+        assert_eq!(config.history_mix_channels(), 4);
+        assert_eq!(config.gather_taps(), config.taps());
+
+        let l = layout(2, 8, 8);
+        let s = Sample {
+            lr: vec![f16::from_f32(1.0); l.lr_len()],
+            hr: vec![f16::from_f32(0.0); l.hr_len()],
+        };
+        let crop = Crop {
+            x: 0,
+            y: 0,
+            tile: 8,
+        };
+        let mut previous = vec![0.0f32; 3 * 4 * 64];
+        for c in 0..3 {
+            for sub in 0..4 {
+                previous[(c * 4 + sub) * 64] =
+                    transform::compress(0.1 * (c + 1) as f32 + 0.2 * sub as f32);
+            }
+        }
+        let taps = config.gather_taps() as usize;
+        let mix = config.history_mix_channels() as usize;
+        let slots = 4usize;
+        let mut weights = vec![0.0f32; (slots * taps + mix) * 64];
+        // m/(m+1) ≈ 1, so the mix copies history.
+        weights[(slots * taps) * 64] = 1.0e6;
+        let assembled = assemble_kernel(
+            &s,
+            &l,
+            crop,
+            &weights,
+            &config,
+            ExtraTaps {
+                previous_output: Some(&previous),
+                ..ExtraTaps::default()
+            },
+        );
+        assert!(
+            (assembled[0] - 0.1).abs() < 1e-2,
+            "sub-pixel 0 came back as {}, not the previous reconstruction",
+            assembled[0]
+        );
+
+        weights[(slots * taps) * 64] = 0.0;
+        let without = assemble_kernel(
+            &s,
+            &l,
+            crop,
+            &weights,
+            &config,
+            ExtraTaps {
+                previous_output: Some(&previous),
+                ..ExtraTaps::default()
+            },
+        );
+        assert!(
+            (without[0] - 0.1).abs() > 0.05,
+            "a closed mix gate still leaked history: {}",
+            without[0]
+        );
+    }
+
+    /// The second history tap is a different buffer from the first. Reading
+    /// the accumulation twice would train a tap that cannot recover what the
+    /// gate threw away.
+    #[test]
+    fn the_unrejected_tap_reads_the_ungated_buffer() {
+        const ACCUMULATED: f32 = 4.0;
+        const CURRENT: f32 = 1.0;
+        const UNREJECTED: f32 = 7.0;
+        let mut config = kernel_config(1);
+        config.temporal = Some(crate::temporal::Config {
+            frames: 4,
+            rejection: crate::temporal::RejectionConfig::default(),
+            features: crate::temporal::Features::Variance,
+            unrejected_tap: true,
+            previous_output: false,
+        });
+        assert_eq!(config.history_taps(), 2);
+        assert_eq!(config.gather_taps(), config.taps() + 2);
+
+        let l = layout(2, 8, 8);
+        let s = Sample {
+            lr: vec![f16::from_f32(ACCUMULATED); l.lr_len()],
+            hr: vec![f16::from_f32(0.0); l.hr_len()],
+        };
+        let current = vec![CURRENT; l.lr_texels() * 3];
+        let unrejected = vec![UNREJECTED; l.lr_texels() * 3];
+        let crop = Crop {
+            x: 0,
+            y: 0,
+            tile: 8,
+        };
+        let taps = config.gather_taps() as usize;
+        let spatial = config.taps() as usize;
+        let mut out = vec![0.0; 3 * taps * 64];
+        write_taps(
+            &s,
+            &l,
+            crop,
+            0,
+            &config,
+            ExtraTaps {
+                current: Some(&current),
+                unrejected: Some(&unrejected),
+                previous_output: None,
+            },
+            &mut out,
+        );
+
+        for channel in 0..3 * taps {
+            let tap = channel % taps;
+            let expected = if tap < spatial {
+                CURRENT
+            } else if tap == spatial {
+                ACCUMULATED
+            } else {
+                UNREJECTED
+            };
+            let got = transform::decompress(out[channel * 64]);
+            assert!(
+                (got - expected).abs() < 1e-3,
+                "tap {tap} of channel {channel} read {got}, wanted {expected}"
+            );
+        }
+
+        let mut weights = vec![0.0f32; (config.scale * config.scale) as usize * taps * 64];
+        for slot in 0..(config.scale * config.scale) as usize {
+            for texel in 0..64 {
+                weights[((slot * taps + taps - 1) * 8 + texel / 8) * 8 + texel % 8] = 1.0;
+            }
+        }
+        let out = assemble_kernel(
+            &s,
+            &l,
+            crop,
+            &weights,
+            &config,
+            ExtraTaps {
+                current: Some(&current),
+                unrejected: Some(&unrejected),
+                previous_output: None,
+            },
+        );
+        for (index, &value) in out.iter().enumerate() {
+            assert!(
+                (value - UNREJECTED).abs() < 1e-2,
+                "element {index} came back as {value}, not the un-rejected tap"
             );
         }
     }
@@ -1778,7 +2241,7 @@ mod tests {
             tile: 8,
         };
         let weights = untrained_weights(&config, 8);
-        let out = assemble_kernel(&s, &l, crop, &weights, &config, None);
+        let out = assemble_kernel(&s, &l, crop, &weights, &config, ExtraTaps::default());
         assert_eq!(out.len(), 16 * 16 * 3);
         for (index, &value) in out.iter().enumerate() {
             assert!(
@@ -1869,7 +2332,7 @@ mod tests {
             tile: 8,
         };
         let weights = untrained_weights(&config, 8);
-        let gathered = assemble_kernel(&s, &l, crop, &weights, &config, None);
+        let gathered = assemble_kernel(&s, &l, crop, &weights, &config, ExtraTaps::default());
         let low = crop_color(&s, &l, crop);
 
         // Compare against the same bilinear the project reports as its

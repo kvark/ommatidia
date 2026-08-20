@@ -31,6 +31,7 @@ pub fn reconstruct(
     guided: Option<&[f32]>,
     sampler_steps: usize,
     seed: u64,
+    previous_output: Option<&[f32]>,
 ) -> Vec<f32> {
     assert_eq!(config.batch, 1, "evaluation runs one crop at a time");
     let per_slot = (config.target_channels() * config.tile * config.tile) as usize;
@@ -82,14 +83,11 @@ pub fn reconstruct(
     match config.prediction {
         // One operation: the weights the network emitted are applied straight
         // to the sparse samples, with nothing filtered beforehand.
-        Prediction::SubpixelKernel => batch::assemble_kernel(
-            sample,
-            layout,
-            crop,
-            &residual,
-            config,
-            input.current_color(),
-        ),
+        Prediction::SubpixelKernel => {
+            let mut extra = input.extra_taps();
+            extra.previous_output = previous_output;
+            batch::assemble_kernel(sample, layout, crop, &residual, config, extra)
+        }
         Prediction::SubpixelResidual => {
             batch::assemble(&low, guided, &residual, [crop.tile as usize; 2], config)
         }
@@ -211,15 +209,8 @@ impl Scores {
     }
 }
 
-/// Crop the current-to-previous motion and surface-validity mask used by the
-/// temporal metric. Confidence above one accumulated sample means the shared
-/// rejection path accepted history for that low-resolution pixel.
-pub fn temporal_evidence(
-    input: &InputSample,
-    layout: &Layout,
-    crop: Crop,
-    history_frames: u32,
-) -> Option<(Vec<f32>, Vec<bool>)> {
+/// Crop the current-to-previous motion the temporal metric needs.
+pub fn temporal_motion(input: &InputSample, layout: &Layout, crop: Crop) -> Option<Vec<f32>> {
     let InputSample::Temporal(prepared) = input else {
         return None;
     };
@@ -232,16 +223,14 @@ pub fn temporal_evidence(
     let width = layout.lr_width as usize;
     let tile = crop.tile as usize;
     let mut motion = Vec::with_capacity(tile * tile * 2);
-    let mut valid = Vec::with_capacity(tile * tile);
     for y in 0..tile {
         for x in 0..tile {
             let index = (crop.y as usize + y) * width + crop.x as usize + x;
             motion.push(motion_x[index].to_f32());
             motion.push(motion_y[index].to_f32());
-            valid.push(prepared.confidence[index] * history_frames as f32 > 1.001);
         }
     }
-    Some((motion, valid))
+    Some(motion)
 }
 
 /// Nearest-neighbour upsampling of interleaved linear RGB.

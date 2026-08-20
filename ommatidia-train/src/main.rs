@@ -96,6 +96,8 @@ struct Args {
     device_id: Option<u32>,
     history_frames: u32,
     temporal_features: ommatidia::temporal::Features,
+    unrejected_tap: bool,
+    previous_output: bool,
 }
 
 const ADAM_BETA1: f32 = 0.9;
@@ -148,6 +150,8 @@ impl Default for Args {
             device_id: None,
             history_frames: 1,
             temporal_features: ommatidia::temporal::Features::Variance,
+            unrejected_tap: false,
+            previous_output: false,
         }
     }
 }
@@ -207,6 +211,12 @@ usage: ommatidia-train [options]
   --history-frames N   surface-reprojected sparse frames, 1 for spatial [1]
   --temporal-features KIND
                        basic or variance history conditioning [variance]
+  --unrejected-tap     second history tap: the reprojected previous estimate
+                       with no surface gate, so a wrongly rejected sample can
+                       still be recovered. Kernel checkpoints only
+  --previous-output    mix the previous reconstructed frame, warped, after
+                       the spatial gather, one gate per output sub-pixel.
+                       That is the picture a temporal upscaler reuses
   --log-every N        steps between loss lines  [50]
   --eval-out DIR       write comparison PNGs of the first held-out crop
   --val-fraction F     share of the set held out for scoring  [0.15]
@@ -345,6 +355,8 @@ fn parse_from(argv: impl Iterator<Item = String>) -> Result<Args, String> {
                     other => return Err(format!("unknown temporal features {other:?}")),
                 }
             }
+            "--unrejected-tap" => args.unrejected_tap = true,
+            "--previous-output" => args.previous_output = true,
             "--log-every" => {
                 args.log_every = value()?.parse().map_err(|e| format!("--log-every: {e}"))?
             }
@@ -479,14 +491,25 @@ fn main() {
         None if args.color_only => ReconstructionBase::Bilinear,
         None => args.reconstruction_base,
     };
-    if reconstruction_base == ReconstructionBase::HighResolutionGuided {
+    if reconstruction_base == ReconstructionBase::HighResolutionGuided
+        || args.history_frames > 1
+        || args.temporal_weight != 0.0
+        || stored
+            .as_ref()
+            .is_some_and(|config| config.temporal.is_some())
+    {
         for plane in [
             ommatidia::Plane::Depth,
             ommatidia::Plane::Normal,
             ommatidia::Plane::DiffuseAlbedo,
         ] {
             if !layout.hr_planes.contains(plane) {
-                eprintln!("high-resolution guided reconstruction needs the HR {plane:?} plane");
+                let why = if reconstruction_base == ReconstructionBase::HighResolutionGuided {
+                    "high-resolution guided reconstruction"
+                } else {
+                    "the teacher's reprojection"
+                };
+                eprintln!("{why} needs the HR {plane:?} plane");
                 std::process::exit(1);
             }
         }
@@ -498,6 +521,8 @@ fn main() {
         frames: args.history_frames,
         rejection: ommatidia::temporal::RejectionConfig::default(),
         features: args.temporal_features,
+        unrejected_tap: args.unrejected_tap,
+        previous_output: args.previous_output,
     });
     let mut config = ModelConfig {
         scale: layout.scale,
@@ -675,7 +700,9 @@ fn main() {
     // resynchronised every `--teacher-every` steps. At step zero the copy is
     // initialised identically, so the target is self-consistent from the start
     // rather than arbitrary.
-    let mut teacher = config.temporal_weight.ne(&0.0).then(|| {
+    let mut teacher = (config.temporal_weight != 0.0
+        || config.temporal.is_some_and(|t| t.previous_output))
+    .then(|| {
         let inference = model::build_ending(&config, model::Ending::Image, [config.tile; 2])
             .expect("the training configuration already validated");
         let mut session = ommatidia::gpu::inference_session(&inference.graph, context.clone());
@@ -729,9 +756,6 @@ fn main() {
         let batch = batcher.next().expect("cannot read a batch");
         session.set_input("cond", &batch.cond);
         session.set_input("target", &batch.target);
-        if !batch.taps.is_empty() {
-            session.set_input("taps", &batch.taps);
-        }
         if let (Some(teacher), Some(temporal)) = (teacher.as_mut(), batch.temporal.as_ref()) {
             if step.is_multiple_of(args.teacher_every)
                 && let Err(e) = session
@@ -743,6 +767,9 @@ fn main() {
             }
             teacher.set_input("cond", &temporal.cond);
             teacher.set_input("taps", &temporal.taps);
+            if config.history_mix_channels() != 0 {
+                teacher.set_input("history", &temporal.history);
+            }
             teacher.step();
             teacher.wait();
             let previous = teacher.read_output(config.loss_len());
@@ -750,25 +777,59 @@ fn main() {
             let tile = config.tile as usize;
             let scale = config.scale as usize;
             let per_slot = (config.image_channels() * config.tile * config.tile) as usize;
+            let pixels = tile * scale * tile * scale;
+            let rejection = config
+                .temporal
+                .expect("a temporal loss needs history")
+                .rejection;
             let mut target = vec![0.0; config.loss_len()];
             let mut mask = vec![0.0; config.loss_len()];
+            let mut warped_slots = Vec::new();
             for slot in 0..config.batch as usize {
                 let span = slot * per_slot..(slot + 1) * per_slot;
                 let texels = slot * tile * tile..(slot + 1) * tile * tile;
-                let (slot_target, slot_mask) = batch::temporal_target(
-                    &previous[span.clone()],
-                    &temporal.reference_change[span.clone()],
-                    &temporal.motion[texels.start * 2..texels.end * 2],
-                    &temporal.valid[texels],
-                    tile,
-                    scale,
-                    config.temporal_motion_bias,
-                );
-                target[span.clone()].copy_from_slice(&slot_target);
-                mask[span].copy_from_slice(&slot_mask);
+                let surf = slot * pixels..(slot + 1) * pixels;
+                let warp = ommatidia::temporal::Reprojection {
+                    motion: &temporal.motion[texels.start * 2..texels.end * 2],
+                    current: &temporal.current_surfaces[surf.clone()],
+                    previous: &temporal.previous_surfaces[surf],
+                    rejection,
+                };
+                if config.temporal.is_some_and(|t| t.previous_output) {
+                    warped_slots.push(batch::warp_previous_output(
+                        &previous[span.clone()],
+                        warp,
+                        tile,
+                        scale,
+                    ));
+                }
+                if config.temporal_weight != 0.0 {
+                    let (slot_target, slot_mask) = batch::temporal_target(
+                        &previous[span.clone()],
+                        &temporal.reference_change[span.clone()],
+                        warp,
+                        tile,
+                        scale,
+                        config.temporal_motion_bias,
+                    );
+                    target[span.clone()].copy_from_slice(&slot_target);
+                    mask[span].copy_from_slice(&slot_mask);
+                }
             }
-            session.set_input("temporal_target", &target);
-            session.set_input("temporal_mask", &mask);
+            if config.temporal_weight != 0.0 {
+                session.set_input("temporal_target", &target);
+                session.set_input("temporal_mask", &mask);
+            }
+            if config.history_mix_channels() != 0 {
+                let mut history = vec![0.0; config.batch as usize * per_slot];
+                for (slot, warped) in warped_slots.iter().enumerate() {
+                    batch::fill_history_slot(&mut history, warped, slot, tile, scale);
+                }
+                session.set_input("history", &history);
+            }
+        }
+        if !batch.taps.is_empty() {
+            session.set_input("taps", &batch.taps);
         }
         if diffusing {
             session.set_input("x_t", &batch.x_t);
@@ -862,8 +923,12 @@ struct Evaluator {
 
 struct TemporalFrame {
     network: Vec<f32>,
+    /// Gather-space (compressed sub-pixel) copy of [`Self::network`], so the
+    /// next frame can reuse it as history taps without guessing the albedo.
+    compressed: Vec<f32>,
     base: Vec<f32>,
     reference: Vec<f32>,
+    surfaces: Vec<ommatidia::temporal::Surface>,
 }
 
 impl Evaluator {
@@ -956,8 +1021,9 @@ impl Evaluator {
         let mut counted = 0usize;
         let started = std::time::Instant::now();
 
+        let uses_previous_output = self.config.temporal.is_some_and(|t| t.previous_output);
         'outer: for index in split.validation() {
-            if !batcher.has_history(index) {
+            if !batcher.has_history(index) && !uses_previous_output {
                 previous_temporal.iter_mut().for_each(|slot| *slot = None);
                 continue;
             }
@@ -969,8 +1035,9 @@ impl Evaluator {
                 }
             };
             let sample = input.sample();
+            let seeding = !batcher.has_history(index);
             for (crop_index, &crop) in crops.iter().enumerate() {
-                if counted >= args.eval_crops {
+                if !seeding && counted >= args.eval_crops {
                     break 'outer;
                 }
                 let guided = has_guides
@@ -985,6 +1052,27 @@ impl Evaluator {
                     | ReconstructionBase::Bilinear
                     | ReconstructionBase::Sample => None,
                 };
+                let warped_history = uses_previous_output
+                    .then(|| previous_temporal[crop_index].as_ref())
+                    .flatten()
+                    .map(|previous| {
+                        let motion = eval::temporal_motion(&input, &layout, crop)
+                            .expect("a sequence frame carries motion");
+                        let current_surfaces = batch::crop_hr_surfaces(sample, &layout, crop);
+                        let tile = crop.tile as usize;
+                        let scale = self.config.scale as usize;
+                        batch::warp_previous_output(
+                            &previous.compressed,
+                            ommatidia::temporal::Reprojection {
+                                motion: &motion,
+                                current: &current_surfaces,
+                                previous: &previous.surfaces,
+                                rejection: self.config.temporal.unwrap().rejection,
+                            },
+                            tile,
+                            scale,
+                        )
+                    });
                 let predicted = eval::reconstruct(
                     &mut self.session,
                     &self.config,
@@ -997,7 +1085,34 @@ impl Evaluator {
                     // Vary the sampler noise per crop, so the score is not one
                     // lucky or unlucky draw repeated.
                     args.seed.wrapping_add(counted as u64),
+                    warped_history.as_deref(),
                 );
+                if seeding {
+                    let current_surfaces = batch::crop_hr_surfaces(sample, &layout, crop);
+                    let reference = batch::crop_reference(sample, &layout, crop);
+                    let low = batch::crop_color(sample, &layout, crop);
+                    let bilinear = eval::bilinear(
+                        &low,
+                        crop.tile as usize,
+                        crop.tile as usize,
+                        self.config.scale as usize,
+                    );
+                    let seed_base = hr_guided.clone().or(guided.clone()).unwrap_or(bilinear);
+                    previous_temporal[crop_index] = Some(TemporalFrame {
+                        compressed: batch::compress_linear_crop(
+                            &predicted,
+                            sample,
+                            &layout,
+                            crop,
+                            &self.config,
+                        ),
+                        network: predicted,
+                        base: seed_base,
+                        reference,
+                        surfaces: current_surfaces,
+                    });
+                    continue;
+                }
                 let low = ommatidia::batch::crop_color(sample, &layout, crop);
                 let reference = ommatidia::batch::crop_reference(sample, &layout, crop);
                 let baseline = eval::nearest(
@@ -1040,26 +1155,33 @@ impl Evaluator {
                         hr_guided.as_ref().or(guided.as_ref()).unwrap_or(&bilinear)
                     }
                 };
-                if let Some(temporal) = self.config.temporal
-                    && let Some((motion, valid)) =
-                        eval::temporal_evidence(&input, &layout, crop, temporal.frames)
+                if self.config.temporal.is_some()
+                    && let Some(motion) = eval::temporal_motion(&input, &layout, crop)
                 {
+                    let current_surfaces = batch::crop_hr_surfaces(sample, &layout, crop);
                     if let Some(previous) = &previous_temporal[crop_index] {
                         let extent = crop.tile as usize;
                         let scale = self.config.scale as usize;
+                        let rejection = self.config.temporal.expect("scored as temporal").rejection;
+                        let warp = ommatidia::temporal::Reprojection {
+                            motion: &motion,
+                            current: &current_surfaces,
+                            previous: &previous.surfaces,
+                            rejection,
+                        };
                         let network_error = ommatidia::metrics::temporal_error(
                             [&predicted, &previous.network],
                             [&reference, &previous.reference],
-                            &motion,
-                            &valid,
+                            warp,
+                            None,
                             [extent, extent],
                             scale,
                         );
                         let base_error = ommatidia::metrics::temporal_error(
                             [temporal_base, &previous.base],
                             [&reference, &previous.reference],
-                            &motion,
-                            &valid,
+                            warp,
+                            None,
                             [extent, extent],
                             scale,
                         );
@@ -1071,24 +1193,23 @@ impl Evaluator {
                             temporal_values += network_error.values;
                             temporal_counted += 1;
                         }
-                        let moving_valid: Vec<_> = valid
-                            .iter()
-                            .zip(motion.chunks_exact(2))
-                            .map(|(&valid, vector)| valid && (vector[0] != 0.0 || vector[1] != 0.0))
+                        let moving: Vec<_> = motion
+                            .chunks_exact(2)
+                            .map(|vector| vector[0] != 0.0 || vector[1] != 0.0)
                             .collect();
                         let moving_network = ommatidia::metrics::temporal_error(
                             [&predicted, &previous.network],
                             [&reference, &previous.reference],
-                            &motion,
-                            &moving_valid,
+                            warp,
+                            Some(&moving),
                             [extent, extent],
                             scale,
                         );
                         let moving_base = ommatidia::metrics::temporal_error(
                             [temporal_base, &previous.base],
                             [&reference, &previous.reference],
-                            &motion,
-                            &moving_valid,
+                            warp,
+                            Some(&moving),
                             [extent, extent],
                             scale,
                         );
@@ -1102,9 +1223,17 @@ impl Evaluator {
                         }
                     }
                     previous_temporal[crop_index] = Some(TemporalFrame {
+                        compressed: batch::compress_linear_crop(
+                            &predicted,
+                            sample,
+                            &layout,
+                            crop,
+                            &self.config,
+                        ),
                         network: predicted.clone(),
                         base: temporal_base.clone(),
                         reference: reference.clone(),
+                        surfaces: current_surfaces,
                     });
                 }
 

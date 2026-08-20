@@ -39,10 +39,14 @@ pub struct TemporalBatch {
     /// network can be run on it.
     pub cond: Vec<f32>,
     pub taps: Vec<f32>,
-    /// Per slot, at input resolution: current-to-previous motion and whether
-    /// history was accepted.
+    /// History reset for the previous frame's teacher (current colour, no warp).
+    pub history: Vec<f32>,
+    /// Per slot, at input resolution: current-to-previous motion.
     pub motion: Vec<f32>,
-    pub valid: Vec<bool>,
+    /// Per slot, at output resolution: the high-resolution surfaces the
+    /// teacher reprojects with, current then previous.
+    pub current_surfaces: Vec<ommatidia::temporal::Surface>,
+    pub previous_surfaces: Vec<ommatidia::temporal::Surface>,
     /// Per slot, in sub-pixel layout: the canonical change between the two
     /// frames, which is the change the reconstruction is allowed to show.
     pub reference_change: Vec<f32>,
@@ -57,10 +61,14 @@ pub enum InputSample {
 impl InputSample {
     /// The current frame's own radiance, when history has displaced it out of
     /// the sample's colour plane.
-    pub fn current_color(&self) -> Option<&[f32]> {
+    pub fn extra_taps(&self) -> batch::ExtraTaps<'_> {
         match self {
-            Self::Spatial(_) => None,
-            Self::Temporal(prepared) => Some(&prepared.current_color),
+            Self::Spatial(_) => batch::ExtraTaps::default(),
+            Self::Temporal(prepared) => batch::ExtraTaps {
+                current: Some(&prepared.current_color),
+                unrejected: Some(&prepared.unrejected),
+                previous_output: None,
+            },
         }
     }
 
@@ -138,7 +146,8 @@ impl Batcher {
         let per_slot = (config.target_channels() * config.tile * config.tile) as usize;
         let loss_per_slot = (config.loss_channels() * config.tile * config.tile) as usize;
         Self {
-            paired: config.temporal_weight != 0.0,
+            paired: config.temporal_weight != 0.0
+                || config.temporal.is_some_and(|t| t.previous_output),
             reader,
             layout,
             config,
@@ -184,7 +193,7 @@ impl Batcher {
         let tile = crop.tile as usize;
         let scale = config.scale as usize;
         let width = self.layout.lr_width as usize;
-        let frames = config.temporal.expect("temporal").frames as f32;
+        let rejection = config.temporal.expect("temporal").rejection;
         let motion_x = current
             .sample()
             .lr_channel(&self.layout, ommatidia::Plane::Motion, 0)
@@ -193,20 +202,27 @@ impl Batcher {
             .sample()
             .lr_channel(&self.layout, ommatidia::Plane::Motion, 1)
             .expect("a sequence dataset carries motion");
-        let InputSample::Temporal(prepared) = current else {
-            unreachable!("the temporal loss only runs on prepared samples")
-        };
         for y in 0..tile {
             for x in 0..tile {
                 let source = (crop.y as usize + y) * width + crop.x as usize + x;
                 let texel = slot * tile * tile + y * tile + x;
                 out.motion[texel * 2] = motion_x[source].to_f32();
                 out.motion[texel * 2 + 1] = motion_y[source].to_f32();
-                // The same test the temporal metric applies: history counts
-                // only where more than one frame survived rejection.
-                out.valid[texel] = prepared.confidence[source] * frames > 1.001;
             }
         }
+
+        let extent = tile * scale;
+        let surf = slot * extent * extent..(slot + 1) * extent * extent;
+        out.current_surfaces[surf.clone()].copy_from_slice(&batch::crop_hr_surfaces(
+            current.sample(),
+            &self.layout,
+            crop,
+        ));
+        out.previous_surfaces[surf.clone()].copy_from_slice(&batch::crop_hr_surfaces(
+            earlier.sample(),
+            &self.layout,
+            crop,
+        ));
 
         let per_slot = (config.image_channels() * crop.tile * crop.tile) as usize;
         let mut now = vec![0.0; per_slot];
@@ -214,7 +230,18 @@ impl Batcher {
         batch::write_kernel_target(current.sample(), &self.layout, crop, 0, config, &mut now);
         batch::write_kernel_target(earlier.sample(), &self.layout, crop, 0, config, &mut then);
         let slot_motion = &out.motion[slot * tile * tile * 2..(slot + 1) * tile * tile * 2];
-        let change = batch::reference_change(&now, &then, slot_motion, tile, scale);
+        let change = batch::reference_change(
+            &now,
+            &then,
+            ommatidia::temporal::Reprojection {
+                motion: slot_motion,
+                current: &out.current_surfaces[surf.clone()],
+                previous: &out.previous_surfaces[surf],
+                rejection,
+            },
+            tile,
+            scale,
+        );
         out.reference_change[slot * per_slot..(slot + 1) * per_slot].copy_from_slice(&change);
     }
 
@@ -247,11 +274,23 @@ impl Batcher {
             taps: vec![0.0; config.tap_len()],
             temporal: self.paired.then(|| {
                 let texels = (config.batch * config.tile * config.tile) as usize;
+                let pixels = texels * (config.scale * config.scale) as usize;
+                let blank = ommatidia::temporal::Surface {
+                    depth: 0.0,
+                    normal: [0.0; 3],
+                    albedo: [0.0; 3],
+                };
                 TemporalBatch {
                     cond: vec![0.0; config.cond_len()],
                     taps: vec![0.0; config.tap_len()],
+                    history: vec![
+                        0.0;
+                        (config.batch * config.image_channels() * config.tile * config.tile)
+                            as usize
+                    ],
                     motion: vec![0.0; texels * 2],
-                    valid: vec![false; texels],
+                    current_surfaces: vec![blank; pixels],
+                    previous_surfaces: vec![blank; pixels],
                     reference_change: vec![0.0; config.loss_len()],
                 }
             }),
@@ -316,7 +355,7 @@ impl Batcher {
                     crop,
                     slot,
                     &config,
-                    sample.current_color(),
+                    sample.extra_taps(),
                     &mut out.taps,
                 );
             }
@@ -328,9 +367,20 @@ impl Batcher {
                     crop,
                     slot,
                     &config,
-                    earlier.current_color(),
+                    earlier.extra_taps(),
                     &mut temporal.taps,
                 );
+                if config.history_mix_channels() != 0 {
+                    batch::write_reset_history(
+                        earlier.sample(),
+                        &self.layout,
+                        crop,
+                        slot,
+                        &config,
+                        earlier.extra_taps().current,
+                        &mut temporal.history,
+                    );
+                }
                 self.write_temporal_evidence(&sample, earlier, crop, slot, &config, temporal);
             }
 

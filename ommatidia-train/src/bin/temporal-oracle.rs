@@ -262,6 +262,8 @@ fn main() {
                         albedo_delta2: rejection.albedo_delta2,
                     },
                     features: ommatidia::temporal::Features::Basic,
+                    unrejected_tap: false,
+                    previous_output: false,
                 },
             )
             .unwrap();

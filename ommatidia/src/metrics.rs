@@ -135,14 +135,21 @@ impl TemporalError {
 /// Motion-compensated temporal error in compressed radiance space.
 ///
 /// `motion` is interleaved current-to-previous motion at low resolution, in
-/// low-resolution pixels. `valid` rejects disocclusions and surface changes.
-/// The error compares the predicted frame-to-frame change with the reference
-/// change, rather than rewarding a temporally stable but biased image.
+/// low-resolution pixels. Occlusion is the teacher's job: each output pixel
+/// is reprojected with [`crate::temporal::sample_reprojected`] against the
+/// high-resolution surfaces, so a bilinear mix across a silhouette is
+/// dropped rather than inherited from the sample-history mask.
+///
+/// `region`, when present, further restricts which low-resolution texels
+/// are scored (moving pixels, for example). It is not an occlusion test.
+/// The error compares the predicted frame-to-frame change with the
+/// reference change, rather than rewarding a temporally stable but biased
+/// image.
 pub fn temporal_error(
     prediction: [&[f32]; 2],
     reference: [&[f32]; 2],
-    motion: &[f32],
-    valid: &[bool],
+    warp: crate::temporal::Reprojection<'_>,
+    region: Option<&[bool]>,
     low_extent: [usize; 2],
     scale: usize,
 ) -> Option<TemporalError> {
@@ -156,53 +163,54 @@ pub fn temporal_error(
     assert_eq!(previous.len(), image_len);
     assert_eq!(current_reference.len(), image_len);
     assert_eq!(previous_reference.len(), image_len);
-    assert_eq!(motion.len(), low_width * low_height * 2);
-    assert_eq!(valid.len(), low_width * low_height);
-
-    let sample = |image: &[f32], x: f32, y: f32, channel: usize| {
-        let x0 = x.floor() as isize;
-        let y0 = y.floor() as isize;
-        let tx = x - x0 as f32;
-        let ty = y - y0 as f32;
-        let at = |dx: isize, dy: isize| {
-            let sx = (x0 + dx).clamp(0, width as isize - 1) as usize;
-            let sy = (y0 + dy).clamp(0, height as isize - 1) as usize;
-            image[(sy * width + sx) * 3 + channel]
-        };
-        let top = at(0, 0) + tx * (at(1, 0) - at(0, 0));
-        let bottom = at(0, 1) + tx * (at(1, 1) - at(0, 1));
-        top + ty * (bottom - top)
-    };
+    assert_eq!(warp.motion.len(), low_width * low_height * 2);
+    assert_eq!(warp.current.len(), width * height);
+    assert_eq!(warp.previous.len(), width * height);
+    if let Some(region) = region {
+        assert_eq!(region.len(), low_width * low_height);
+    }
 
     let mut sum = 0.0f64;
     let mut count = 0usize;
     for y in 0..height {
         for x in 0..width {
             let low_index = (y / scale) * low_width + x / scale;
-            if !valid[low_index] {
+            if region.is_some_and(|keep| !keep[low_index]) {
                 continue;
             }
-            let previous_x = x as f32 + motion[low_index * 2] * scale as f32;
-            let previous_y = y as f32 + motion[low_index * 2 + 1] * scale as f32;
-            if previous_x < 0.0
-                || previous_y < 0.0
-                || previous_x > (width - 1) as f32
-                || previous_y > (height - 1) as f32
-            {
+            let previous_x = x as f32 + warp.motion[low_index * 2] * scale as f32;
+            let previous_y = y as f32 + warp.motion[low_index * 2 + 1] * scale as f32;
+            let position = [previous_x, previous_y];
+            let current_surface = warp.current[y * width + x];
+            let Some(predicted_prev) = crate::temporal::sample_reprojected(
+                previous,
+                warp.previous,
+                current_surface,
+                position,
+                width,
+                height,
+                warp.rejection,
+            ) else {
                 continue;
-            }
+            };
+            let Some(reference_prev) = crate::temporal::sample_reprojected(
+                previous_reference,
+                warp.previous,
+                current_surface,
+                position,
+                width,
+                height,
+                warp.rejection,
+            ) else {
+                continue;
+            };
             let offset = (y * width + x) * 3;
             for channel in 0..3 {
                 let predicted_change = crate::transform::compress(current[offset + channel])
-                    - crate::transform::compress(sample(previous, previous_x, previous_y, channel));
+                    - crate::transform::compress(predicted_prev[channel]);
                 let reference_change =
                     crate::transform::compress(current_reference[offset + channel])
-                        - crate::transform::compress(sample(
-                            previous_reference,
-                            previous_x,
-                            previous_y,
-                            channel,
-                        ));
+                        - crate::transform::compress(reference_prev[channel]);
                 let delta = predicted_change - reference_change;
                 sum += (delta * delta) as f64;
                 count += 1;
@@ -299,19 +307,39 @@ mod tests {
 #[cfg(test)]
 mod temporal_tests {
     use super::temporal_error;
+    use crate::temporal::{RejectionConfig, Surface};
+
+    fn flat(depth: f32) -> Surface {
+        Surface {
+            depth,
+            normal: [0.0, 0.0, 1.0],
+            albedo: [0.5, 0.5, 0.5],
+        }
+    }
+
+    fn surfaces(depth: f32) -> [Surface; 4] {
+        [flat(depth); 4]
+    }
 
     #[test]
     fn temporal_error_measures_excess_change_not_scene_motion() {
         let previous_reference = vec![1.0; 2 * 2 * 3];
         let current_reference = vec![2.0; 2 * 2 * 3];
         let motion = vec![0.0; 2 * 2 * 2];
-        let valid = vec![true; 2 * 2];
+        let now = surfaces(1.0);
+        let then = surfaces(1.0);
+        let warp = crate::temporal::Reprojection {
+            motion: &motion,
+            current: &now,
+            previous: &then,
+            rejection: RejectionConfig::default(),
+        };
         assert_eq!(
             temporal_error(
                 [&current_reference, &previous_reference],
                 [&current_reference, &previous_reference],
-                &motion,
-                &valid,
+                warp,
+                None,
                 [2, 2],
                 1,
             ),
@@ -326,8 +354,8 @@ mod temporal_tests {
             temporal_error(
                 [&flickering, &previous_reference],
                 [&current_reference, &previous_reference],
-                &motion,
-                &valid,
+                warp,
+                None,
                 [2, 2],
                 1,
             )
@@ -338,15 +366,22 @@ mod temporal_tests {
     }
 
     #[test]
-    fn temporal_error_excludes_invalid_and_out_of_crop_history() {
+    fn temporal_error_excludes_occluded_and_out_of_crop_history() {
         let image = vec![1.0; 2 * 2 * 3];
         let motion = vec![10.0, 0.0, 10.0, 0.0, 10.0, 0.0, 10.0, 0.0];
+        let now = surfaces(1.0);
+        let then = surfaces(1.0);
         assert_eq!(
             temporal_error(
                 [&image, &image],
                 [&image, &image],
-                &motion,
-                &[true; 4],
+                crate::temporal::Reprojection {
+                    motion: &motion,
+                    current: &now,
+                    previous: &then,
+                    rejection: RejectionConfig::default(),
+                },
+                None,
                 [2, 2],
                 1,
             ),
@@ -356,8 +391,13 @@ mod temporal_tests {
             temporal_error(
                 [&image, &image],
                 [&image, &image],
-                &[0.0; 8],
-                &[false; 4],
+                crate::temporal::Reprojection {
+                    motion: &[0.0; 8],
+                    current: &now,
+                    previous: &surfaces(10.0),
+                    rejection: RejectionConfig::default(),
+                },
+                None,
                 [2, 2],
                 1,
             ),

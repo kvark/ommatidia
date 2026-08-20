@@ -121,6 +121,29 @@ quality from 34.19 to 34.21 dB at the same 73.7k-parameter cost. An explicit
 velocity feature was worse and was removed. Object motion is therefore now a
 release gate; paired temporal loss remains the next justified model change.
 
+The paired loss is in
+[`monolithic-kernel-2026-08-15.md`](results/monolithic-kernel-2026-08-15.md).
+Weight 1 is the standing temporal setting. Giving the teacher its own
+occlusion test, rather than inheriting the sample-history mask, is in
+[`teacher-reprojection-2026-08-19.md`](results/teacher-reprojection-2026-08-19.md):
+the measurement changes (moving pixels go from −2.24 dB to +0.11 dB on
+the same checkpoint) and training against the new target does not.
+
+A second history tap with no surface gate is in
+[`unrejected-history-tap-2026-08-19.md`](results/unrejected-history-tap-2026-08-19.md).
+It does not help; the flag stays off.
+
+Feeding the previous *reconstruction* as history, which is what a
+temporal upscaler actually reuses, is in
+[`previous-output-2026-08-19.md`](results/previous-output-2026-08-19.md).
+That is the first change that moved temporal stability ( +0.03 dB to
++0.53 dB on the external set). Cutting the same model to b8, in
+[`previous-output-b8-2026-08-19.md`](results/previous-output-b8-2026-08-19.md),
+is 9.1 ms and 3 dB worse — recurrence feeds the grain back. Stay at
+b16. Mixing previous-output after the gather, in
+[`previous-output-mix-2026-08-20.md`](results/previous-output-mix-2026-08-20.md),
+takes those four taps off the head: 14.66 ms at matched quality.
+
 The runtime contract needs four additions:
 
 1. current-to-previous motion vectors with an explicit pixel/normalized scale
