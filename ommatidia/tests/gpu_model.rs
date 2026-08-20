@@ -386,4 +386,56 @@ fn kernel_reconstruction_frame_cost() {
             config.target_channels(),
         );
     }
+
+    // Same head as the previous-output checkpoints: four extra taps, one per
+    // sub-pixel of the warped previous frame. Inference still ends at the
+    // weights, so this is the network cost, not the gather.
+    let previous = Some(ommatidia::temporal::Config {
+        frames: 4,
+        rejection: ommatidia::temporal::RejectionConfig::default(),
+        features: ommatidia::temporal::Features::Variance,
+        unrejected_tap: false,
+        previous_output: true,
+    });
+    for (name, base_channels) in [("kernel b8 prevout", 8u32), ("kernel b16 prevout", 16)] {
+        let config = ModelConfig {
+            scale: 2,
+            tile: 64,
+            batch: 1,
+            base_channels,
+            cond_planes: planes,
+            prediction: Prediction::SubpixelKernel,
+            reconstruction_base: ReconstructionBase::Sample,
+            kernel_radius: 2,
+            demodulate: true,
+            temporal: previous,
+            ..ModelConfig::default()
+        };
+        let model = build_for_extent(&config, false, extent).expect("build");
+        let mut session = ommatidia::gpu::inference_session(&model.graph, context(false));
+        model.initialize(&mut session, 1);
+        let mut rng = Rng::new(1);
+        session.set_input(
+            "cond",
+            &filled(&mut rng, config.cond_len_for_extent(extent), 0.5),
+        );
+        for _ in 0..5 {
+            session.step();
+            session.wait();
+        }
+        const RUNS: u32 = 20;
+        let started = std::time::Instant::now();
+        for _ in 0..RUNS {
+            session.step();
+            session.wait();
+        }
+        let per_frame = started.elapsed().as_secs_f64() / RUNS as f64;
+        let out_pixels = (extent[0] * config.scale) as f64 * (extent[1] * config.scale) as f64;
+        println!(
+            "{name:<20} {:5.2} ms, {:5.1} GFLOP, {} output channels",
+            per_frame * 1e3,
+            config.flops(out_pixels as usize),
+            config.target_channels(),
+        );
+    }
 }

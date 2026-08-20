@@ -422,6 +422,12 @@ counterexample so much as a different failure. The gap is real and it is where
 the next work is; a better motion-compensated target, rather than a heavier
 weight on the one that exists, is what the bias result points at.
 
+That next work is recorded in
+[`teacher-reprojection-2026-08-19.md`](teacher-reprojection-2026-08-19.md).
+The inherited mask was scoring invalid bilinear mixes as flicker. Under a
+teacher that owns occlusion, the same weight-1 checkpoint is already
++0.11 dB on moving pixels; training against the new target adds 0.03 dB.
+
 ## The scenes, and why they had to change
 
 The scenes cannot really discriminate these results. Blade's fallback

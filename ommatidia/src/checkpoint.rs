@@ -242,6 +242,8 @@ mod tests {
                 frames: 4,
                 rejection: crate::temporal::RejectionConfig::default(),
                 features: crate::temporal::Features::Variance,
+                unrejected_tap: false,
+                previous_output: false,
             }),
             ..ModelConfig::default()
         };
@@ -253,5 +255,54 @@ mod tests {
             old.temporal.unwrap().features,
             crate::temporal::Features::Basic
         );
+    }
+
+    #[test]
+    fn old_temporal_sidecars_keep_a_single_history_tap() {
+        let config = ModelConfig {
+            prediction: crate::model::Prediction::SubpixelKernel,
+            reconstruction_base: ReconstructionBase::Sample,
+            temporal: Some(crate::temporal::Config {
+                frames: 4,
+                rejection: crate::temporal::RejectionConfig::default(),
+                features: crate::temporal::Features::Variance,
+                unrejected_tap: true,
+                previous_output: false,
+            }),
+            ..ModelConfig::default()
+        };
+        assert_eq!(config.history_taps(), 2);
+        let text = ron::ser::to_string(&config).unwrap();
+        let old_text = text.replace(",unrejected_tap:true", "");
+        assert_ne!(old_text, text);
+        let old: ModelConfig = ron::from_str(&old_text).unwrap();
+        assert!(!old.temporal.unwrap().unrejected_tap);
+        assert_eq!(old.history_taps(), 1);
+    }
+
+    #[test]
+    fn old_temporal_sidecars_do_not_grow_previous_output_taps() {
+        let config = ModelConfig {
+            prediction: crate::model::Prediction::SubpixelKernel,
+            reconstruction_base: ReconstructionBase::Sample,
+            temporal: Some(crate::temporal::Config {
+                frames: 4,
+                rejection: crate::temporal::RejectionConfig::default(),
+                features: crate::temporal::Features::Variance,
+                unrejected_tap: false,
+                previous_output: true,
+            }),
+            ..ModelConfig::default()
+        };
+        assert_eq!(config.history_taps(), 0);
+        assert_eq!(config.history_mix_channels(), 4);
+        assert_eq!(config.gather_taps(), config.taps());
+        let text = ron::ser::to_string(&config).unwrap();
+        let old_text = text.replace(",previous_output:true", "");
+        assert_ne!(old_text, text);
+        let old: ModelConfig = ron::from_str(&old_text).unwrap();
+        assert!(!old.temporal.unwrap().previous_output);
+        assert_eq!(old.history_taps(), 1);
+        assert_eq!(old.history_mix_channels(), 0);
     }
 }

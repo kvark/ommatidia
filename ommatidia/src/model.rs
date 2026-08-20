@@ -340,13 +340,36 @@ impl ModelConfig {
 
     /// Reprojected-history taps the gather reads, beyond the spatial ones.
     ///
-    /// One: the accumulated estimate at this pixel. Making it a tap rather than
-    /// a base is the whole idea — how much to trust history becomes a weight the
-    /// network predicts per output sub-pixel, alongside the weights it gives the
-    /// current frame's samples, and a history it does not trust simply gets a
-    /// small one.
+    /// Accumulated-sample history still arrives as gather taps. Previous-output
+    /// history does not: it is mixed with the spatial gather after it, one
+    /// gate per output sub-pixel, so the head does not emit a second full
+    /// kernel over the past.
     pub fn history_taps(&self) -> u32 {
-        u32::from(self.temporal.is_some() && self.prediction == Prediction::SubpixelKernel)
+        match self.temporal {
+            Some(temporal) if self.prediction == Prediction::SubpixelKernel => {
+                if temporal.previous_output {
+                    0
+                } else {
+                    1 + u32::from(temporal.unrejected_tap)
+                }
+            }
+            _ => 0,
+        }
+    }
+
+    /// Mix gates for previous-output history, one per output sub-pixel.
+    ///
+    /// Zero unless this checkpoint blends the warped previous reconstruction
+    /// after the spatial gather. Not counted in [`Self::gather_taps`].
+    pub fn history_mix_channels(&self) -> u32 {
+        match self.temporal {
+            Some(temporal)
+                if self.prediction == Prediction::SubpixelKernel && temporal.previous_output =>
+            {
+                self.scale * self.scale
+            }
+            _ => 0,
+        }
     }
 
     /// Every tap the gather reads.
@@ -384,8 +407,11 @@ impl ModelConfig {
         match self.prediction {
             Prediction::SubpixelResidual => 3 * self.scale * self.scale,
             Prediction::LowResolutionResidual => 3,
-            // One weight per sub-pixel per tap, sub-pixel major.
-            Prediction::SubpixelKernel => self.scale * self.scale * self.gather_taps(),
+            // Spatial gather weights, sub-pixel major, plus one mix gate per
+            // sub-pixel when previous-output history is blended after the gather.
+            Prediction::SubpixelKernel => {
+                self.scale * self.scale * self.gather_taps() + self.history_mix_channels()
+            }
         }
     }
 
@@ -905,17 +931,19 @@ pub(crate) fn bilinear_kernel_bias(config: &ModelConfig) -> Vec<f32> {
     let scale = config.scale as f32;
     let spatial_taps = config.taps();
     let taps = config.gather_taps();
+    let slots = config.scale * config.scale;
     let mut out = vec![0.0; config.target_channels() as usize];
-    for slot in 0..config.scale * config.scale {
+    for slot in 0..slots {
         let (sub_x, sub_y) = config.sub_pixel(slot);
         // Where this output sub-pixel lands, in input pixels, relative to the
         // input pixel that owns it.
         let center_x = (sub_x as f32 + 0.5) / scale - 0.5;
         let center_y = (sub_y as f32 + 0.5) / scale - 0.5;
         for tap in 0..taps {
-            // History starts at the floor: an untrained network reconstructs
-            // the current frame and leaves the past alone, so any use it makes
-            // of history later is something training found.
+            // Accumulated-sample history starts at the floor: an untrained
+            // network reconstructs the current frame and leaves the past
+            // alone, so any use it makes of history later is something
+            // training found.
             let weight = if tap >= spatial_taps {
                 0.0
             } else {
@@ -924,6 +952,15 @@ pub(crate) fn bilinear_kernel_bias(config: &ModelConfig) -> Vec<f32> {
                     * (1.0 - (dy as f32 - center_y).abs()).max(0.0)
             };
             out[(slot * taps + tap) as usize] = inverse_softplus(weight.max(FLOOR));
+        }
+    }
+    // Mix gates sit after the spatial weights, same softplus, mapped to
+    // m/(m+1) in the gather. The floor ignores history until training
+    // moves it.
+    if config.history_mix_channels() != 0 {
+        let mix_bias = inverse_softplus(FLOOR);
+        for slot in 0..slots {
+            out[(slots * taps + slot) as usize] = mix_bias;
         }
     }
     out
@@ -946,6 +983,15 @@ fn gather(graph: &mut Graph, config: &ModelConfig, weights: NodeId, extent: [u32
     let spatial = width * height;
     let taps = config.gather_taps();
     let slots = config.scale * config.scale;
+    let mix = config.history_mix_channels();
+    let (weights, mix_gates) = if mix == 0 {
+        (weights, None)
+    } else {
+        let spatial_ch = slots * taps;
+        let w = graph.split_a(weights, batch, spatial_ch, mix, spatial);
+        let m = graph.split_b(weights, batch, spatial_ch, mix, spatial);
+        (w, Some(m))
+    };
 
     // Peel one group of `group` channels at a time off the front.
     let peel = |graph: &mut Graph, mut rest: NodeId, groups: u32, group: u32| {
@@ -991,7 +1037,32 @@ fn gather(graph: &mut Graph, config: &ModelConfig, weights: NodeId, extent: [u32
             written += 1;
         }
     }
-    image.expect("a kernel checkpoint reconstructs at least one channel")
+    let image = image.expect("a kernel checkpoint reconstructs at least one channel");
+    let Some(gates) = mix_gates else {
+        return image;
+    };
+    // Previous reconstruction, already warped, in the same compressed
+    // sub-pixel layout as `image`. One sigmoid gate per sub-pixel is
+    // repeated over RGB so a history mix is a picture blend, not a
+    // second kernel.
+    let history = graph.input("history", &[(batch * 3 * slots * spatial) as usize]);
+    let mix_ones = graph.constant(
+        vec![1.0; (batch * slots * spatial) as usize],
+        &[(batch * slots * spatial) as usize],
+    );
+    let mix_denom = graph.add(gates, mix_ones);
+    let gates = graph.div(gates, mix_denom);
+    let twice = graph.concat(gates, gates, batch, slots, slots, spatial);
+    let gates_rgb = graph.concat(twice, gates, batch, 2 * slots, slots, spatial);
+    let ones = graph.constant(
+        vec![1.0; (batch * 3 * slots * spatial) as usize],
+        &[(batch * 3 * slots * spatial) as usize],
+    );
+    let keep = graph.neg(gates_rgb);
+    let keep = graph.add(ones, keep);
+    let from_now = graph.mul(keep, image);
+    let from_then = graph.mul(gates_rgb, history);
+    graph.add(from_now, from_then)
 }
 
 /// What the built graph produces.
@@ -1222,6 +1293,8 @@ pub fn build_ending(
         let biased = builder
             .g
             .add_per_channel(output, bias, config.target_channels(), spatial);
+        // Mix gates share this softplus so the prediction graph stays the
+        // same shape as a spatial kernel; gather maps `m` to `m/(m+1)`.
         builder.g.softplus(biased, 1.0)
     } else {
         output
@@ -1266,8 +1339,8 @@ pub fn build_ending(
                     // has to flow through a reprojection the graph could not
                     // express anyway.
                     //
-                    // Both sides arrive masked, so a pixel whose history was
-                    // rejected contributes zero rather than a wrong number.
+                    // Both sides arrive masked, so a pixel the teacher cannot
+                    // reproject contributes zero rather than a wrong number.
                     let mask = graph.input("temporal_mask", &[len]);
                     let target = graph.input("temporal_target", &[len]);
                     let masked = graph.mul(image, mask);
@@ -1358,6 +1431,8 @@ mod tests {
             frames: 4,
             rejection: crate::temporal::RejectionConfig::default(),
             features: crate::temporal::Features::Basic,
+            unrejected_tap: false,
+            previous_output: false,
         });
         assert_eq!(c.cond_channels(), 17); // Ten stored plus seven temporal auxiliaries.
         assert_eq!(c.target_channels(), 3);
@@ -1365,6 +1440,26 @@ mod tests {
         assert!(c.validate().is_ok());
         c.temporal.as_mut().unwrap().features = crate::temporal::Features::Variance;
         assert_eq!(c.cond_channels(), 18);
+    }
+
+    #[test]
+    fn previous_output_mix_is_not_a_gather_tap() {
+        let mut c = small();
+        c.prediction = Prediction::SubpixelKernel;
+        c.reconstruction_base = ReconstructionBase::Sample;
+        c.kernel_radius = 2;
+        c.temporal = Some(crate::temporal::Config {
+            frames: 4,
+            rejection: crate::temporal::RejectionConfig::default(),
+            features: crate::temporal::Features::Variance,
+            unrejected_tap: false,
+            previous_output: true,
+        });
+        assert_eq!(c.taps(), 25);
+        assert_eq!(c.history_taps(), 0);
+        assert_eq!(c.gather_taps(), 25);
+        assert_eq!(c.history_mix_channels(), 4);
+        assert_eq!(c.target_channels(), 25 * 4 + 4);
     }
 
     #[test]

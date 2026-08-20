@@ -869,7 +869,7 @@ fn check_kernel_parity(config: &ModelConfig, label: &str) {
         },
         &weights,
         config,
-        None,
+        ommatidia::batch::ExtraTaps::default(),
     );
 
     let mut worst = 0.0f32;
