@@ -1,10 +1,12 @@
 # Temporal reconstruction plan
 
-The current checkpoint is spatial: every output is a function of the current
-frame only. That is a useful bring-up target, but it leaves both quality and
-performance on the table. A renderer already paid for motion vectors, and a
-previous reconstructed frame contains roughly three quarters of the output
-samples that a 2× spatial model is otherwise asked to invent again.
+The published checkpoint and native runtime are spatial: every output is a
+function of the current frame only. Training and evaluation now have an
+experimental recurrent path, but deployment deliberately rejects its
+checkpoint until the GPU owns reprojection, validity, and history resources. A
+renderer already paid for motion vectors, and a previous reconstructed frame
+contains roughly three quarters of the output samples that a 2× spatial model
+is otherwise asked to invent again.
 
 The first path-tracing experiment exposed a weak nearest-neighbor base rather
 than a transformer deficit. On 76 crops from a separate 128-scene 4-spp
@@ -35,7 +37,7 @@ the tuned deterministic guide, one accumulated sample scores 32.17 dB /
 This is an upper bound rather than a temporal-model result, but it is over one
 hundred times the gain measured from the static learned residual.
 
-The dataset container now records a fixed sequence length in its reserved
+The dataset container records a fixed sequence length in its reserved
 header and the generator can emit independent frames with `--sequence-frames
 N`. Geometry and the base camera stay fixed while Blade's stochastic frame
 index advances the sparse paths; `--camera-motion F` optionally translates the
@@ -49,8 +51,8 @@ Legacy files read as length one. The trainer now splits only at sequence
 boundaries, draws frames 2–N for temporal batches, and skips reset frames when
 scoring. Spatial checkpoints still reject sequence files unless temporal
 history is selected. The first frame of each sequence is an explicit history
-reset; object motion, disocclusions, and randomized trajectories remain the
-next data expansion.
+reset. Curved camera motion and independent object motion are now present;
+exposure changes, animation, and reactive masks remain future data work.
 
 The first moving-camera oracle uses 32 four-frame sequences, one independent
 path per input pixel, 256 accumulated canonical frames per target, and a 0.05
@@ -144,6 +146,19 @@ b16. Mixing previous-output after the gather, in
 [`previous-output-mix-2026-08-20.md`](results/previous-output-mix-2026-08-20.md),
 takes those four taps off the head: 14.66 ms at matched quality.
 
+The matched 1-spp gate and validity correction are in
+[`temporal-validity-1spp-2026-08-22.md`](results/temporal-validity-1spp-2026-08-22.md).
+Rejected previous-output pixels had been stored as zero without giving the mix
+gate their validity, so disocclusions could become black history. Explicit
+per-sub-pixel validity fixes that contract. An r3/b16 model trained on 512
+four-frame sequences then reaches 27.62 dB versus 26.04 dB for deterministic
+accumulation on 63 unseen sequences. Its motion-compensated temporal error is
++4.14 dB better and its 16x16-block temporal error is +9.54 dB better, about a
+ninefold reduction in coherent fluctuation. Quality improves through frames
+2–4 rather than drifting. This is the first result that resolves the visible
+low-frequency failure; it is an experimental quality checkpoint, not the
+native default.
+
 The runtime contract needs four additions:
 
 1. current-to-previous motion vectors with an explicit pixel/normalized scale
@@ -153,13 +168,12 @@ The runtime contract needs four additions:
 3. two library-owned output textures, so frame N can read N-1 while writing N;
 4. depth/normal history validation and an observable confidence/debug target.
 
-Training must move from independent scenes to short sequences. Each sequence
-needs object and camera motion, disocclusions, exposure changes, animation, and
-sub-pixel jitter. Losses should cover individual-frame radiometry and
-reprojected temporal stability; static PSNR/SSIM alone can reward a blurry but
-stable model. The initial gate will therefore report compressed-space PSNR,
-SSIM, and a temporal error measured after ground-truth reprojection, with
-disoccluded pixels excluded.
+Training now uses short sequences with object and camera motion, disocclusions,
+independent sparse paths, individual-frame radiometry, and a reprojected
+temporal loss. Evaluation reports compressed-space PSNR, SSIM, relative error,
+detail, low-frequency PSNR, motion-compensated temporal error, a block-averaged
+low-frequency temporal error, and sequence age. Exposure changes, animation,
+sub-pixel jitter, and visual regression clips remain before a release gate.
 
 NVIDIA's public material does not disclose a single DLSS training or acceptance
 metric to copy. Its [DLSS 2.0 overview](https://developer.nvidia.com/blog/dlss-2-0-ai-rendering)

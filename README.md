@@ -11,20 +11,18 @@ a sparse low-resolution path trace provides the primary input and a converged
 high-resolution path trace provides ground truth. ReSTIR+SVGF is a comparison
 control only; the product does not assume sample reuse or a prior denoiser.
 
-> **Status:** early. Reconstruction is now a single operation: the network
-> predicts a gather kernel over the sparse samples themselves, so denoising and
-> upscaling stop being two stages with a filtered image between them. On the
-> held-out set that is **+1.74 dB over the previous deterministic base, with
-> 43% less relative error and 86% of the reference's detail rather than 63%**.
-> On scenes that carry shadow and texture it is **+1.90 dB with a worst-case
-> relative error 364× lower than the residual model's**. The published v0.3.1
-> checkpoint is still the two-stage residual model and remains the default
-> until this is validated at frame rate. See the
-> [`single-operation result`](docs/results/monolithic-kernel-2026-08-15.md).
-> Temporal history is designed but not yet implemented; see
-> [`docs/temporal.md`](docs/temporal.md).
+> **Status:** early. Spatial reconstruction is one learned gather over the raw
+> path samples. The latest experimental recurrent model is trained on matched
+> **1-spp, four-frame** sequences: it is **+1.59 dB per frame over deterministic
+> accumulation and reduces motion-compensated 16x16-block fluctuation about
+> 9x**, while retaining 52% rather than 34% of reference detail. The training
+> and evaluation path is implemented; the native API deliberately rejects this
+> checkpoint until GPU reprojection, validity, and history ownership land. The
+> published v0.3.1 checkpoint therefore remains the spatial runtime default.
+> See the [`temporal result`](docs/results/temporal-validity-1spp-2026-08-22.md)
+> and [`runtime plan`](docs/temporal.md).
 
-![Ommatidium architecture: sparse path trace and low-resolution G-buffer through GPU packing and a multi-scale low-resolution reconstructor; output-resolution primary surfaces guide sub-pixel unpacking, with future compact temporal feature feedback](docs/architecture.svg)
+![Ommatidium architecture: sparse path samples and G-buffer feed a convolutional reconstructor which gathers current samples and optionally mixes a motion-reprojected previous reconstruction only where surface validation accepts it](docs/architecture.svg)
 
 The transformer investigation and the resulting complexity/temporal decision are
 documented in [`docs/architecture-decision.md`](docs/architecture-decision.md).
@@ -38,17 +36,18 @@ below; `v0.2.0` retains the low-resolution-only checkpoint. Repeated
 the v0.3.1 trace measured 8.83 ms median and 8.90 ms p90, including pack,
 model, unpack, and submissions. Its isolated split was 0.79 ms pack, 7.22 ms
 network, and 0.88 ms unpack. Ray tracing,
-the optional output-resolution primary-surface pass, and display
-post-processing are excluded. The range is reported because amdgpu's load
+the optional output-resolution primary-surface pass, temporal history, and
+display post-processing are excluded. The range is reported because amdgpu's load
 counter became intermittently unavailable during the final trace; the harness
 now reports that condition rather than silently calling the device idle.
 
 Upscaling is real today, but narrowly scoped: the published checkpoint and the
 current training recipe are **2×**. Runtime frames may be rectangular (the
 measured path is 960×540 to 1920×1080), while training uses square crops. There
-is no trained 1× denoise-only model, dynamic quality mode, or temporal
-supersampling yet; changing the scale means training a checkpoint whose output
-head has the corresponding `3 × scale²` channels.
+is no trained 1× denoise-only model or dynamic quality mode. Temporal 2×
+training/evaluation exists, but it is not in the native runtime yet; changing
+the scale means training a checkpoint whose output head has the corresponding
+sub-pixel gather channels.
 
 ## Results
 
@@ -75,11 +74,11 @@ that value concrete: the tuned guide rises from 32.17 dB at one accumulated
 sample to 33.76 at two, 34.72 at four, 35.50 at eight, and 35.89 at sixteen.
 Four aligned 1-spp frames are worth +2.55 dB before motion and rejection
 losses—over one hundred times the b8 static residual's gain.
-The first moving-camera oracle then measures the important failure mode:
+The first moving-camera oracle measured the important failure mode:
 motion-only accumulation ghosts and falls from 31.17 to 29.09 dB, whereas
 depth/normal/albedo rejection reaches 32.33 dB / 0.9301 SSIM. Only 2.7% of
 history pixels are rejected. Validity is therefore an explicit input to the
-next temporal model, not something a larger backbone should have to infer.
+temporal model, not something a larger backbone should have to infer.
 The sequence-aware trainer now preserves whole-sequence splits and tests a
 safe temporal model: accumulated colour remains the deterministic base, while
 current RGB, confidence, and the exact guided base are ordinary U-Net input
@@ -133,6 +132,30 @@ is real. The complete images, per-scene CSV, speed trace, rejected first fixes,
 and reproduction command are in the
 [`curated OIDN result`](docs/results/curated-oidn-2026-08-22.md) and
 [`benchmark harness`](benchmarks/README.md).
+
+### Temporal history removes the broad fluctuation
+
+The remaining spatial mottling is not recoverable from a different loss over
+the same noisy frame. The recurrent experiment instead mixes the previous
+reconstruction after the current-frame gather, using current-to-previous motion
+and explicit per-sub-pixel surface validity. Rejected history hard-closes the
+gate; it can no longer become accidental black radiance.
+
+On 756 crops from 63 unseen four-frame sequences, with a fresh 1-spp path each
+frame, the model reaches 27.62 dB versus 26.04 dB for accumulated HR guidance.
+Its motion-compensated temporal delta is +4.14 dB better, and its 16x16-block
+delta is +9.54 dB better: broad frame-to-frame fluctuation falls from 0.000578
+to 0.000064, about ninefold. Quality improves with recurrent age rather than
+drifting. These are training/evaluation results; native temporal deployment is
+the next implementation boundary.
+
+| accumulated HR guide | recurrent Ommatidium | 1,024-spp reference |
+|---|---|---|
+| ![Accumulated guide with broad horizontal illumination bands](docs/temporal-low-frequency/hr-guided.png) | ![Temporal Ommatidium output with the broad bands suppressed](docs/temporal-low-frequency/predicted.png) | ![High-sample reference for the temporal validation crop](docs/temporal-low-frequency/reference.png) |
+
+The full data recipe, radius gate, metrics, rejected initialization, and 4-spp
+control are in the
+[`1-spp temporal result`](docs/results/temporal-validity-1spp-2026-08-22.md).
 
 ### Why the ReSTIR control is darker
 

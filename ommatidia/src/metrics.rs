@@ -162,6 +162,84 @@ pub struct TemporalError {
     pub values: usize,
 }
 
+#[allow(clippy::too_many_arguments)]
+fn for_each_temporal_delta(
+    prediction: [&[f32]; 2],
+    reference: [&[f32]; 2],
+    warp: crate::temporal::Reprojection<'_>,
+    region: Option<&[bool]>,
+    low_extent: [usize; 2],
+    scale: usize,
+    mut visit: impl FnMut(usize, usize, [f32; 3]),
+) -> usize {
+    let [current, previous] = prediction;
+    let [current_reference, previous_reference] = reference;
+    let [low_width, low_height] = low_extent;
+    let width = low_width * scale;
+    let height = low_height * scale;
+    let image_len = width * height * 3;
+    assert_eq!(current.len(), image_len);
+    assert_eq!(previous.len(), image_len);
+    assert_eq!(current_reference.len(), image_len);
+    assert_eq!(previous_reference.len(), image_len);
+    assert_eq!(warp.motion.len(), low_width * low_height * 2);
+    assert_eq!(warp.current.len(), width * height);
+    assert_eq!(warp.previous.len(), width * height);
+    if let Some(region) = region {
+        assert_eq!(region.len(), low_width * low_height);
+    }
+
+    let mut pixels = 0;
+    for y in 0..height {
+        for x in 0..width {
+            let low_index = (y / scale) * low_width + x / scale;
+            if region.is_some_and(|keep| !keep[low_index]) {
+                continue;
+            }
+            let position = [
+                x as f32 + warp.motion[low_index * 2] * scale as f32,
+                y as f32 + warp.motion[low_index * 2 + 1] * scale as f32,
+            ];
+            let current_surface = warp.current[y * width + x];
+            let Some(predicted_prev) = crate::temporal::sample_reprojected(
+                previous,
+                warp.previous,
+                current_surface,
+                position,
+                width,
+                height,
+                warp.rejection,
+            ) else {
+                continue;
+            };
+            let Some(reference_prev) = crate::temporal::sample_reprojected(
+                previous_reference,
+                warp.previous,
+                current_surface,
+                position,
+                width,
+                height,
+                warp.rejection,
+            ) else {
+                continue;
+            };
+            let offset = (y * width + x) * 3;
+            let mut delta = [0.0; 3];
+            for channel in 0..3 {
+                let predicted_change = crate::transform::compress(current[offset + channel])
+                    - crate::transform::compress(predicted_prev[channel]);
+                let reference_change =
+                    crate::transform::compress(current_reference[offset + channel])
+                        - crate::transform::compress(reference_prev[channel]);
+                delta[channel] = predicted_change - reference_change;
+            }
+            visit(x, y, delta);
+            pixels += 1;
+        }
+    }
+    pixels
+}
+
 impl TemporalError {
     pub fn mean(self) -> f64 {
         self.squared_sum / self.values as f64
@@ -189,73 +267,81 @@ pub fn temporal_error(
     low_extent: [usize; 2],
     scale: usize,
 ) -> Option<TemporalError> {
-    let [current, previous] = prediction;
-    let [current_reference, previous_reference] = reference;
-    let [low_width, low_height] = low_extent;
-    let width = low_width * scale;
-    let height = low_height * scale;
-    let image_len = width * height * 3;
-    assert_eq!(current.len(), image_len);
-    assert_eq!(previous.len(), image_len);
-    assert_eq!(current_reference.len(), image_len);
-    assert_eq!(previous_reference.len(), image_len);
-    assert_eq!(warp.motion.len(), low_width * low_height * 2);
-    assert_eq!(warp.current.len(), width * height);
-    assert_eq!(warp.previous.len(), width * height);
-    if let Some(region) = region {
-        assert_eq!(region.len(), low_width * low_height);
-    }
-
     let mut sum = 0.0f64;
-    let mut count = 0usize;
-    for y in 0..height {
-        for x in 0..width {
-            let low_index = (y / scale) * low_width + x / scale;
-            if region.is_some_and(|keep| !keep[low_index]) {
-                continue;
-            }
-            let previous_x = x as f32 + warp.motion[low_index * 2] * scale as f32;
-            let previous_y = y as f32 + warp.motion[low_index * 2 + 1] * scale as f32;
-            let position = [previous_x, previous_y];
-            let current_surface = warp.current[y * width + x];
-            let Some(predicted_prev) = crate::temporal::sample_reprojected(
-                previous,
-                warp.previous,
-                current_surface,
-                position,
-                width,
-                height,
-                warp.rejection,
-            ) else {
-                continue;
-            };
-            let Some(reference_prev) = crate::temporal::sample_reprojected(
-                previous_reference,
-                warp.previous,
-                current_surface,
-                position,
-                width,
-                height,
-                warp.rejection,
-            ) else {
-                continue;
-            };
-            let offset = (y * width + x) * 3;
-            for channel in 0..3 {
-                let predicted_change = crate::transform::compress(current[offset + channel])
-                    - crate::transform::compress(predicted_prev[channel]);
-                let reference_change =
-                    crate::transform::compress(current_reference[offset + channel])
-                        - crate::transform::compress(reference_prev[channel]);
-                let delta = predicted_change - reference_change;
-                sum += (delta * delta) as f64;
-                count += 1;
-            }
-        }
-    }
+    let pixels = for_each_temporal_delta(
+        prediction,
+        reference,
+        warp,
+        region,
+        low_extent,
+        scale,
+        |_, _, delta| {
+            sum += delta
+                .into_iter()
+                .map(|value| (value * value) as f64)
+                .sum::<f64>();
+        },
+    );
+    let count = pixels * 3;
     (count != 0).then_some(TemporalError {
         squared_sum: sum,
         values: count,
+    })
+}
+
+/// Motion-compensated temporal error after averaging output-space blocks.
+///
+/// [`temporal_error`] correctly catches every changing pixel, but coherent
+/// illumination wobble and zero-mean grain contribute to the same scalar.
+/// Averaging the change residual inside each block removes the grain and most
+/// edge-placement error. What remains is the broad frame-to-frame fluctuation
+/// that is most visible on smooth surfaces.
+pub fn temporal_low_frequency_error(
+    prediction: [&[f32]; 2],
+    reference: [&[f32]; 2],
+    warp: crate::temporal::Reprojection<'_>,
+    low_extent: [usize; 2],
+    scale: usize,
+    block: usize,
+) -> Option<TemporalError> {
+    assert!(block > 0);
+    let width = low_extent[0] * scale;
+    let height = low_extent[1] * scale;
+    let blocks_x = width.div_ceil(block);
+    let blocks_y = height.div_ceil(block);
+    let mut sums = vec![[0.0f64; 3]; blocks_x * blocks_y];
+    let mut counts = vec![0usize; blocks_x * blocks_y];
+    for_each_temporal_delta(
+        prediction,
+        reference,
+        warp,
+        None,
+        low_extent,
+        scale,
+        |x, y, delta| {
+            let index = (y / block) * blocks_x + x / block;
+            for channel in 0..3 {
+                sums[index][channel] += delta[channel] as f64;
+            }
+            counts[index] += 1;
+        },
+    );
+
+    let mut squared_sum = 0.0;
+    let mut values = 0;
+    for (sum, count) in sums.into_iter().zip(counts) {
+        if count == 0 {
+            continue;
+        }
+        for channel in sum {
+            let mean = channel / count as f64;
+            squared_sum += mean * mean;
+            values += 1;
+        }
+    }
+    (values != 0).then_some(TemporalError {
+        squared_sum,
+        values,
     })
 }
 
@@ -361,7 +447,7 @@ mod tests {
 
 #[cfg(test)]
 mod temporal_tests {
-    use super::temporal_error;
+    use super::{temporal_error, temporal_low_frequency_error};
     use crate::temporal::{RejectionConfig, Surface};
 
     fn flat(depth: f32) -> Surface {
@@ -417,6 +503,58 @@ mod temporal_tests {
             .unwrap()
             .mean()
                 > 0.0
+        );
+    }
+
+    #[test]
+    fn temporal_block_error_separates_grain_from_broad_fluctuation() {
+        let base = crate::transform::compress(1.0);
+        let low = crate::transform::decompress(base - 0.1);
+        let high = crate::transform::decompress(base + 0.1);
+        let reference = vec![1.0; 2 * 2 * 3];
+        let mut grain = reference.clone();
+        for y in 0..2 {
+            for x in 0..2 {
+                grain[(y * 2 + x) * 3..(y * 2 + x + 1) * 3].fill(if (x + y) % 2 == 0 {
+                    low
+                } else {
+                    high
+                });
+            }
+        }
+        let broad = vec![high; reference.len()];
+        let motion = vec![0.0; 2 * 2 * 2];
+        let now = surfaces(1.0);
+        let then = surfaces(1.0);
+        let warp = crate::temporal::Reprojection {
+            motion: &motion,
+            current: &now,
+            previous: &then,
+            rejection: RejectionConfig::default(),
+        };
+        let grain_error = temporal_low_frequency_error(
+            [&grain, &reference],
+            [&reference, &reference],
+            warp,
+            [2, 2],
+            1,
+            2,
+        )
+        .unwrap()
+        .mean();
+        let broad_error = temporal_low_frequency_error(
+            [&broad, &reference],
+            [&reference, &reference],
+            warp,
+            [2, 2],
+            1,
+            2,
+        )
+        .unwrap()
+        .mean();
+        assert!(
+            grain_error < broad_error * 1.0e-8,
+            "grain {grain_error} did not average away against broad drift {broad_error}"
         );
     }
 

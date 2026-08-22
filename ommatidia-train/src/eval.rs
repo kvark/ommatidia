@@ -32,6 +32,7 @@ pub fn reconstruct(
     sampler_steps: usize,
     seed: u64,
     previous_output: Option<&[f32]>,
+    previous_validity: Option<&[f32]>,
 ) -> Vec<f32> {
     assert_eq!(config.batch, 1, "evaluation runs one crop at a time");
     let per_slot = (config.target_channels() * config.tile * config.tile) as usize;
@@ -86,6 +87,7 @@ pub fn reconstruct(
         Prediction::SubpixelKernel => {
             let mut extra = input.extra_taps();
             extra.previous_output = previous_output;
+            extra.previous_validity = previous_validity;
             batch::assemble_kernel(sample, layout, crop, &residual, config, extra)
         }
         Prediction::SubpixelResidual => {
@@ -163,6 +165,10 @@ pub struct Scores {
     error: f64,
     ssim: f64,
     relative: f64,
+    /// MSE after averaging 16x16 output blocks. This removes grain and most
+    /// edge placement error, leaving the broad illumination mottling that a
+    /// full-frame score can hide.
+    low_frequency: f64,
     /// Worst single crop's relative error. A mean can be carried by a handful
     /// of crops, and a reconstruction that is catastrophic on a few of them is
     /// a different problem from one that is mildly wrong on all of them.
@@ -179,6 +185,8 @@ impl Scores {
         self.relative += relative;
         self.worst_relative = self.worst_relative.max(relative);
         self.detail += ommatidia::metrics::detail(image, extent, extent);
+        self.low_frequency +=
+            ommatidia::metrics::low_frequency_error(image, reference, extent, extent, 16);
         self.crops += 1;
     }
 
@@ -190,6 +198,11 @@ impl Scores {
         -10.0 * self.mse().log10()
     }
 
+    pub fn low_frequency_psnr(&self) -> f64 {
+        let mse = self.low_frequency / self.crops.max(1) as f64;
+        -10.0 * mse.log10()
+    }
+
     /// One reported line. `reference_detail` is the same accumulator taken over
     /// the canonical images, so what is printed is the fraction of the
     /// reference's detail that survived rather than a gradient nobody can
@@ -198,13 +211,14 @@ impl Scores {
         let crops = self.crops.max(1) as f64;
         format!(
             "{name:<9} MSE {:.6}, PSNR {:.2} dB, SSIM {:.4}, relMSE {:.5} (worst crop \
-             {:.2}), detail {:.0}%",
+             {:.2}), detail {:.0}%, low-frequency PSNR {:.2} dB",
             self.mse(),
             self.psnr(),
             self.ssim / crops,
             self.relative / crops,
             self.worst_relative,
             100.0 * self.detail / reference_detail,
+            self.low_frequency_psnr(),
         )
     }
 }

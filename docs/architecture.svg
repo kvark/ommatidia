@@ -1,57 +1,75 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="1120" height="500" viewBox="0 0 1120 500" role="img" aria-labelledby="title desc">
-  <title id="title">Ommatidium reconstruction architecture</title>
-  <desc id="desc">A low-resolution path traced frame and G-buffer are packed into a multi-scale reconstruction network. The sub-pixel residual and an optional output-resolution primary-surface G-buffer are combined into a two-times larger output. A dashed temporal feedback path reprojects and validates a compact learned feature state with host motion, depth, normals, and disocclusion data.</desc>
+<svg xmlns="http://www.w3.org/2000/svg" width="1120" height="540" viewBox="0 0 1120 540" role="img" aria-labelledby="title desc">
+  <title id="title">Ommatidium spatial and temporal reconstruction architecture</title>
+  <desc id="desc">Sparse path samples and a low-resolution G-buffer feed a convolutional reconstructor. Its sub-pixel weights gather current radiance samples, restore exact output-resolution albedo, and produce a two-times output. The validated temporal training path reprojects the previous reconstruction using current-to-previous motion, rejects mismatched output-resolution surfaces, and gates valid history after the spatial gather. The native temporal GPU path remains to be implemented.</desc>
   <defs>
     <marker id="arrow" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto"><path d="M0,0 L9,3 L0,6 Z" fill="#59636e"/></marker>
+    <marker id="future-arrow" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto"><path d="M0,0 L9,3 L0,6 Z" fill="#9a6700"/></marker>
     <style>
       .box{fill:#f6f8fa;stroke:#57606a;stroke-width:2;rx:12}.core{fill:#ddf4ff;stroke:#0969da;stroke-width:2;rx:12}
       .future{fill:#fff8c5;stroke:#9a6700;stroke-width:2;stroke-dasharray:7 5;rx:12}.line{stroke:#59636e;stroke-width:2.5;fill:none;marker-end:url(#arrow)}
-      .dash{stroke:#9a6700;stroke-width:2.5;stroke-dasharray:7 5;fill:none;marker-end:url(#arrow)}
-      text{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;fill:#24292f}.h{font-size:19px;font-weight:650}.p{font-size:14px}.tag{font-size:13px;font-weight:600;fill:#0969da}
+      .dash{stroke:#9a6700;stroke-width:2.5;stroke-dasharray:7 5;fill:none;marker-end:url(#future-arrow)}
+      text{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;fill:#24292f}.h{font-size:18px;font-weight:650}.p{font-size:14px}.tag{font-size:13px;font-weight:650;fill:#0969da}.note{font-size:12px;fill:#57606a}
     </style>
   </defs>
-  <text x="40" y="34" class="tag">TODAY · SINGLE FRAME, 2×</text>
-  <rect x="40" y="60" width="190" height="112" class="box"/>
-  <text x="135" y="91" text-anchor="middle" class="h">Sparse path trace</text>
-  <text x="135" y="119" text-anchor="middle" class="p">linear HDR color · 1 spp</text>
-  <text x="135" y="143" text-anchor="middle" class="p">depth · normal · materials</text>
-  <path d="M230 116 H290" class="line"/>
-  <rect x="290" y="60" width="175" height="112" class="box"/>
-  <text x="378" y="98" text-anchor="middle" class="h">GPU pack</text>
-  <text x="378" y="126" text-anchor="middle" class="p">range encode + NCHW</text>
-  <text x="378" y="148" text-anchor="middle" class="p">input resolution</text>
-  <path d="M465 116 H525" class="line"/>
-  <rect x="525" y="47" width="225" height="138" class="core"/>
-  <text x="638" y="83" text-anchor="middle" class="h">Multi-scale reconstructor</text>
-  <text x="638" y="111" text-anchor="middle" class="p">74k parameters · one pass</text>
-  <text x="638" y="135" text-anchor="middle" class="p">conv · coarse attention candidate</text>
-  <text x="638" y="159" text-anchor="middle" class="p">predicts 3 × scale² residuals</text>
-  <path d="M750 116 H810" class="line"/>
-  <rect x="810" y="60" width="150" height="112" class="box"/>
-  <text x="885" y="98" text-anchor="middle" class="h">GPU unpack</text>
-  <text x="885" y="126" text-anchor="middle" class="p">sub-pixel scatter</text>
-  <text x="885" y="148" text-anchor="middle" class="p">+ geometry-aware base</text>
-  <path d="M960 116 H1010" class="line"/>
-  <rect x="1010" y="73" width="80" height="86" class="box"/>
-  <text x="1050" y="107" text-anchor="middle" class="h">2×</text>
-  <text x="1050" y="132" text-anchor="middle" class="p">HDR out</text>
 
-  <rect x="770" y="205" width="230" height="72" class="box"/>
-  <text x="885" y="234" text-anchor="middle" class="h">HR primary surfaces</text>
-  <text x="885" y="258" text-anchor="middle" class="p">depth · normal · albedo</text>
-  <path d="M885 205 V174" class="line"/>
+  <text x="35" y="31" class="tag">IMPLEMENTED SPATIAL PATH · 2×</text>
+  <rect x="35" y="52" width="175" height="112" class="box"/>
+  <text x="123" y="84" text-anchor="middle" class="h">Sparse paths</text>
+  <text x="123" y="112" text-anchor="middle" class="p">linear HDR · 1–4 spp</text>
+  <text x="123" y="137" text-anchor="middle" class="p">depth · normal · albedo</text>
 
-  <text x="40" y="327" class="tag" style="fill:#9a6700">NEXT · TEMPORAL RECONSTRUCTION</text>
-  <rect x="160" y="357" width="240" height="100" class="future"/>
-  <text x="280" y="391" text-anchor="middle" class="h">Learned feature state</text>
-  <text x="280" y="419" text-anchor="middle" class="p">1/4 input size · FP16 · ~6.2 MB</text>
-  <text x="280" y="441" text-anchor="middle" class="p">one recurrent frame on device</text>
-  <path d="M400 407 H500" class="dash"/>
-  <rect x="500" y="345" width="275" height="124" class="future"/>
-  <text x="638" y="379" text-anchor="middle" class="h">Reproject + validate</text>
-  <text x="638" y="407" text-anchor="middle" class="p">host motion · depth · normal</text>
-  <text x="638" y="431" text-anchor="middle" class="p">disocclusion · reactive confidence</text>
-  <text x="638" y="453" text-anchor="middle" class="p">coarse gated / attention fusion</text>
-  <path d="M638 345 V293 H638 V185" class="dash"/>
-  <path d="M590 185 V312 H280 V357" class="dash"/>
+  <path d="M210 108 H253" class="line"/>
+  <rect x="253" y="52" width="150" height="112" class="box"/>
+  <text x="328" y="89" text-anchor="middle" class="h">GPU pack</text>
+  <text x="328" y="117" text-anchor="middle" class="p">range encode</text>
+  <text x="328" y="141" text-anchor="middle" class="p">input resolution</text>
+
+  <path d="M403 108 H446" class="line"/>
+  <rect x="446" y="40" width="226" height="136" class="core"/>
+  <text x="559" y="76" text-anchor="middle" class="h">Convolutional U-Net</text>
+  <text x="559" y="104" text-anchor="middle" class="p">multi-scale · one pass</text>
+  <text x="559" y="128" text-anchor="middle" class="p">one convex kernel per</text>
+  <text x="559" y="150" text-anchor="middle" class="p">output sub-pixel</text>
+
+  <path d="M672 108 H715" class="line"/>
+  <rect x="715" y="40" width="215" height="136" class="core"/>
+  <text x="823" y="76" text-anchor="middle" class="h">Current-sample gather</text>
+  <text x="823" y="104" text-anchor="middle" class="p">25 or 49 measured taps</text>
+  <text x="823" y="128" text-anchor="middle" class="p">exact HR albedo restore</text>
+  <text x="823" y="150" text-anchor="middle" class="p">no filtered image between</text>
+
+  <path d="M930 108 H973" class="line"/>
+  <rect x="973" y="65" width="112" height="86" class="box"/>
+  <text x="1029" y="100" text-anchor="middle" class="h">2× HDR</text>
+  <text x="1029" y="127" text-anchor="middle" class="p">output</text>
+
+  <rect x="700" y="203" width="245" height="68" class="box"/>
+  <text x="823" y="231" text-anchor="middle" class="h">HR primary surfaces</text>
+  <text x="823" y="255" text-anchor="middle" class="p">depth · normal · albedo</text>
+  <path d="M823 203 V176" class="line"/>
+
+  <text x="35" y="321" class="tag" style="fill:#9a6700">VALIDATED IN TRAINING/EVALUATION · NATIVE GPU PATH NEXT</text>
+  <rect x="35" y="354" width="190" height="104" class="future"/>
+  <text x="130" y="387" text-anchor="middle" class="h">Previous 2× output</text>
+  <text x="130" y="415" text-anchor="middle" class="p">library-owned ping-pong</text>
+  <text x="130" y="439" text-anchor="middle" class="p">compressed radiance</text>
+
+  <path d="M225 406 H275" class="dash"/>
+  <rect x="275" y="342" width="235" height="128" class="future"/>
+  <text x="393" y="375" text-anchor="middle" class="h">Warp + surface reject</text>
+  <text x="393" y="403" text-anchor="middle" class="p">current → previous motion</text>
+  <text x="393" y="427" text-anchor="middle" class="p">depth · normal · albedo</text>
+  <text x="393" y="451" text-anchor="middle" class="p">color + explicit validity</text>
+
+  <path d="M510 406 H570" class="dash"/>
+  <rect x="570" y="342" width="240" height="128" class="future"/>
+  <text x="690" y="375" text-anchor="middle" class="h">Post-gather history mix</text>
+  <text x="690" y="403" text-anchor="middle" class="p">one learned gate per sub-pixel</text>
+  <text x="690" y="427" text-anchor="middle" class="p">invalid history hard-closes gate</text>
+  <text x="690" y="451" text-anchor="middle" class="p">current gather remains fallback</text>
+
+  <path d="M810 406 H1029 V151" class="dash"/>
+  <path d="M1029 151 V300 H130 V354" class="dash"/>
+  <path d="M823 271 V300 H393 V342" class="dash"/>
+  <text x="832" y="493" text-anchor="middle" class="note">Dashed path: measured quality contract; native texture ownership, reprojection, reset, and validity upload remain.</text>
 </svg>
