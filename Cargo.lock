@@ -271,7 +271,6 @@ dependencies = [
  "bytemuck",
  "choir",
  "exr",
- "getrandom 0.2.17",
  "glam 0.30.10",
  "gltf",
  "log",

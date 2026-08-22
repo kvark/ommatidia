@@ -143,7 +143,23 @@ fn where_the_frame_time_goes() {
     // to 1920x1080 output. The old 720^2 proxy had the same pixel count but
     // made the public result needlessly ambiguous.
     const INPUT: [u32; 2] = [960, 540];
-    let config = deployment_config(64);
+    let config = if let Some(requested) = std::env::var_os("OMMATIDIA_PROFILE_CHECKPOINT") {
+        let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let requested = std::path::PathBuf::from(requested);
+        let checkpoint =
+            if requested.is_absolute() || requested.with_extension("safetensors").is_file() {
+                requested
+            } else {
+                manifest.join("..").join(requested)
+            };
+        let (mut config, _) = ommatidia::checkpoint::load_config(&checkpoint)
+            .expect("load OMMATIDIA_PROFILE_CHECKPOINT sidecar");
+        config.tile = 64;
+        config.batch = 1;
+        config
+    } else {
+        deployment_config(64)
+    };
     let model = ommatidia::model::build_for_extent(&config, false, INPUT).expect("build");
     let mut session = profiling_session(&model.graph, context.clone(), true);
     model.initialize(&mut session, 1);
@@ -348,7 +364,9 @@ fn end_to_end_1080p_runtime_cost() {
         },
     );
     let mut inputs = FrameInputs::color_only(input_view, input_view);
-    if upscaler.config().reconstruction_base == ReconstructionBase::HighResolutionGuided {
+    if upscaler.config().reconstruction_base == ReconstructionBase::HighResolutionGuided
+        || upscaler.config().demodulate
+    {
         inputs = inputs.with_high_resolution_gbuffer(hr_input_view, hr_input_view, hr_input_view);
     }
     let mut encoder = context.create_command_encoder(blade_graphics::CommandEncoderDesc {

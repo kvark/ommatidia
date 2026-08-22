@@ -90,3 +90,12 @@ Pin the `v0.3.1` Hub revision, or its exact commit, in applications. Do not
 download mutable `main` for a shipped build.
 
 The weights are released under the MIT license.
+
+## Curated comparison checkpoint
+
+`experiments/rich-kernel-b16-demod025/` contains the 302,980-parameter spatial
+kernel checkpoint used by the six-scene OIDN/ReSTIR comparison. It is an
+experiment, not a replacement for the pinned stable checkpoint above. The
+matched screenshots, per-scene metrics, runtime trace, and exact reproduction
+contract are in the
+[GitHub result](https://github.com/kvark/ommatidia/blob/main/docs/results/curated-oidn-2026-08-22.md).
