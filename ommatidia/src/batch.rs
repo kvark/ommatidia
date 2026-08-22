@@ -853,18 +853,44 @@ pub fn temporal_target(
     (target, mask)
 }
 
-/// Warp a compressed sub-pixel image onto this frame, same layout.
+/// A motion-reprojected reconstruction and its per-sub-pixel validity.
 ///
-/// Pixels the teacher cannot reproject stay zero. The gather then sees a
-/// black history tap there and has to use the current samples instead.
+/// Invalid colour is stored as zero only for deterministic initialization;
+/// consumers must multiply their history gate by `validity` so rejection is a
+/// no-op rather than a blend toward black.
+pub struct WarpedOutput {
+    /// Compressed RGB in sub-pixel planar layout.
+    pub color: Vec<f32>,
+    /// One plane per output sub-pixel, in the same planar layout without RGB.
+    pub validity: Vec<f32>,
+}
+
+/// Warp a compressed sub-pixel image onto this frame, same layout.
 pub fn warp_previous_output(
     previous: &[f32],
     warp: crate::temporal::Reprojection<'_>,
     tile: usize,
     scale: usize,
-) -> Vec<f32> {
-    let (reprojected, _) = reproject(&spread(previous, tile, scale), warp, tile, scale);
-    collect(&reprojected, tile, scale)
+) -> WarpedOutput {
+    let (reprojected, pixel_valid) = reproject(&spread(previous, tile, scale), warp, tile, scale);
+    let slots = scale * scale;
+    let extent = tile * scale;
+    let mut validity = vec![0.0; slots * tile * tile];
+    for dy in 0..scale {
+        for dx in 0..scale {
+            let slot = dy * scale + dx;
+            for y in 0..tile {
+                for x in 0..tile {
+                    let pixel = (y * scale + dy) * extent + x * scale + dx;
+                    validity[(slot * tile + y) * tile + x] = f32::from(pixel_valid[pixel]);
+                }
+            }
+        }
+    }
+    WarpedOutput {
+        color: collect(&reprojected, tile, scale),
+        validity,
+    }
 }
 
 /// Convert an interleaved linear crop into compressed sub-pixel layout.
@@ -913,17 +939,22 @@ pub fn compress_linear_crop(
     out
 }
 
-/// Write one slot of warped previous-output history, compressed sub-pixel.
+/// Write one slot of warped previous-output colour and validity.
 pub fn fill_history_slot(
     history: &mut [f32],
-    previous: &[f32],
+    validity: &mut [f32],
+    previous: &WarpedOutput,
     slot: usize,
     tile: usize,
     scale: usize,
 ) {
     let per_slot = 3 * scale * scale * tile * tile;
-    assert_eq!(previous.len(), per_slot);
-    history[slot * per_slot..(slot + 1) * per_slot].copy_from_slice(previous);
+    let validity_per_slot = scale * scale * tile * tile;
+    assert_eq!(previous.color.len(), per_slot);
+    assert_eq!(previous.validity.len(), validity_per_slot);
+    history[slot * per_slot..(slot + 1) * per_slot].copy_from_slice(&previous.color);
+    validity[slot * validity_per_slot..(slot + 1) * validity_per_slot]
+        .copy_from_slice(&previous.validity);
 }
 
 /// History reset: current-frame colour in compressed sub-pixel layout.
@@ -1068,6 +1099,9 @@ pub struct ExtraTaps<'a> {
     /// Warped previous reconstruction in compressed sub-pixel layout.
     /// Mixed with the spatial gather after it, not read as extra taps.
     pub previous_output: Option<&'a [f32]>,
+    /// Per-sub-pixel validity for `previous_output`. A rejected reprojection
+    /// hard-closes the mix gate instead of treating black as real history.
+    pub previous_validity: Option<&'a [f32]>,
 }
 
 fn tap_color(
@@ -1201,6 +1235,11 @@ pub fn assemble_kernel(
     let slots = scale * scale;
     let mix_ch = config.history_mix_channels() as usize;
     assert_eq!(
+        extra.previous_output.is_some(),
+        extra.previous_validity.is_some(),
+        "previous output and its validity must be supplied together"
+    );
+    assert_eq!(
         weights.len(),
         (slots * taps + mix_ch) * tile * tile,
         "weight tensor must match the head: spatial gather plus mix gates"
@@ -1268,7 +1307,8 @@ pub fn assemble_kernel(
                 let destination = (out_y * out_width + out_x) * 3;
                 let gate = if mix_ch != 0 && extra.previous_output.is_some() {
                     let m = weights[((slots * taps + slot) * tile + y) * tile + x];
-                    m / (m + 1.0)
+                    let valid = extra.previous_validity.unwrap()[(slot * tile + y) * tile + x];
+                    valid * m / (m + 1.0)
                 } else {
                     0.0
                 };
@@ -1884,6 +1924,35 @@ mod tests {
         );
     }
 
+    #[test]
+    fn warped_output_exposes_reprojection_validity() {
+        const TILE: usize = 2;
+        const SCALE: usize = 2;
+        let image = vec![transform::compress(1.0); 3 * SCALE * SCALE * TILE * TILE];
+        let surfaces = vec![flat_surface(1.0); TILE * SCALE * TILE * SCALE];
+        let motion = vec![0.0; TILE * TILE * 2];
+        let warp = crate::temporal::Reprojection {
+            motion: &motion,
+            current: &surfaces,
+            previous: &surfaces,
+            rejection: crate::temporal::RejectionConfig::default(),
+        };
+        let accepted = warp_previous_output(&image, warp, TILE, SCALE);
+        assert!(accepted.validity.iter().all(|&value| value == 1.0));
+
+        let outside = vec![10.0; TILE * TILE * 2];
+        let rejected = warp_previous_output(
+            &image,
+            crate::temporal::Reprojection {
+                motion: &outside,
+                ..warp
+            },
+            TILE,
+            SCALE,
+        );
+        assert!(rejected.validity.iter().all(|&value| value == 0.0));
+    }
+
     /// History arrives as one more tap, and the current frame arrives from a
     /// different buffer than it does without history — the sample's colour
     /// plane holds the accumulated estimate by then. Reading the wrong one of
@@ -1930,6 +1999,7 @@ mod tests {
                 current: Some(&current),
                 unrejected: None,
                 previous_output: None,
+                previous_validity: None,
             },
             &mut out,
         );
@@ -1964,6 +2034,7 @@ mod tests {
                 current: Some(&current),
                 unrejected: None,
                 previous_output: None,
+                previous_validity: None,
             },
         );
         for (index, &value) in out.iter().enumerate() {
@@ -2002,6 +2073,8 @@ mod tests {
             tile: 8,
         };
         let mut previous = vec![0.0f32; 3 * 4 * 64];
+        let mut validity = vec![0.0f32; 4 * 64];
+        validity[..64].fill(1.0);
         for c in 0..3 {
             for sub in 0..4 {
                 previous[(c * 4 + sub) * 64] =
@@ -2012,6 +2085,12 @@ mod tests {
         let mix = config.history_mix_channels() as usize;
         let slots = 4usize;
         let mut weights = vec![0.0f32; (slots * taps + mix) * 64];
+        // A real current gather for sub-pixel zero, so closing the history
+        // gate has a visible non-black value to preserve.
+        let center = (0..taps)
+            .find(|&tap| config.tap_offset(tap as u32) == (0, 0))
+            .unwrap();
+        weights[center * 64] = 1.0;
         // m/(m+1) ≈ 1, so the mix copies history.
         weights[(slots * taps) * 64] = 1.0e6;
         let assembled = assemble_kernel(
@@ -2022,6 +2101,7 @@ mod tests {
             &config,
             ExtraTaps {
                 previous_output: Some(&previous),
+                previous_validity: Some(&validity),
                 ..ExtraTaps::default()
             },
         );
@@ -2031,6 +2111,26 @@ mod tests {
             assembled[0]
         );
 
+        validity[..64].fill(0.0);
+        let rejected = assemble_kernel(
+            &s,
+            &l,
+            crop,
+            &weights,
+            &config,
+            ExtraTaps {
+                previous_output: Some(&previous),
+                previous_validity: Some(&validity),
+                ..ExtraTaps::default()
+            },
+        );
+        assert!(
+            (rejected[0] - 1.0).abs() < 1e-3,
+            "rejected history changed current radiance to {}",
+            rejected[0]
+        );
+
+        validity[..64].fill(1.0);
         weights[(slots * taps) * 64] = 0.0;
         let without = assemble_kernel(
             &s,
@@ -2040,6 +2140,7 @@ mod tests {
             &config,
             ExtraTaps {
                 previous_output: Some(&previous),
+                previous_validity: Some(&validity),
                 ..ExtraTaps::default()
             },
         );
@@ -2094,6 +2195,7 @@ mod tests {
                 current: Some(&current),
                 unrejected: Some(&unrejected),
                 previous_output: None,
+                previous_validity: None,
             },
             &mut out,
         );
@@ -2130,6 +2232,7 @@ mod tests {
                 current: Some(&current),
                 unrejected: Some(&unrejected),
                 previous_output: None,
+                previous_validity: None,
             },
         );
         for (index, &value) in out.iter().enumerate() {

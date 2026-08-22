@@ -41,6 +41,10 @@ pub struct TemporalBatch {
     pub taps: Vec<f32>,
     /// History reset for the previous frame's teacher (current colour, no warp).
     pub history: Vec<f32>,
+    /// Per-sub-pixel validity for `history`. Reset frames leave this zero, so
+    /// the teacher exactly follows the spatial path rather than mixing a
+    /// placeholder into its first reconstruction.
+    pub history_validity: Vec<f32>,
     /// Per slot, at input resolution: current-to-previous motion.
     pub motion: Vec<f32>,
     /// Per slot, at output resolution: the high-resolution surfaces the
@@ -68,6 +72,7 @@ impl InputSample {
                 current: Some(&prepared.current_color),
                 unrejected: Some(&prepared.unrejected),
                 previous_output: None,
+                previous_validity: None,
             },
         }
     }
@@ -162,6 +167,10 @@ impl Batcher {
 
     pub fn layout(&self) -> &Layout {
         &self.layout
+    }
+
+    pub fn sequence_length(&self) -> usize {
+        self.reader.sequence_length()
     }
 
     pub fn sample(&mut self, index: usize) -> Result<InputSample, ommatidia::dataset::Error> {
@@ -286,6 +295,11 @@ impl Batcher {
                     history: vec![
                         0.0;
                         (config.batch * config.image_channels() * config.tile * config.tile)
+                            as usize
+                    ],
+                    history_validity: vec![
+                        0.0;
+                        (config.batch * config.scale * config.scale * config.tile * config.tile)
                             as usize
                     ],
                     motion: vec![0.0; texels * 2],

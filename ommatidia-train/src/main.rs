@@ -769,6 +769,7 @@ fn main() {
             teacher.set_input("taps", &temporal.taps);
             if config.history_mix_channels() != 0 {
                 teacher.set_input("history", &temporal.history);
+                teacher.set_input("history_validity", &temporal.history_validity);
             }
             teacher.step();
             teacher.wait();
@@ -822,10 +823,23 @@ fn main() {
             }
             if config.history_mix_channels() != 0 {
                 let mut history = vec![0.0; config.batch as usize * per_slot];
+                let mut history_validity = vec![
+                    0.0;
+                    (config.batch * config.scale * config.scale * config.tile * config.tile)
+                        as usize
+                ];
                 for (slot, warped) in warped_slots.iter().enumerate() {
-                    batch::fill_history_slot(&mut history, warped, slot, tile, scale);
+                    batch::fill_history_slot(
+                        &mut history,
+                        &mut history_validity,
+                        warped,
+                        slot,
+                        tile,
+                        scale,
+                    );
                 }
                 session.set_input("history", &history);
+                session.set_input("history_validity", &history_validity);
             }
         }
         if !batch.taps.is_empty() {
@@ -995,6 +1009,9 @@ impl Evaluator {
         let mut hr_guided_scores = eval::Scores::default();
         // Detail is only meaningful against the canonical frame's own.
         let mut reference_detail = 0.0f64;
+        let sequence_length = batcher.sequence_length();
+        let mut network_by_sequence_frame = vec![eval::Scores::default(); sequence_length];
+        let mut reference_detail_by_sequence_frame = vec![0.0f64; sequence_length];
         let has_guides = [
             ommatidia::Plane::Depth,
             ommatidia::Plane::Normal,
@@ -1013,6 +1030,9 @@ impl Evaluator {
         let mut temporal_network_total = 0.0f64;
         let mut temporal_counted = 0usize;
         let mut temporal_values = 0usize;
+        let mut temporal_low_base_total = 0.0f64;
+        let mut temporal_low_network_total = 0.0f64;
+        let mut temporal_low_values = 0usize;
         let mut moving_base_total = 0.0f64;
         let mut moving_network_total = 0.0f64;
         let mut moving_values = 0usize;
@@ -1085,7 +1105,12 @@ impl Evaluator {
                     // Vary the sampler noise per crop, so the score is not one
                     // lucky or unlucky draw repeated.
                     args.seed.wrapping_add(counted as u64),
-                    warped_history.as_deref(),
+                    warped_history
+                        .as_ref()
+                        .map(|history| history.color.as_slice()),
+                    warped_history
+                        .as_ref()
+                        .map(|history| history.validity.as_slice()),
                 );
                 if seeding {
                     let current_surfaces = batch::crop_hr_surfaces(sample, &layout, crop);
@@ -1131,7 +1156,11 @@ impl Evaluator {
                 nearest_scores.add(&baseline, &reference, extent);
                 bilinear_scores.add(&bilinear, &reference, extent);
                 network_scores.add(&predicted, &reference, extent);
-                reference_detail += ommatidia::metrics::detail(&reference, extent, extent);
+                let crop_reference_detail = ommatidia::metrics::detail(&reference, extent, extent);
+                reference_detail += crop_reference_detail;
+                let sequence_frame = index % sequence_length;
+                network_by_sequence_frame[sequence_frame].add(&predicted, &reference, extent);
+                reference_detail_by_sequence_frame[sequence_frame] += crop_reference_detail;
                 if let Some(guided) = &guided {
                     guided_scores.add(guided, &reference, extent);
                 }
@@ -1192,6 +1221,28 @@ impl Evaluator {
                             temporal_base_total += base_error.squared_sum;
                             temporal_values += network_error.values;
                             temporal_counted += 1;
+                        }
+                        let network_low = ommatidia::metrics::temporal_low_frequency_error(
+                            [&predicted, &previous.network],
+                            [&reference, &previous.reference],
+                            warp,
+                            [extent, extent],
+                            scale,
+                            16,
+                        );
+                        let base_low = ommatidia::metrics::temporal_low_frequency_error(
+                            [temporal_base, &previous.base],
+                            [&reference, &previous.reference],
+                            warp,
+                            [extent, extent],
+                            scale,
+                            16,
+                        );
+                        if let (Some(network_low), Some(base_low)) = (network_low, base_low) {
+                            assert_eq!(network_low.values, base_low.values);
+                            temporal_low_network_total += network_low.squared_sum;
+                            temporal_low_base_total += base_low.squared_sum;
+                            temporal_low_values += network_low.values;
                         }
                         let moving: Vec<_> = motion
                             .chunks_exact(2)
@@ -1309,6 +1360,18 @@ impl Evaluator {
             "  {} ({gain:+.2} dB versus {base_name})",
             network_scores.line("network", reference_detail)
         );
+        if self.config.temporal.is_some() {
+            for frame in 0..sequence_length {
+                if reference_detail_by_sequence_frame[frame] == 0.0 {
+                    continue;
+                }
+                println!(
+                    "  sequence frame {frame}: {}",
+                    network_by_sequence_frame[frame]
+                        .line("network", reference_detail_by_sequence_frame[frame])
+                );
+            }
+        }
         if temporal_counted != 0 {
             let base = temporal_base_total / temporal_values as f64;
             let network = temporal_network_total / temporal_values as f64;
@@ -1318,6 +1381,17 @@ impl Evaluator {
                  {base_name:<9} delta MSE {base:.6}\n  \
                  network   delta MSE {network:.6} ({gain:+.2} dB versus {base_name})"
             );
+            if temporal_low_values != 0 {
+                let base = temporal_low_base_total / temporal_low_values as f64;
+                let network = temporal_low_network_total / temporal_low_values as f64;
+                let gain = 10.0 * (base / network).log10();
+                println!(
+                    "  low-frequency temporal delta (16x16 output blocks):\n  \
+                     {base_name:<9} delta MSE {base:.6}\n  \
+                     network   delta MSE {network:.6} \
+                     ({gain:+.2} dB versus {base_name})"
+                );
+            }
             if moving_values != 0 {
                 let moving_base = moving_base_total / moving_values as f64;
                 let moving_network = moving_network_total / moving_values as f64;

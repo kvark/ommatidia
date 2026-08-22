@@ -1042,16 +1042,19 @@ fn gather(graph: &mut Graph, config: &ModelConfig, weights: NodeId, extent: [u32
         return image;
     };
     // Previous reconstruction, already warped, in the same compressed
-    // sub-pixel layout as `image`. One sigmoid gate per sub-pixel is
-    // repeated over RGB so a history mix is a picture blend, not a
-    // second kernel.
+    // sub-pixel layout as `image`. Reprojection validity hard-closes the gate
+    // at disocclusions and outside the frame; a rejected zero is storage, not
+    // black radiance. One gate per sub-pixel is then repeated over RGB so a
+    // history mix is a picture blend, not a second kernel.
     let history = graph.input("history", &[(batch * 3 * slots * spatial) as usize]);
+    let history_validity = graph.input("history_validity", &[(batch * slots * spatial) as usize]);
     let mix_ones = graph.constant(
         vec![1.0; (batch * slots * spatial) as usize],
         &[(batch * slots * spatial) as usize],
     );
     let mix_denom = graph.add(gates, mix_ones);
     let gates = graph.div(gates, mix_denom);
+    let gates = graph.mul(gates, history_validity);
     let twice = graph.concat(gates, gates, batch, slots, slots, spatial);
     let gates_rgb = graph.concat(twice, gates, batch, 2 * slots, slots, spatial);
     let ones = graph.constant(
