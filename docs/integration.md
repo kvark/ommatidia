@@ -48,6 +48,15 @@ primary-surface pass. That pass is deliberately host-owned and visible to its
 profiler rather than hidden inside Ommatidium. Checkpoints using the older
 low-resolution guide require no output-resolution planes.
 
+The Rust API already exercises the intended ownership model when the host uses
+blade-graphics: `Upscaler` receives the host's existing `Arc<Context>` and
+`FrameInputs` borrows its texture views. Temporal checkpoints additionally
+borrow current-to-previous motion, retain their own ping-ponged history, and
+provide `reset_history` for cuts. They do not enumerate an adapter or create a
+second device. What remains below is specifically the C/external-Vulkan path,
+where blade-graphics cannot yet wrap handles created by another graphics
+stack.
+
 ## Release shape
 
 A tagged GitHub release should eventually contain one archive per supported

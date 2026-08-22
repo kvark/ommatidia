@@ -15,7 +15,7 @@ use std::{fs::File, io::BufReader, path::Path};
 use blade_graphics as gpu;
 use half::f16;
 use ommatidia::batch::{self, Crop};
-use ommatidia::dataset::{Layout, Plane, PlaneSet, Sample};
+use ommatidia::dataset::{InputSource, Layout, Plane, PlaneSet, Reader, Sample, Writer};
 use ommatidia::model::{ModelConfig, Objective, ReconstructionBase};
 use ommatidia::rng::Rng;
 use ommatidia::runtime::{FrameInputs, Upscaler};
@@ -114,6 +114,20 @@ fn demodulating_kernel_config() -> ModelConfig {
     }
 }
 
+fn temporal_kernel_config() -> ModelConfig {
+    ModelConfig {
+        temporal_weight: 1.0,
+        temporal: Some(ommatidia::temporal::Config {
+            frames: 4,
+            rejection: ommatidia::temporal::RejectionConfig::default(),
+            features: ommatidia::temporal::Features::Variance,
+            unrejected_tap: false,
+            previous_output: true,
+        }),
+        ..demodulating_kernel_config()
+    }
+}
+
 /// An untrained checkpoint is enough: the question is whether the two paths
 /// agree, not whether the weights are any good.
 fn write_checkpoint(config: &ModelConfig, stem: &std::path::Path, context: Arc<gpu::Context>) {
@@ -133,6 +147,32 @@ fn write_checkpoint(config: &ModelConfig, stem: &std::path::Path, context: Arc<g
         .map(|index| ((index as f32 * 0.173).sin()) * 0.002)
         .collect();
     session.set_parameter(&head.name, &weights);
+    ommatidia::checkpoint::save(&mut session, config, stem).expect("save");
+}
+
+fn write_temporal_checkpoint(
+    config: &ModelConfig,
+    stem: &std::path::Path,
+    context: Arc<gpu::Context>,
+) {
+    let model = ommatidia::model::build(config, false).expect("build");
+    let mut session = ommatidia::gpu::inference_session(&model.graph, context);
+    model.initialize(&mut session, 3);
+    let weight = model
+        .params
+        .iter()
+        .find(|parameter| parameter.name == "head.conv.weight")
+        .expect("head weight");
+    session.set_parameter(&weight.name, &vec![0.0; weight.len]);
+    let bias = model
+        .params
+        .iter()
+        .find(|parameter| parameter.name == "head.kernel.bias")
+        .expect("head bias");
+    let mut values = vec![0.0; bias.len];
+    let gates = config.history_mix_channels() as usize;
+    values[bias.len - gates..].fill(8.0);
+    session.set_parameter(&bias.name, &values);
     ommatidia::checkpoint::save(&mut session, config, stem).expect("save");
 }
 
@@ -277,6 +317,89 @@ fn color_texture(
     let mut transfer = encoder.transfer("upload");
     transfer.copy_buffer_to_texture(staging.into(), width * 16, texture.into(), size);
     (texture, view, staging)
+}
+
+struct TestTexture {
+    texture: gpu::Texture,
+    view: gpu::TextureView,
+    staging: gpu::Buffer,
+}
+
+impl TestTexture {
+    fn upload(
+        context: &gpu::Context,
+        encoder: &mut gpu::CommandEncoder,
+        values: &[f32],
+        width: u32,
+        height: u32,
+    ) -> Self {
+        let (texture, view, staging) = color_texture(context, encoder, values, width, height);
+        Self {
+            texture,
+            view,
+            staging,
+        }
+    }
+
+    fn destroy(self, context: &gpu::Context) {
+        context.destroy_buffer(self.staging);
+        context.destroy_texture_view(self.view);
+        context.destroy_texture(self.texture);
+    }
+}
+
+struct FrameValues<'a> {
+    color: &'a [f32],
+    depth: &'a [f32],
+    normal: &'a [f32],
+    albedo: &'a [f32],
+    specular: &'a [f32],
+    motion: &'a [f32],
+    hr_depth: &'a [f32],
+    hr_normal: &'a [f32],
+    hr_albedo: &'a [f32],
+}
+
+fn temporal_sample(layout: &Layout, values: FrameValues<'_>) -> Sample {
+    let mut lr = vec![f16::ZERO; layout.lr_len()];
+    let texels = layout.lr_texels();
+    for (plane, channels, source) in [
+        (Plane::Color, 3, values.color),
+        (Plane::Depth, 1, values.depth),
+        (Plane::Normal, 3, values.normal),
+        (Plane::DiffuseAlbedo, 3, values.albedo),
+        (Plane::SpecularF0, 3, values.specular),
+        (Plane::Motion, 2, values.motion),
+    ] {
+        let base = layout.lr_planes.channel_offset(plane).unwrap();
+        for component in 0..channels {
+            for index in 0..texels {
+                lr[(base + component) * texels + index] =
+                    f16::from_f32(source[index * 3 + component]);
+            }
+        }
+    }
+    let roughness = layout.lr_planes.channel_offset(Plane::Roughness).unwrap();
+    for index in 0..texels {
+        lr[roughness * texels + index] = f16::ONE;
+    }
+
+    let mut hr = vec![f16::ZERO; layout.hr_len()];
+    let hr_texels = layout.hr_texels();
+    for (plane, channels, source) in [
+        (Plane::Depth, 1, values.hr_depth),
+        (Plane::Normal, 3, values.hr_normal),
+        (Plane::DiffuseAlbedo, 3, values.hr_albedo),
+    ] {
+        let base = layout.hr_planes.channel_offset(plane).unwrap();
+        for component in 0..channels {
+            for index in 0..hr_texels {
+                hr[(base + component) * hr_texels + index] =
+                    f16::from_f32(source[index * 3 + component]);
+            }
+        }
+    }
+    Sample { lr, hr }
 }
 
 /// The GPU pack has to reproduce `batch::write_conditioning` value for value.
@@ -675,6 +798,424 @@ fn kernel_upscale_matches_the_cpu_path() {
 #[ignore = "requires a GPU"]
 fn demodulated_kernel_upscale_matches_the_cpu_path() {
     check_kernel_parity(&demodulating_kernel_config(), "demodulated kernel");
+}
+
+#[test]
+#[ignore = "requires a GPU"]
+fn temporal_runtime_matches_cpu_recurrence_and_reset() {
+    let Some(context) = context() else { return };
+    let config = temporal_kernel_config();
+    let dir = std::env::temp_dir().join("ommatidia-gpu-runtime-temporal-parity");
+    std::fs::create_dir_all(&dir).unwrap();
+    let stem = dir.join("model");
+    write_temporal_checkpoint(&config, &stem, Arc::clone(&context));
+    let mut upscaler =
+        Upscaler::from_checkpoint(Arc::clone(&context), &stem, 1, 100).expect("upscaler");
+    assert!(upscaler.is_temporal());
+    assert_eq!(upscaler.temporal_history_bytes(), 67_584);
+
+    let quantize = |value: f32| f16::from_f32(value).to_f32();
+    let texels = (TILE * TILE) as usize;
+    let hr_width = TILE * SCALE;
+    let hr_texels = (hr_width * hr_width) as usize;
+    let mut color = [vec![0.0; texels * 3], vec![0.0; texels * 3]];
+    let mut depth = [vec![0.0; texels * 3], vec![0.0; texels * 3]];
+    let mut normal = [vec![0.0; texels * 3], vec![0.0; texels * 3]];
+    let mut albedo = [vec![0.0; texels * 3], vec![0.0; texels * 3]];
+    let specular = vec![quantize(0.25); texels * 3];
+    let mut motion = [vec![0.0; texels * 3], vec![0.0; texels * 3]];
+    for y in 0..TILE as usize {
+        for x in 0..TILE as usize {
+            let index = y * TILE as usize + x;
+            let changed = x >= TILE as usize / 2;
+            let first = [
+                0.25 + x as f32 * 0.025,
+                0.65 + y as f32 * 0.0125,
+                1.1 + (x + y) as f32 * 0.01,
+            ];
+            let second = [
+                2.0 + y as f32 * 0.02,
+                0.2 + x as f32 * 0.01,
+                0.45 + (x + y) as f32 * 0.005,
+            ];
+            for component in 0..3 {
+                color[0][index * 3 + component] = quantize(first[component]);
+                color[1][index * 3 + component] = quantize(second[component]);
+            }
+            depth[0][index * 3] = quantize(2.0 + y as f32 * 0.05);
+            depth[1][index * 3] = quantize(if changed { 6.0 } else { 2.0 + y as f32 * 0.05 });
+            let first_normal = [0.0, 0.0, 1.0];
+            let second_normal = if changed {
+                [0.6, 0.0, 0.8]
+            } else {
+                first_normal
+            };
+            let first_albedo = [0.45, 0.6, 0.75];
+            let second_albedo = if changed {
+                [0.8, 0.2, 0.3]
+            } else {
+                first_albedo
+            };
+            for component in 0..3 {
+                normal[0][index * 3 + component] = quantize(first_normal[component]);
+                normal[1][index * 3 + component] = quantize(second_normal[component]);
+                albedo[0][index * 3 + component] = quantize(first_albedo[component]);
+                albedo[1][index * 3 + component] = quantize(second_albedo[component]);
+            }
+            motion[1][index * 3] = quantize(0.25);
+            motion[1][index * 3 + 1] = quantize(-0.125);
+        }
+    }
+
+    let mut hr_depth = [vec![0.0; hr_texels * 3], vec![0.0; hr_texels * 3]];
+    let mut hr_normal = [vec![0.0; hr_texels * 3], vec![0.0; hr_texels * 3]];
+    let mut hr_albedo = [vec![0.0; hr_texels * 3], vec![0.0; hr_texels * 3]];
+    for frame in 0..2 {
+        for y in 0..hr_width as usize {
+            for x in 0..hr_width as usize {
+                let low = (y / SCALE as usize) * TILE as usize + x / SCALE as usize;
+                let high = y * hr_width as usize + x;
+                hr_depth[frame][high * 3] = depth[frame][low * 3];
+                hr_normal[frame][high * 3..high * 3 + 3]
+                    .copy_from_slice(&normal[frame][low * 3..low * 3 + 3]);
+                hr_albedo[frame][high * 3..high * 3 + 3]
+                    .copy_from_slice(&albedo[frame][low * 3..low * 3 + 3]);
+            }
+        }
+    }
+
+    let layout = Layout {
+        scale: SCALE,
+        lr_width: TILE,
+        lr_height: TILE,
+        lr_source: InputSource::PathTrace,
+        lr_planes: config.cond_planes.with(Plane::Motion),
+        hr_planes: PlaneSet::new()
+            .with(Plane::Depth)
+            .with(Plane::Normal)
+            .with(Plane::DiffuseAlbedo),
+    };
+    let samples: Vec<_> = (0..2)
+        .map(|frame| {
+            temporal_sample(
+                &layout,
+                FrameValues {
+                    color: &color[frame],
+                    depth: &depth[frame],
+                    normal: &normal[frame],
+                    albedo: &albedo[frame],
+                    specular: &specular,
+                    motion: &motion[frame],
+                    hr_depth: &hr_depth[frame],
+                    hr_normal: &hr_normal[frame],
+                    hr_albedo: &hr_albedo[frame],
+                },
+            )
+        })
+        .collect();
+    let sequence = dir.join("sequence.omd");
+    let mut writer = Writer::create_sequence(&sequence, layout, 2).unwrap();
+    for sample in &samples {
+        writer.write(sample).unwrap();
+    }
+    writer.finish().unwrap();
+    let temporal = config.temporal.unwrap();
+    let mut reader = Reader::open(&sequence).unwrap();
+    let prepared = [
+        ommatidia::temporal::prepare(&mut reader, 0, temporal).unwrap(),
+        ommatidia::temporal::prepare(&mut reader, 1, temporal).unwrap(),
+    ];
+
+    let mut encoder = context.create_command_encoder(gpu::CommandEncoderDesc {
+        name: "temporal-runtime-test",
+        buffer_count: 2,
+        manual_barriers: false,
+    });
+    encoder.start();
+    let color_texture = [
+        TestTexture::upload(&context, &mut encoder, &color[0], TILE, TILE),
+        TestTexture::upload(&context, &mut encoder, &color[1], TILE, TILE),
+    ];
+    let depth_texture = [
+        TestTexture::upload(&context, &mut encoder, &depth[0], TILE, TILE),
+        TestTexture::upload(&context, &mut encoder, &depth[1], TILE, TILE),
+    ];
+    let normal_texture = [
+        TestTexture::upload(&context, &mut encoder, &normal[0], TILE, TILE),
+        TestTexture::upload(&context, &mut encoder, &normal[1], TILE, TILE),
+    ];
+    let albedo_texture = [
+        TestTexture::upload(&context, &mut encoder, &albedo[0], TILE, TILE),
+        TestTexture::upload(&context, &mut encoder, &albedo[1], TILE, TILE),
+    ];
+    let motion_texture = [
+        TestTexture::upload(&context, &mut encoder, &motion[0], TILE, TILE),
+        TestTexture::upload(&context, &mut encoder, &motion[1], TILE, TILE),
+    ];
+    let specular_texture = TestTexture::upload(&context, &mut encoder, &specular, TILE, TILE);
+    let hr_depth_texture = [
+        TestTexture::upload(&context, &mut encoder, &hr_depth[0], hr_width, hr_width),
+        TestTexture::upload(&context, &mut encoder, &hr_depth[1], hr_width, hr_width),
+    ];
+    let hr_normal_texture = [
+        TestTexture::upload(&context, &mut encoder, &hr_normal[0], hr_width, hr_width),
+        TestTexture::upload(&context, &mut encoder, &hr_normal[1], hr_width, hr_width),
+    ];
+    let hr_albedo_texture = [
+        TestTexture::upload(&context, &mut encoder, &hr_albedo[0], hr_width, hr_width),
+        TestTexture::upload(&context, &mut encoder, &hr_albedo[1], hr_width, hr_width),
+    ];
+    let inputs = [0, 1].map(|frame| {
+        FrameInputs::from_textures(
+            color_texture[frame].view,
+            depth_texture[frame].view,
+            normal_texture[frame].view,
+            albedo_texture[frame].view,
+            specular_texture.view,
+        )
+        .with_high_resolution_gbuffer(
+            hr_depth_texture[frame].view,
+            hr_normal_texture[frame].view,
+            hr_albedo_texture[frame].view,
+        )
+        .with_motion(motion_texture[frame].view)
+    });
+
+    let out_size = gpu::Extent {
+        width: hr_width,
+        height: hr_width,
+        depth: 1,
+    };
+    let output = context.create_texture(gpu::TextureDesc {
+        name: "temporal-test-output",
+        format: Upscaler::OUTPUT_FORMAT,
+        size: out_size,
+        dimension: gpu::TextureDimension::D2,
+        array_layer_count: 1,
+        mip_level_count: 1,
+        usage: gpu::TextureUsage::STORAGE | gpu::TextureUsage::COPY,
+        sample_count: 1,
+        external: None,
+    });
+    let output_view = context.create_texture_view(
+        output,
+        gpu::TextureViewDesc {
+            name: "temporal-test-output",
+            format: Upscaler::OUTPUT_FORMAT,
+            dimension: gpu::ViewDimension::D2,
+            subresources: &gpu::TextureSubresources::default(),
+        },
+    );
+    encoder.init_texture(output);
+    let readback = context.create_buffer(gpu::BufferDesc {
+        name: "temporal-test-readback",
+        size: (hr_width * hr_width) as u64 * 8,
+        memory: gpu::Memory::Shared,
+    });
+
+    // Seed both low-resolution and reconstructed-output history.
+    upscaler.upscale(&mut encoder, &inputs[0], output_view);
+    let sync = context.submit(&mut encoder);
+    assert!(context.wait_for(&sync, 30_000).unwrap());
+
+    // Isolate the second pack so its conditioning can be compared before the
+    // network consumes it.
+    encoder.start();
+    upscaler.pack(&mut encoder, &inputs[1]);
+    let sync = context.submit(&mut encoder);
+    assert!(context.wait_for(&sync, 30_000).unwrap());
+    let mut expected_cond = vec![0.0; config.cond_len()];
+    batch::write_temporal_conditioning(
+        &prepared[1],
+        &layout,
+        &config,
+        Crop {
+            x: 0,
+            y: 0,
+            tile: TILE,
+        },
+        0,
+        &mut expected_cond,
+    );
+    let actual_cond = read_input(&mut upscaler, "cond", expected_cond.len());
+    let worst_cond = actual_cond
+        .iter()
+        .zip(&expected_cond)
+        .map(|(actual, expected)| (actual - expected).abs())
+        .fold(0.0f32, f32::max);
+    assert!(
+        worst_cond < 2.0e-3,
+        "temporal pack differs from training conditioning by {worst_cond:e}"
+    );
+
+    upscaler.run();
+    encoder.start();
+    upscaler.unpack(&mut encoder, &inputs[1], output_view);
+    {
+        let mut transfer = encoder.transfer("temporal-readback");
+        transfer.copy_texture_to_buffer(output.into(), readback.into(), hr_width * 8, out_size);
+    }
+    let sync = context.submit(&mut encoder);
+    assert!(context.wait_for(&sync, 30_000).unwrap());
+    let mut recurrent = vec![f16::ZERO; hr_texels * 4];
+    unsafe {
+        std::ptr::copy_nonoverlapping(
+            readback.data() as *const f16,
+            recurrent.as_mut_ptr(),
+            recurrent.len(),
+        );
+    }
+
+    let weights = upscaler.read_residual();
+    let crop = Crop {
+        x: 0,
+        y: 0,
+        tile: TILE,
+    };
+    let first = batch::assemble_kernel(
+        &prepared[0].sample,
+        &layout,
+        crop,
+        &weights,
+        &config,
+        batch::ExtraTaps {
+            current: Some(&prepared[0].current_color),
+            ..Default::default()
+        },
+    );
+    let mut first_compressed =
+        batch::compress_linear_crop(&first, &prepared[0].sample, &layout, crop, &config);
+    first_compressed
+        .iter_mut()
+        .for_each(|value| *value = f16::from_f32(*value).to_f32());
+    let current_surfaces = batch::crop_hr_surfaces(&prepared[1].sample, &layout, crop);
+    let previous_surfaces = batch::crop_hr_surfaces(&prepared[0].sample, &layout, crop);
+    let motion_interleaved: Vec<_> = motion[1]
+        .chunks_exact(3)
+        .flat_map(|value| [value[0], value[1]])
+        .collect();
+    let warped = batch::warp_previous_output(
+        &first_compressed,
+        ommatidia::temporal::Reprojection {
+            motion: &motion_interleaved,
+            current: &current_surfaces,
+            previous: &previous_surfaces,
+            rejection: temporal.rejection,
+        },
+        TILE as usize,
+        SCALE as usize,
+    );
+    assert!(
+        warped.validity.contains(&0.0) && warped.validity.contains(&1.0),
+        "the parity case must contain both accepted history and a disocclusion"
+    );
+    let expected = batch::assemble_kernel(
+        &prepared[1].sample,
+        &layout,
+        crop,
+        &weights,
+        &config,
+        batch::ExtraTaps {
+            current: Some(&prepared[1].current_color),
+            previous_output: Some(&warped.color),
+            previous_validity: Some(&warped.validity),
+            ..Default::default()
+        },
+    );
+    let spatial = batch::assemble_kernel(
+        &prepared[1].sample,
+        &layout,
+        crop,
+        &weights,
+        &config,
+        batch::ExtraTaps {
+            current: Some(&prepared[1].current_color),
+            ..Default::default()
+        },
+    );
+    let mut worst = 0.0f32;
+    let mut history_effect = 0.0f32;
+    for index in 0..hr_texels {
+        for channel in 0..3 {
+            let gpu = recurrent[index * 4 + channel].to_f32();
+            let cpu = expected[index * 3 + channel];
+            worst = worst.max((gpu - cpu).abs() / cpu.abs().max(1.0));
+            history_effect = history_effect.max((cpu - spatial[index * 3 + channel]).abs());
+        }
+    }
+    assert!(
+        worst < 2.0e-2,
+        "temporal GPU/CPU worst difference {worst:e}"
+    );
+    assert!(
+        history_effect > 0.1,
+        "the parity case did not exercise recurrent history"
+    );
+
+    // A cut must close every history gate and reproduce the spatial path.
+    upscaler.reset_history();
+    encoder.start();
+    upscaler.upscale(&mut encoder, &inputs[1], output_view);
+    {
+        let mut transfer = encoder.transfer("reset-readback");
+        transfer.copy_texture_to_buffer(output.into(), readback.into(), hr_width * 8, out_size);
+    }
+    let sync = context.submit(&mut encoder);
+    assert!(context.wait_for(&sync, 30_000).unwrap());
+    let mut reset = vec![f16::ZERO; hr_texels * 4];
+    unsafe {
+        std::ptr::copy_nonoverlapping(
+            readback.data() as *const f16,
+            reset.as_mut_ptr(),
+            reset.len(),
+        );
+    }
+    let mut reset_worst = 0.0f32;
+    for index in 0..hr_texels {
+        for channel in 0..3 {
+            let gpu = reset[index * 4 + channel].to_f32();
+            let cpu = spatial[index * 3 + channel];
+            reset_worst = reset_worst.max((gpu - cpu).abs() / cpu.abs().max(1.0));
+        }
+    }
+    assert!(
+        reset_worst < 2.0e-2,
+        "reset history differs from the spatial fallback by {reset_worst:e}"
+    );
+    println!(
+        "temporal runtime: conditioning {worst_cond:e}, recurrence {worst:e}, reset {reset_worst:e}"
+    );
+
+    upscaler.destroy();
+    context.destroy_buffer(readback);
+    context.destroy_texture_view(output_view);
+    context.destroy_texture(output);
+    for texture in color_texture {
+        texture.destroy(&context);
+    }
+    for texture in depth_texture {
+        texture.destroy(&context);
+    }
+    for texture in normal_texture {
+        texture.destroy(&context);
+    }
+    for texture in albedo_texture {
+        texture.destroy(&context);
+    }
+    for texture in motion_texture {
+        texture.destroy(&context);
+    }
+    specular_texture.destroy(&context);
+    for texture in hr_depth_texture {
+        texture.destroy(&context);
+    }
+    for texture in hr_normal_texture {
+        texture.destroy(&context);
+    }
+    for texture in hr_albedo_texture {
+        texture.destroy(&context);
+    }
+    context.destroy_command_encoder(&mut encoder);
 }
 
 fn check_kernel_parity(config: &ModelConfig, label: &str) {
