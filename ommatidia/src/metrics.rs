@@ -32,6 +32,42 @@ pub fn relative_error(a: &[f32], b: &[f32]) -> f64 {
     sum / a.len() as f64
 }
 
+/// MSE between block-average colors in compressed space.
+///
+/// Per-pixel error mixes grain, edges, and broad illumination drift into one
+/// number. Averaging first removes the first two, leaving the mottling that is
+/// visible across otherwise smooth surfaces. The comparison suite uses a
+/// 16x16 output block, or 8x8 input pixels at its 2x reconstruction scale.
+pub fn low_frequency_error(a: &[f32], b: &[f32], width: usize, height: usize, block: usize) -> f64 {
+    assert_eq!(a.len(), width * height * 3);
+    assert_eq!(a.len(), b.len());
+    assert!(block > 0);
+    let mut squared = 0.0;
+    let mut values = 0usize;
+    for by in (0..height).step_by(block) {
+        for bx in (0..width).step_by(block) {
+            let x_end = (bx + block).min(width);
+            let y_end = (by + block).min(height);
+            let count = ((x_end - bx) * (y_end - by)) as f64;
+            for channel in 0..3 {
+                let mut sum_a = 0.0;
+                let mut sum_b = 0.0;
+                for y in by..y_end {
+                    for x in bx..x_end {
+                        let offset = (y * width + x) * 3 + channel;
+                        sum_a += crate::transform::compress(a[offset]) as f64;
+                        sum_b += crate::transform::compress(b[offset]) as f64;
+                    }
+                }
+                let difference = (sum_a - sum_b) / count;
+                squared += difference * difference;
+                values += 1;
+            }
+        }
+    }
+    squared / values.max(1) as f64
+}
+
 /// Mean gradient magnitude of displayed luminance: how much detail an image
 /// carries, in the space it is looked at.
 ///
@@ -225,7 +261,7 @@ pub fn temporal_error(
 
 #[cfg(test)]
 mod tests {
-    use super::{detail, error, relative_error};
+    use super::{detail, error, low_frequency_error, relative_error};
 
     const EXTENT: usize = 32;
 
@@ -300,6 +336,25 @@ mod tests {
         assert!(
             ratio > 5.0,
             "compressed error should rank the bright mistake far cheaper, got {ratio:.1}x"
+        );
+    }
+
+    #[test]
+    fn block_error_separates_grain_from_broad_bias() {
+        let reference = vec![1.0; 16 * 16 * 3];
+        let mut grain = reference.clone();
+        for y in 0..16 {
+            for x in 0..16 {
+                let value = if (x + y) % 2 == 0 { 0.5 } else { 1.5 };
+                grain[(y * 16 + x) * 3..(y * 16 + x + 1) * 3].fill(value);
+            }
+        }
+        let biased = vec![0.5; reference.len()];
+        let grain_error = low_frequency_error(&grain, &reference, 16, 16, 16);
+        let bias_error = low_frequency_error(&biased, &reference, 16, 16, 16);
+        assert!(
+            bias_error > grain_error * 20.0,
+            "grain {grain_error} was not averaged away against bias {bias_error}"
         );
     }
 }

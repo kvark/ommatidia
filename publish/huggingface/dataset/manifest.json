@@ -77,6 +77,19 @@
       "bytes": 293601344,
       "sha256": "561c1da125250052f891b8d66126f6570bff2de30735c3588dfe120b01aaa8ad"
     },
+    "rich-path-trace-4spp-validation": {
+      "path": "benchmarks/rich-4spp-validation-128.omd",
+      "samples": 128,
+      "input_extent": [128, 128],
+      "reference_extent": [256, 256],
+      "input_source": "path-trace",
+      "input_spp": 4,
+      "reference_spp": 4096,
+      "scene_features": ["canopy", "textures", "gloss"],
+      "high_resolution_planes": ["color", "depth", "normal", "diffuse_albedo", "specular_f0", "roughness"],
+      "bytes": 293601344,
+      "sha256": "98692c1bd765aefa39209a1ac6be1a242f6b19f4d02dc69d23b294aa0e517877"
+    },
     "path-trace-4spp-static": {
       "path": "ablations/path-trace-4spp-static-train.omd",
       "samples": 2400,

@@ -111,13 +111,28 @@ removed again, deleting roughly 440 lines rather than carrying unused graph,
 autodiff, compiler, and shader surface. The evidence and future temporal gate
 are in the [`architecture decision`](docs/architecture-decision.md).
 
-The primary comparison is now ordered by the actual product path. Every image
-is a matched 2× reconstruction of the same held-out scene; ReSTIR+SVGF is a
-separate control, not Ommatidium's input.
+The primary comparison is ordered by the actual product path. Every image is a
+matched **2×** reconstruction of the same held-out scene; ReSTIR+SVGF is a
+separate control, not Ommatidium's input. OIDN denoises at input resolution and
+then receives the same texel-centre 2× bilinear reconstruction—it is not being
+presented as an OIDN upscaler.
 
-| Sparse paths (4 spp, 128×128) | Bilinear 2× | Ommatidium HR-guided 2× | ReSTIR+SVGF control, bilinear 2× | Canonical (4,096 spp, 256×256) |
-|---|---|---|---|---|
-| ![Independent sparse path input](runs/eval-path-trace-4spp-hr-guided-validation/input.png) | ![Bilinear sparse path upsampling](runs/eval-path-trace-4spp-hr-guided-validation/bilinear.png) | ![Ommatidium high-resolution-guided neural reconstruction](runs/eval-path-trace-4spp-hr-guided-validation/predicted.png) | ![Matched Blade ReSTIR plus SVGF control](runs/eval-path-trace-4spp-hr-guided-validation/restir-svgf-bilinear.png) | ![Matched converged canonical path trace](runs/eval-path-trace-4spp-hr-guided-validation/reference.png) |
+| scene | Sparse paths (4 spp, 128×128) | Ommatidium 2× | OIDN High + bilinear 2× | ReSTIR+SVGF control + bilinear 2× | Canonical (4,096 spp, 256×256) |
+|---|---|---|---|---|---|
+| canopy shadow | ![Sparse canopy-shadow input](docs/comparison-suite/canopy-shadow/input.png) | ![Ommatidium canopy-shadow reconstruction](docs/comparison-suite/canopy-shadow/ommatidium.png) | ![OIDN High canopy-shadow denoise](docs/comparison-suite/canopy-shadow/oidn-input-high.png) | ![ReSTIR plus SVGF canopy-shadow control](docs/comparison-suite/canopy-shadow/restir-svgf.png) | ![Canonical canopy-shadow reference](docs/comparison-suite/canopy-shadow/canonical.png) |
+| local light | ![Sparse local-light input](docs/comparison-suite/local-light/input.png) | ![Ommatidium local-light reconstruction](docs/comparison-suite/local-light/ommatidium.png) | ![OIDN High local-light denoise](docs/comparison-suite/local-light/oidn-input-high.png) | ![ReSTIR plus SVGF local-light control](docs/comparison-suite/local-light/restir-svgf.png) | ![Canonical local-light reference](docs/comparison-suite/local-light/canonical.png) |
+| hard shadow | ![Sparse hard-shadow input](docs/comparison-suite/hard-shadow/input.png) | ![Ommatidium hard-shadow reconstruction](docs/comparison-suite/hard-shadow/ommatidium.png) | ![OIDN High hard-shadow denoise](docs/comparison-suite/hard-shadow/oidn-input-high.png) | ![ReSTIR plus SVGF hard-shadow control](docs/comparison-suite/hard-shadow/restir-svgf.png) | ![Canonical hard-shadow reference](docs/comparison-suite/hard-shadow/canonical.png) |
+
+The six-scene suite confirms both the progress and the shortcoming visible in
+those images. Ommatidium averages 29.26 dB, 1.21 dB above OIDN High, retains 77%
+of canonical detail rather than OIDN's 49%, and has far lower relative error in
+dark regions. OIDN leads SSIM (0.873 versus 0.841) because it is smoother.
+Ommatidium still carries only 93.5% of canonical mean luminance and leads OIDN
+by just 0.36 dB on the new block-average low-frequency score: the broad mottling
+is real. The complete images, per-scene CSV, speed trace, rejected first fixes,
+and reproduction command are in the
+[`curated OIDN result`](docs/results/curated-oidn-2026-08-22.md) and
+[`benchmark harness`](benchmarks/README.md).
 
 ### Why the ReSTIR control is darker
 

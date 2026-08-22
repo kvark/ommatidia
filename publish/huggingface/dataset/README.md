@@ -27,6 +27,7 @@ Synthetic renderer-native training and validation data for
 
 | File | Input source | Samples | Purpose |
 |---|---|---:|---|
+| `benchmarks/rich-4spp-validation-128.omd` | independent path trace, 4 spp + rich shadows/materials + HR primary surfaces | 128 | six-scene OIDN/ReSTIR comparison source |
 | `data/blade-path-trace/4spp-hr-gbuffer-train.omd` | independent path trace, 4 spp + HR primary surfaces | 2,400 | v0.3 spatial training set |
 | `benchmarks/path-trace-4spp-hr-gbuffer-validation.omd` | independent path trace, 4 spp + HR primary surfaces | 128 | v0.3 separate seed-10000 validation |
 | `ablations/path-trace-4spp-static-train.omd` | independent path trace, 4 spp | 2,400 | v0.2 low-resolution-guide training set |
@@ -73,6 +74,8 @@ cargo run --release -p ommatidia-train -- \
 
 See [`docs/design.md`](https://github.com/kvark/ommatidia/blob/main/docs/design.md#data-generation)
 for the semantic contract and the source tree for the authoritative parser.
+The curated shadow, local-light, and material comparison is documented in the
+[August 2026 result](https://github.com/kvark/ommatidia/blob/main/docs/results/curated-oidn-2026-08-22.md).
 
 ## Generation provenance
 

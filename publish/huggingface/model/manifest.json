@@ -33,6 +33,23 @@
       "sha256": "aceca7ce724abd28fbdc4a309c55302db9864bb0a6145bb22896a9f59c34febd"
     }
   },
+  "experiments": {
+    "rich-kernel-b16-demod025": {
+      "variant": "subpixel-kernel-b16-r2-demod025-2x-spatial",
+      "parameters": 302980,
+      "comparison": "docs/results/curated-oidn-2026-08-22.md",
+      "weights": {
+        "path": "experiments/rich-kernel-b16-demod025/model.safetensors",
+        "bytes": 3650016,
+        "sha256": "cf227765abaf2d36fb771007558e2c4e95e86fb0cf2ecdf0537131d3b195bbd4"
+      },
+      "config": {
+        "path": "experiments/rich-kernel-b16-demod025/config.ron",
+        "bytes": 576,
+        "sha256": "1ba081d9a3fc7bb200dd6e583c8a0821f01667f226fb8ba36807406fde4b5612"
+      }
+    }
+  },
   "dataset": {
     "repository": "mad-bot/ommatidia",
     "revision": "v0.3.0",
