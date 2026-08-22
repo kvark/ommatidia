@@ -154,10 +154,19 @@ noise.
 
 ## Deployment boundary
 
-This result is implemented and exercised in the Rust training/evaluation path.
-The native inference API still rejects temporal checkpoints until it owns the
-two output-history textures and implements motion reprojection, surface
-validation, reset, and validity upload on GPU. The checkpoint is therefore an
-experimental quality result, not the published runtime default. That boundary
-is intentional: silently treating a temporal checkpoint as spatial would make
-the measured contract false.
+This result is now implemented and exercised in both the Rust
+training/evaluation path and the shared-context GPU runtime. The upscaler owns
+ping-ponged low-resolution accumulation, previous reconstructed output, and
+surface history; its pack/unpack shaders perform motion reprojection, surface
+validation, explicit-validity gating, and cut reset. A synthetic two-frame GPU
+test agrees with CPU conditioning to 9.5e-5 and with recurrent output to 0.3%,
+including a fractional-motion disocclusion and reset fallback.
+
+A live Blade run of the trained checkpoint provides the end-to-end check. On a
+static four-frame scene, display-space 16x16-block temporal MSE falls from
+0.000934 for bilinear-upsampled 1-spp input to 0.000045 for Ommatidium; the
+finite-sample canonical reference is 0.000010. At 960x540 → 1920x1080 on an RX
+7900 XT, the path measures 19.82 ms median: 0.25 ms pack, 17.63 ms model, and
+2.33 ms unpack. History occupies 130.5 MiB. The checkpoint remains an
+experimental quality result rather than the published default while that
+latency, memory cost, and broader visual regression coverage are improved.

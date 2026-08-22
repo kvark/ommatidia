@@ -363,11 +363,22 @@ fn end_to_end_1080p_runtime_cost() {
             subresources: &blade_graphics::TextureSubresources::default(),
         },
     );
+    let temporal = upscaler.is_temporal();
     let mut inputs = FrameInputs::color_only(input_view, input_view);
-    if upscaler.config().reconstruction_base == ReconstructionBase::HighResolutionGuided
+    if temporal
+        || upscaler.config().reconstruction_base == ReconstructionBase::HighResolutionGuided
         || upscaler.config().demodulate
     {
         inputs = inputs.with_high_resolution_gbuffer(hr_input_view, hr_input_view, hr_input_view);
+    }
+    if temporal {
+        // The zero-filled profile texture is sufficient for timing. Native
+        // motion is current-to-previous in input-pixel units.
+        inputs = inputs.with_motion(input_view);
+        println!(
+            "temporal history: {:.1} MiB",
+            upscaler.temporal_history_bytes() as f64 / (1024.0 * 1024.0)
+        );
     }
     let mut encoder = context.create_command_encoder(blade_graphics::CommandEncoderDesc {
         name: "ommatidia-end-to-end-profile",

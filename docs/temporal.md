@@ -1,12 +1,12 @@
-# Temporal reconstruction plan
+# Temporal reconstruction
 
-The published checkpoint and native runtime are spatial: every output is a
-function of the current frame only. Training and evaluation now have an
-experimental recurrent path, but deployment deliberately rejects its
-checkpoint until the GPU owns reprojection, validity, and history resources. A
-renderer already paid for motion vectors, and a previous reconstructed frame
-contains roughly three quarters of the output samples that a 2× spatial model
-is otherwise asked to invent again.
+The published default checkpoint is spatial: every output is a function of the
+current frame only. Training, evaluation, and the Rust shared-context runtime
+now also have an experimental recurrent path. The runtime owns reprojection,
+validity, and ping-ponged history resources rather than asking the renderer to
+manage model-private state. A renderer already paid for motion vectors, and a
+previous reconstructed frame contains roughly three quarters of the output
+samples that a 2× spatial model is otherwise asked to invent again.
 
 The first path-tracing experiment exposed a weak nearest-neighbor base rather
 than a transformer deficit. On 76 crops from a separate 128-scene 4-spp
@@ -157,16 +157,34 @@ accumulation on 63 unseen sequences. Its motion-compensated temporal error is
 ninefold reduction in coherent fluctuation. Quality improves through frames
 2–4 rather than drifting. This is the first result that resolves the visible
 low-frequency failure; it is an experimental quality checkpoint, not the
-native default.
+published default.
 
-The runtime contract needs four additions:
+The Rust runtime implements the corresponding contract:
 
-1. current-to-previous motion vectors with an explicit pixel/normalized scale
-   and direction convention;
-2. camera jitter and a reset flag for cuts, resolution changes, and invalid
-   history;
-3. two library-owned output textures, so frame N can read N-1 while writing N;
-4. depth/normal history validation and an observable confidence/debug target.
+1. `FrameInputs::with_motion` takes current-to-previous motion in input-pixel
+   units; `with_blade_motion` decodes Blade's compact convention;
+2. `Upscaler::reset_history` invalidates recurrence for cuts or any break in
+   frame continuity;
+3. the upscaler owns ping-ponged low-resolution accumulation, reconstructed
+   output, and output-resolution surface history;
+4. both accumulation and previous-output reuse validate depth, normal, and
+   albedo, and explicit validity hard-closes the learned history gate.
+
+The first live Blade check ran the trained b16/r3 checkpoint on static and
+moving four-frame sequences. On the static sequence, display-space 16x16-block
+temporal MSE was 0.000045 for native Ommatidium versus 0.000934 for bilinear
+1-spp input and 0.000010 for the finite-sample canonical target. At 960x540 →
+1920x1080 on an RX 7900 XT, the temporal checkpoint measures 19.82 ms median
+end to end: 0.25 ms pack, 17.63 ms model, and 2.33 ms unpack. Recurrent state
+occupies 130.5 MiB. A minimally perturbative trace assigns 79.1% of model GPU
+time to convolution, 14.2% to pointwise work, 5.0% to normalization, and 1.7%
+to data movement. Reprojection is therefore not the primary speed limit;
+network width and the 49-tap head are.
+
+Camera jitter/exposure metadata, a reactive mask, and an optional observable
+confidence/debug target remain API work. The C ABI still cannot run inference
+on externally borrowed Vulkan handles; that separate integration boundary is
+tracked in [`integration.md`](integration.md).
 
 Training now uses short sequences with object and camera motion, disocclusions,
 independent sparse paths, individual-frame radiometry, and a reprojected

@@ -28,6 +28,14 @@ struct UnpackParams {
     guide_depth_denominator: f32,
     guide_normal_power: f32,
     guide_albedo_denominator: f32,
+    history_ready: u32,
+    _pad1: u32,
+    motion_scale: f32,
+    rejection_depth_delta: f32,
+    rejection_normal_cosine: f32,
+    rejection_albedo_delta2: f32,
+    _pad2a: u32,
+    _pad2b: u32,
 }
 
 var<uniform> params: UnpackParams;
@@ -39,9 +47,17 @@ var t_albedo: texture_2d<f32>;
 var t_hr_depth: texture_2d<f32>;
 var t_hr_normal: texture_2d<f32>;
 var t_hr_albedo: texture_2d<f32>;
+var t_motion: texture_2d<f32>;
+var t_history_output: texture_2d<f32>;
+var t_history_surface0: texture_2d<f32>;
+var t_history_surface1: texture_2d<f32>;
+var history_output: texture_storage_2d<rgba16float, write>;
+var history_surface0: texture_storage_2d<rgba16float, write>;
+var history_surface1: texture_storage_2d<rgba8unorm, write>;
 var output: texture_storage_2d<rgba16float, write>;
 
 const SKY_DEPTH: f32 = 1.0e6;
+const SURFACE_SKY_ENCODED_DEPTH: f32 = 1.0 / (1.0 + 60000.0);
 
 // Mirrors `batch::GATHER_FALLBACK`. Below this the guided gather has rejected
 // every tap and its normalisation is meaningless.
@@ -248,6 +264,95 @@ fn reconstruction_base(destination: vec2<u32>, source: vec2<i32>) -> vec3<f32> {
     return mix(top, bottom, fraction.y);
 }
 
+struct Surface {
+    depth: f32,
+    normal: vec3<f32>,
+    albedo: vec3<f32>,
+}
+
+fn current_surface(destination: vec2<u32>) -> Surface {
+    let texel = vec2<i32>(destination);
+    return Surface(
+        load_hr_depth(texel),
+        load_hr_normal(texel),
+        textureLoad(t_hr_albedo, texel, 0).xyz,
+    );
+}
+
+fn previous_surface(texel: vec2<i32>) -> Surface {
+    let first = textureLoad(t_history_surface0, texel, 0);
+    return Surface(
+        first.x,
+        first.yzw,
+        textureLoad(t_history_surface1, texel, 0).xyz,
+    );
+}
+
+fn surfaces_match(current: Surface, previous: Surface) -> bool {
+    let current_sky = current.depth <= SURFACE_SKY_ENCODED_DEPTH;
+    let previous_sky = previous.depth <= SURFACE_SKY_ENCODED_DEPTH;
+    if current_sky || previous_sky {
+        return current_sky == previous_sky;
+    }
+    if abs(current.depth - previous.depth) > params.rejection_depth_delta {
+        return false;
+    }
+    let normal_denominator = sqrt(max(
+        dot(current.normal, current.normal) * dot(previous.normal, previous.normal),
+        1.0e-12,
+    ));
+    let cosine = dot(current.normal, previous.normal) / normal_denominator;
+    let albedo_delta = current.albedo - previous.albedo;
+    return cosine > params.rejection_normal_cosine
+        && dot(albedo_delta, albedo_delta) < params.rejection_albedo_delta2;
+}
+
+// Motion-reproject the previous compressed reconstruction, dropping bilinear
+// taps whose stored primary surface no longer matches. RGB is the accepted
+// history and alpha is explicit validity; rejected storage never means black.
+fn reproject_history(destination: vec2<u32>, source: vec2<i32>) -> vec4<f32> {
+    if params.history_ready == 0u {
+        return vec4<f32>(0.0);
+    }
+    let motion = textureLoad(t_motion, source, 0).xy * params.motion_scale;
+    let position = vec2<f32>(destination) + motion * f32(params.scale);
+    let output_extent = vec2<u32>(params.width, params.height) * params.scale;
+    if position.x < 0.0
+        || position.y < 0.0
+        || position.x > f32(output_extent.x - 1u)
+        || position.y > f32(output_extent.y - 1u)
+    {
+        return vec4<f32>(0.0);
+    }
+    let lower_f = floor(position);
+    let lower = vec2<i32>(lower_f);
+    let fraction = position - lower_f;
+    let upper = vec2<i32>(output_extent) - vec2<i32>(1);
+    let surface = current_surface(destination);
+    var color = vec3<f32>(0.0);
+    var total = 0.0;
+    for (var dy = 0; dy <= 1; dy += 1) {
+        let wy = select(1.0 - fraction.y, fraction.y, dy != 0);
+        for (var dx = 0; dx <= 1; dx += 1) {
+            let wx = select(1.0 - fraction.x, fraction.x, dx != 0);
+            let weight = wx * wy;
+            if weight == 0.0 {
+                continue;
+            }
+            let texel = clamp(lower + vec2<i32>(dx, dy), vec2<i32>(0), upper);
+            if !surfaces_match(surface, previous_surface(texel)) {
+                continue;
+            }
+            color += weight * textureLoad(t_history_output, texel, 0).xyz;
+            total += weight;
+        }
+    }
+    if total == 0.0 {
+        return vec4<f32>(0.0);
+    }
+    return vec4<f32>(color / total, 1.0);
+}
+
 @compute @workgroup_size(8, 8, 1)
 fn unpack(@builtin(global_invocation_id) id: vec3<u32>) {
     if id.x >= params.width || id.y >= params.height {
@@ -293,6 +398,56 @@ fn unpack(@builtin(global_invocation_id) id: vec3<u32>) {
                 let channel = c * sub + slot;
                 let delta = residual[channel * plane_stride + offset] * params.inverse_gain;
                 color[c] = decompress(base[c] + delta);
+            }
+            textureStore(output, vec2<i32>(destination), vec4<f32>(color, 1.0));
+        }
+    }
+}
+
+@compute @workgroup_size(8, 8, 1)
+fn unpack_temporal(@builtin(global_invocation_id) id: vec3<u32>) {
+    if id.x >= params.width || id.y >= params.height {
+        return;
+    }
+    let source = vec2<i32>(i32(id.x), i32(id.y));
+    let plane_stride = params.width * params.height;
+    let offset = id.y * params.width + id.x;
+    let taps = u32((2 * i32(params.kernel_radius) + 1) * (2 * i32(params.kernel_radius) + 1));
+    let slots = params.scale * params.scale;
+
+    for (var dy = 0u; dy < params.scale; dy += 1u) {
+        for (var dx = 0u; dx < params.scale; dx += 1u) {
+            let slot = dy * params.scale + dx;
+            let destination = id.xy * params.scale + vec2<u32>(dx, dy);
+            let gathered = gather_kernel(source, slot, plane_stride, offset);
+            let previous = reproject_history(destination, source);
+            let mixture = residual[(slots * taps + slot) * plane_stride + offset];
+            let gate = previous.w * mixture / (mixture + 1.0);
+            let compressed = mix(gathered, previous.xyz, gate);
+
+            // Store exactly the compressed, demodulated representation the CPU
+            // evaluator feeds back. The caller receives linear radiance after
+            // the current frame's exact albedo is restored.
+            textureStore(history_output, vec2<i32>(destination), vec4<f32>(compressed, 1.0));
+            let surface = current_surface(destination);
+            textureStore(
+                history_surface0,
+                vec2<i32>(destination),
+                vec4<f32>(surface.depth, surface.normal),
+            );
+            textureStore(
+                history_surface1,
+                vec2<i32>(destination),
+                vec4<f32>(surface.albedo, 1.0),
+            );
+
+            var color = vec3<f32>(
+                decompress(compressed.x),
+                decompress(compressed.y),
+                decompress(compressed.z),
+            );
+            if params.demodulate != 0u {
+                color *= surface.albedo + params.demodulation_offset;
             }
             textureStore(output, vec2<i32>(destination), vec4<f32>(color, 1.0));
         }

@@ -16,9 +16,11 @@ control only; the product does not assume sample reuse or a prior denoiser.
 > **1-spp, four-frame** sequences: it is **+1.59 dB per frame over deterministic
 > accumulation and reduces motion-compensated 16x16-block fluctuation about
 > 9x**, while retaining 52% rather than 34% of reference detail. The training
-> and evaluation path is implemented; the native API deliberately rejects this
-> checkpoint until GPU reprojection, validity, and history ownership land. The
-> published v0.3.1 checkpoint therefore remains the spatial runtime default.
+> and evaluation path and the Rust shared-context GPU runtime are implemented;
+> the latter owns ping-ponged history, reprojects it, validates surfaces, and
+> exposes an explicit cut/reset operation. The published v0.3.1 checkpoint
+> remains the spatial default while this experimental recurrent checkpoint is
+> hardened and packaged.
 > See the [`temporal result`](docs/results/temporal-validity-1spp-2026-08-22.md)
 > and [`runtime plan`](docs/temporal.md).
 
@@ -35,9 +37,11 @@ below; `v0.2.0` retains the low-resolution-only checkpoint. Repeated
 960×540 → 1920×1080 runs on a Radeon RX 7900 XT span 8.46–9.30 ms median;
 the v0.3.1 trace measured 8.83 ms median and 8.90 ms p90, including pack,
 model, unpack, and submissions. Its isolated split was 0.79 ms pack, 7.22 ms
-network, and 0.88 ms unpack. Ray tracing,
-the optional output-resolution primary-surface pass, temporal history, and
-display post-processing are excluded. The range is reported because amdgpu's load
+network, and 0.88 ms unpack. Ray tracing, the optional output-resolution
+primary-surface pass, and display post-processing are excluded. The
+experimental temporal b16/r3 checkpoint measures 19.82 ms median end to end on
+the same GPU: 0.25 ms pack, 17.63 ms network, and 2.33 ms unpack, with 130.5
+MiB of recurrent history. The range is reported because amdgpu's load
 counter became intermittently unavailable during the final trace; the harness
 now reports that condition rather than silently calling the device idle.
 
@@ -45,9 +49,9 @@ Upscaling is real today, but narrowly scoped: the published checkpoint and the
 current training recipe are **2×**. Runtime frames may be rectangular (the
 measured path is 960×540 to 1920×1080), while training uses square crops. There
 is no trained 1× denoise-only model or dynamic quality mode. Temporal 2×
-training/evaluation exists, but it is not in the native runtime yet; changing
-the scale means training a checkpoint whose output head has the corresponding
-sub-pixel gather channels.
+training, evaluation, and Rust inference exist; changing the scale means
+training a checkpoint whose output head has the corresponding sub-pixel gather
+channels.
 
 ## Results
 
@@ -146,8 +150,11 @@ frame, the model reaches 27.62 dB versus 26.04 dB for accumulated HR guidance.
 Its motion-compensated temporal delta is +4.14 dB better, and its 16x16-block
 delta is +9.54 dB better: broad frame-to-frame fluctuation falls from 0.000578
 to 0.000064, about ninefold. Quality improves with recurrent age rather than
-drifting. These are training/evaluation results; native temporal deployment is
-the next implementation boundary.
+drifting. The native implementation reproduces the same contract. A live
+four-frame Blade run reduced display-space 16x16-block fluctuation from
+0.000934 for the bilinear 1-spp input to 0.000045, about 21x, while the
+finite-sample canonical reference measured 0.000010. That is a runtime sanity
+check rather than a replacement for the linear-HDR validation above.
 
 | accumulated HR guide | recurrent Ommatidium | 1,024-spp reference |
 |---|---|---|
