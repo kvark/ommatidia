@@ -733,72 +733,82 @@ fn denoised_low_color(
     low_color: &[f32],
 ) -> Vec<f32> {
     assert_eq!(low_color.len(), layout.lr_texels() * 3);
-    let width = layout.lr_width as usize;
-    let height = layout.lr_height as usize;
     let mut filtered = low_color.to_vec();
     // Five à-trous passes cover a 63x63 footprint with 45 taps per texel.
     // Repeating the dense 13x13 guide reaches less far with an order of
     // magnitude more work and produces the same broad overlapping kernels.
     for pass in 0..5 {
-        let step = 1i32 << pass;
-        let mut next = vec![0.0; low_color.len()];
-        for y in 0..height {
-            for x in 0..width {
-                let center_depth =
-                    transform::encode_depth(plane_value(sample, layout, Plane::Depth, 0, x, y));
-                let center_normal = std::array::from_fn(|component| {
-                    plane_value(sample, layout, Plane::Normal, component, x, y)
-                });
-                let center_albedo = std::array::from_fn(|component| {
-                    plane_value(sample, layout, Plane::DiffuseAlbedo, component, x, y)
-                });
-                let mut sum = [0.0; 3];
-                let mut weight_sum = 0.0;
-                for (dy, wy) in [(-1, 1.0), (0, 2.0), (1, 1.0)] {
-                    let sy = (y as i32 + dy * step).clamp(0, height as i32 - 1) as usize;
-                    for (dx, wx) in [(-1, 1.0), (0, 2.0), (1, 1.0)] {
-                        let sx = (x as i32 + dx * step).clamp(0, width as i32 - 1) as usize;
-                        let depth = transform::encode_depth(plane_value(
-                            sample,
-                            layout,
-                            Plane::Depth,
-                            0,
-                            sx,
-                            sy,
-                        ));
-                        let normal = std::array::from_fn(|component| {
-                            plane_value(sample, layout, Plane::Normal, component, sx, sy)
-                        });
-                        let albedo = std::array::from_fn(|component| {
-                            plane_value(sample, layout, Plane::DiffuseAlbedo, component, sx, sy)
-                        });
-                        let weight = wx
-                            * wy
-                            * guide_similarity(
-                                guide,
-                                center_depth,
-                                center_normal,
-                                center_albedo,
-                                depth,
-                                normal,
-                                albedo,
-                            );
-                        let source = (sy * width + sx) * 3;
-                        for component in 0..3 {
-                            sum[component] += weight * filtered[source + component];
-                        }
-                        weight_sum += weight;
-                    }
-                }
-                let destination = (y * width + x) * 3;
-                for component in 0..3 {
-                    next[destination + component] = sum[component] / weight_sum.max(1.0e-12);
-                }
-            }
-        }
-        filtered = next;
+        filtered = atrous_low_color_pass(sample, layout, guide, &filtered, pass);
     }
     filtered
+}
+
+fn atrous_low_color_pass(
+    sample: &Sample,
+    layout: &Layout,
+    guide: GuideConfig,
+    filtered: &[f32],
+    pass: usize,
+) -> Vec<f32> {
+    let width = layout.lr_width as usize;
+    let height = layout.lr_height as usize;
+    let step = 1i32 << pass;
+    let mut next = vec![0.0; filtered.len()];
+    for y in 0..height {
+        for x in 0..width {
+            let center_depth =
+                transform::encode_depth(plane_value(sample, layout, Plane::Depth, 0, x, y));
+            let center_normal = std::array::from_fn(|component| {
+                plane_value(sample, layout, Plane::Normal, component, x, y)
+            });
+            let center_albedo = std::array::from_fn(|component| {
+                plane_value(sample, layout, Plane::DiffuseAlbedo, component, x, y)
+            });
+            let mut sum = [0.0; 3];
+            let mut weight_sum = 0.0;
+            for (dy, wy) in [(-1, 1.0), (0, 2.0), (1, 1.0)] {
+                let sy = (y as i32 + dy * step).clamp(0, height as i32 - 1) as usize;
+                for (dx, wx) in [(-1, 1.0), (0, 2.0), (1, 1.0)] {
+                    let sx = (x as i32 + dx * step).clamp(0, width as i32 - 1) as usize;
+                    let depth = transform::encode_depth(plane_value(
+                        sample,
+                        layout,
+                        Plane::Depth,
+                        0,
+                        sx,
+                        sy,
+                    ));
+                    let normal = std::array::from_fn(|component| {
+                        plane_value(sample, layout, Plane::Normal, component, sx, sy)
+                    });
+                    let albedo = std::array::from_fn(|component| {
+                        plane_value(sample, layout, Plane::DiffuseAlbedo, component, sx, sy)
+                    });
+                    let weight = wx
+                        * wy
+                        * guide_similarity(
+                            guide,
+                            center_depth,
+                            center_normal,
+                            center_albedo,
+                            depth,
+                            normal,
+                            albedo,
+                        );
+                    let source = (sy * width + sx) * 3;
+                    for component in 0..3 {
+                        sum[component] += weight * filtered[source + component];
+                    }
+                    weight_sum += weight;
+                }
+            }
+            let destination = (y * width + x) * 3;
+            for component in 0..3 {
+                next[destination + component] = sum[component] / weight_sum.max(1.0e-12);
+            }
+        }
+    }
+    next
 }
 
 fn interleaved_low_plane(sample: &Sample, layout: &Layout, plane: Plane) -> Vec<f32> {
@@ -872,6 +882,65 @@ fn split_guided_low_color(
         }
     }
     out
+}
+
+/// Number of split-radiance candidates: unfiltered, then one result after each
+/// of the five à-trous passes used by [`high_resolution_split_base`].
+pub const SPLIT_FILTER_SCALES: usize = 6;
+
+/// Output-resolution lobe estimates at every existing filter scale.
+///
+/// This is an offline architecture probe, not a second reconstruction path.
+/// A scale-selection oracle can measure whether learning to mix the shipped
+/// filters has enough headroom before the runtime or model contract grows.
+pub struct SplitFilterCandidates {
+    /// Demodulated diffuse illumination. Output-resolution albedo is not yet
+    /// restored, so selection cannot mistake a texture edge for illumination.
+    pub diffuse: [Vec<f32>; SPLIT_FILTER_SCALES],
+    pub specular: [Vec<f32>; SPLIT_FILTER_SCALES],
+    /// Direct emission is not filtered and therefore has one candidate.
+    pub emissive: Vec<f32>,
+}
+
+/// Reconstruct all filter scales of each primary radiance lobe.
+pub fn high_resolution_split_filter_candidates(
+    sample: &Sample,
+    layout: &Layout,
+    crop: Crop,
+    guide: GuideConfig,
+) -> SplitFilterCandidates {
+    for plane in [
+        Plane::DiffuseIllumination,
+        Plane::SpecularRadiance,
+        Plane::EmissiveRadiance,
+    ] {
+        assert!(layout.lr_planes.contains(plane), "input has no {plane:?}");
+    }
+    let diffuse_guide = GuideConfig {
+        albedo_sigma: 1.0e6,
+        ..guide
+    };
+    let filter_scales = |plane| {
+        let mut low: [Vec<f32>; SPLIT_FILTER_SCALES] = std::array::from_fn(|_| Vec::new());
+        low[0] = interleaved_low_plane(sample, layout, plane);
+        for pass in 0..SPLIT_FILTER_SCALES - 1 {
+            low[pass + 1] = atrous_low_color_pass(sample, layout, diffuse_guide, &low[pass], pass);
+        }
+        low.map(|color| {
+            high_resolution_guided_from_color(sample, layout, crop, diffuse_guide, &color)
+        })
+    };
+    SplitFilterCandidates {
+        diffuse: filter_scales(Plane::DiffuseIllumination),
+        specular: filter_scales(Plane::SpecularRadiance),
+        emissive: high_resolution_guided_from_color(
+            sample,
+            layout,
+            crop,
+            guide,
+            &interleaved_low_plane(sample, layout, Plane::EmissiveRadiance),
+        ),
+    }
 }
 
 /// Reconstruct the three primary-radiance components independently, then
@@ -2577,6 +2646,45 @@ mod tests {
         for (actual, expected) in rebuilt.iter().zip(reference) {
             assert!((actual - expected).abs() < 1e-3);
         }
+    }
+
+    #[test]
+    fn split_filter_candidates_retain_the_fixed_diffuse_result() {
+        let mut l = layout(2, 8, 8);
+        l.lr_planes = l
+            .lr_planes
+            .with(Plane::DiffuseIllumination)
+            .with(Plane::SpecularRadiance)
+            .with(Plane::EmissiveRadiance)
+            .with(Plane::Normal)
+            .with(Plane::DiffuseAlbedo)
+            .with(Plane::Roughness);
+        l.hr_planes = l
+            .hr_planes
+            .with(Plane::Depth)
+            .with(Plane::Normal)
+            .with(Plane::DiffuseAlbedo)
+            .with(Plane::Roughness);
+        let s = sample(&l, 12);
+        let crop = Crop {
+            x: 1,
+            y: 1,
+            tile: 6,
+        };
+        let guide = GuideConfig::TUNED;
+        let diffuse_guide = GuideConfig {
+            albedo_sigma: 1.0e6,
+            ..guide
+        };
+        let expected = high_resolution_denoised_from_color(
+            &s,
+            &l,
+            crop,
+            diffuse_guide,
+            &interleaved_low_plane(&s, &l, Plane::DiffuseIllumination),
+        );
+        let candidates = high_resolution_split_filter_candidates(&s, &l, crop, guide);
+        assert_eq!(candidates.diffuse[SPLIT_FILTER_SCALES - 1], expected);
     }
 
     #[test]
