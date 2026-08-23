@@ -33,6 +33,7 @@ struct Args {
     camera_motion: f32,
     random_camera_motion: f32,
     object_motion: f32,
+    projection_jitter: bool,
     canopy: bool,
     ground_patches: usize,
     textures: bool,
@@ -64,6 +65,7 @@ impl Default for Args {
             camera_motion: 0.0,
             random_camera_motion: 0.0,
             object_motion: 0.0,
+            projection_jitter: false,
             canopy: false,
             ground_patches: 0,
             textures: false,
@@ -115,6 +117,9 @@ usage: ommatidia-data [options]
                             that over-smoothing destroys for free
   --object-motion F         move one sphere and one box independently, with
                             nominal translation F per frame [0]
+  --projection-jitter       shift each low-resolution projection by a
+                            deterministic subpixel offset. The high-resolution
+                            reference remains stable
   --seed N                  base seed for scenes and cameras  [0]
   --device-id ID            adapter ID for this standalone process (hex or decimal)
   --shader-dir PATH         blade-render shader directory [../blade/blade-render/code]
@@ -128,7 +133,8 @@ usage: ommatidia-data [options]
                             baseline comparisons only
   --checkpoint STEM         also run this Ommatidium checkpoint directly on
                             the live Blade views and write predicted previews
-  --reference-from PATH     copy high-resolution records from a matched .omd
+  --reference-from PATH     copy high-resolution records from a matched .omd;
+                            moving captures require matching frame sequences
                             instead of rendering them again
   -h, --help                this message
 ";
@@ -191,6 +197,7 @@ fn parse_args() -> Result<Args, String> {
                     .parse()
                     .map_err(|e| format!("--object-motion: {e}"))?
             }
+            "--projection-jitter" => args.projection_jitter = true,
             "--canopy" => args.canopy = true,
             "--textures" => args.textures = true,
             "--gloss" => args.gloss = true,
@@ -241,8 +248,15 @@ fn parse_args() -> Result<Args, String> {
     if has_motion && args.sequence_frames == 1 {
         return Err("motion needs --sequence-frames above one".into());
     }
-    if has_motion && args.reference_from.is_some() {
-        return Err("motion cannot reuse static references".into());
+    if args.projection_jitter && args.sequence_frames == 1 {
+        return Err("--projection-jitter needs --sequence-frames above one".into());
+    }
+    if args.projection_jitter && has_motion {
+        return Err(
+            "--projection-jitter cannot yet be combined with scene motion; precise \
+             output-resolution history reprojection is required first"
+                .into(),
+        );
     }
     if args.svgf_input && args.restir_input {
         return Err("--svgf-input and --restir-input are mutually exclusive".into());
@@ -258,6 +272,23 @@ struct ActiveSequence {
     base_camera: blade_render::Camera,
     motion_seed: u64,
     moving_start: usize,
+}
+
+/// One exact output-subpixel centre in input-pixel units.
+///
+/// A complete `scale * scale` cycle directly measures every output pixel once;
+/// later cycles add independent path samples at those same locations. Keeping
+/// the sequence independent of the scene seed makes phase a frame property,
+/// while Blade's path sampling remains independently randomized.
+fn projection_jitter(frame: usize, scale: u32) -> [f32; 2] {
+    let scale = scale as usize;
+    let phase = frame % (scale * scale);
+    let x = phase % scale;
+    let y = phase / scale;
+    [
+        (x as f32 + 0.5) / scale as f32 - 0.5,
+        (y as f32 + 0.5) / scale as f32 - 0.5,
+    ]
 }
 
 fn translation_transform(offset: [f32; 3]) -> gpu::Transform {
@@ -533,6 +564,13 @@ fn to_record(frame: &render::Frame, texels: usize) -> Vec<f16> {
     out
 }
 
+fn append_jitter(record: &mut Vec<f16>, texels: usize, jitter: [f32; 2]) {
+    record.reserve(2 * texels);
+    for component in jitter {
+        record.extend(std::iter::repeat_n(f16::from_f32(component), texels));
+    }
+}
+
 /// Report the range of every stored plane in the first record.
 ///
 /// Worth the few lines: a G-buffer that came out empty, or a channel that was
@@ -613,11 +651,14 @@ fn main() {
     // High-resolution geometry is opt-in: it costs a cheap full-resolution
     // primary-surface pass in an application, but may recover silhouettes that
     // no low-resolution signal can locate.
-    let lr_planes = if args.gbuffer {
+    let mut lr_planes = if args.gbuffer {
         gbuffer::plane_set(args.sequence_frames > 1).with(Plane::Color)
     } else {
         PlaneSet::new().with(Plane::Color)
     };
+    if args.projection_jitter {
+        lr_planes = lr_planes.with(Plane::Jitter);
+    }
     let layout = Layout {
         scale: args.scale,
         lr_width: args.lr_width,
@@ -647,31 +688,50 @@ fn main() {
         let reader = dataset::Reader::open(path)
             .unwrap_or_else(|e| panic!("cannot open reference dataset {}: {e}", path.display()));
         let source = reader.layout();
-        assert_eq!(
-            reader.sequence_length(),
-            1,
-            "reference source must contain independent scene records"
-        );
+        let source_sequence = reader.sequence_length();
+        let has_motion = args.camera_motion != 0.0
+            || args.random_camera_motion != 0.0
+            || args.object_motion != 0.0;
+        if has_motion {
+            assert_eq!(
+                source_sequence, args.sequence_frames,
+                "moving reference source must have the same sequence length"
+            );
+        } else {
+            assert!(
+                source_sequence == 1 || source_sequence == args.sequence_frames,
+                "reference source must be independent scenes or matched sequences"
+            );
+        }
         assert_eq!(source.scale, layout.scale, "reference scale differs");
         assert_eq!(source.lr_width, layout.lr_width, "reference width differs");
         assert_eq!(
             source.lr_height, layout.lr_height,
             "reference height differs"
         );
+        let mut expected_source_planes = layout.lr_planes;
+        if args.projection_jitter {
+            // The source supplies the stable HR target. Its LR frame is an
+            // unjittered alignment witness, not another network input.
+            expected_source_planes = expected_source_planes.without(Plane::Jitter);
+        }
+        if source_sequence == 1 {
+            expected_source_planes = expected_source_planes.without(Plane::Motion);
+        }
         assert_eq!(
-            source.lr_planes,
-            layout.lr_planes.without(Plane::Motion),
+            source.lr_planes, expected_source_planes,
             "reference input planes differ"
         );
         assert!(
             source.hr_planes.contains(Plane::Color),
             "reference dataset has no high-resolution colour"
         );
+        let required = args.samples * source_sequence;
         assert!(
-            reader.len() >= args.samples,
+            reader.len() >= required,
             "reference dataset has {} samples, need {}",
             reader.len(),
-            args.samples,
+            required,
         );
         reader
     });
@@ -689,7 +749,11 @@ fn main() {
     // acceleration structures all depend on the extent, and the pair alternates
     // between them on every sample.
     let mut lr_renderer = make_renderer(&harness, &mut encoder, lr_size);
-    let need_hr_render = args.reference_from.is_none() || args.hr_gbuffer;
+    let reference_has_hr_gbuffer = reference_reader
+        .as_ref()
+        .is_some_and(|reader| args.hr_gbuffer && reader.layout().hr_planes == layout.hr_planes);
+    let need_hr_render = args.reference_from.is_none()
+        || (args.hr_gbuffer && (!reference_has_hr_gbuffer || args.checkpoint.is_some()));
     let mut hr_renderer = need_hr_render.then(|| make_renderer(&harness, &mut encoder, hr_size));
     let lr_target = render::Target::new(&context, lr_size);
     let hr_target = need_hr_render.then(|| render::Target::new(&context, hr_size));
@@ -799,6 +863,16 @@ fn main() {
         camera.pos.x += random_offset[0];
         camera.pos.y += random_offset[1];
         camera.pos.z += random_offset[2];
+        let jitter = if args.projection_jitter {
+            projection_jitter(sequence_frame, args.scale)
+        } else {
+            [0.0; 2]
+        };
+        let input_camera = if args.projection_jitter {
+            camera.with_projection_jitter(jitter, [lr_size.width, lr_size.height])
+        } else {
+            camera
+        };
 
         let input_pass = if args.svgf_input || args.restir_input {
             render::Pass::RealTime
@@ -814,18 +888,23 @@ fn main() {
             &mut encoder,
             &harness.asset_hub,
             &sequence.objects,
-            &camera,
+            &input_camera,
             input_pass,
             args.svgf_input,
             lr_probe.as_ref(),
         );
         let (hr, reference_lr) = if let Some(reader) = &mut reference_reader {
             let source_layout = *reader.layout();
+            let source_index = if reader.sequence_length() == 1 {
+                scene_index
+            } else {
+                index
+            };
             let sample = reader
-                .sample(scene_index)
-                .unwrap_or_else(|e| panic!("cannot read reference sample {scene_index}: {e}"));
+                .sample(source_index)
+                .unwrap_or_else(|e| panic!("cannot read reference sample {source_index}: {e}"));
             let color_len = Plane::Color.channels() * source_layout.hr_texels();
-            let gbuffer = if args.hr_gbuffer {
+            let gbuffer = if args.hr_gbuffer && args.checkpoint.is_some() {
                 render::capture(
                     hr_renderer.as_mut().expect("HR G-buffer renderer exists"),
                     hr_target.as_ref().expect("HR G-buffer target exists"),
@@ -839,6 +918,13 @@ fn main() {
                     hr_probe.as_ref(),
                 )
                 .gbuffer
+            } else if reference_has_hr_gbuffer {
+                Some(
+                    sample.hr[color_len..]
+                        .iter()
+                        .map(|value| value.to_f32())
+                        .collect(),
+                )
             } else {
                 None
             };
@@ -882,6 +968,11 @@ fn main() {
                         lr_renderer.view_gbuffer(),
                     )
                 };
+                let inputs = if args.projection_jitter {
+                    inputs.with_jitter(jitter)
+                } else {
+                    inputs
+                };
                 let inputs = if args.hr_gbuffer {
                     inputs.with_blade_high_resolution_gbuffer(
                         hr_renderer
@@ -923,13 +1014,18 @@ fn main() {
             }
         }
 
-        let record = to_record(&lr, layout.lr_texels());
-        if let Some(reference_lr) = reference_lr {
+        let mut record = to_record(&lr, layout.lr_texels());
+        if args.projection_jitter {
+            append_jitter(&mut record, layout.lr_texels(), jitter);
+        }
+        if let Some(reference_lr) = reference_lr
+            && !args.projection_jitter
+        {
             let gbuffer_start = Plane::Color.channels() * layout.lr_texels();
             let comparable_end = reference_lr.len();
-            assert_eq!(
-                record[gbuffer_start..comparable_end],
-                reference_lr[gbuffer_start..],
+            assert!(
+                record[gbuffer_start..comparable_end]
+                    == reference_lr[gbuffer_start..comparable_end],
                 "reference sample {scene_index} describes a different scene or camera"
             );
         }
@@ -988,4 +1084,21 @@ fn main() {
     }
     context.destroy_command_encoder(&mut encoder);
     harness.destroy();
+}
+
+#[cfg(test)]
+mod jitter_tests {
+    use super::*;
+
+    #[test]
+    fn sequence_is_bounded_and_does_not_repeat_early() {
+        let mut samples = std::collections::BTreeSet::new();
+        for frame in 0..64 {
+            let jitter = projection_jitter(frame, 8);
+            assert!(jitter.into_iter().all(|value| (-0.5..0.5).contains(&value)));
+            samples.insert((jitter[0].to_bits(), jitter[1].to_bits()));
+        }
+        assert_eq!(samples.len(), 64);
+        assert_eq!(projection_jitter(64, 8), projection_jitter(0, 8));
+    }
 }

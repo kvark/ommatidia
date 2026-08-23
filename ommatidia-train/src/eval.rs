@@ -16,6 +16,65 @@ use ommatidia::rng::Rng;
 use crate::batcher::InputSample;
 use crate::batcher::MAX_PERIOD;
 
+pub struct Reconstruction {
+    pub image: Vec<f32>,
+    /// The exact deterministic branch supplied to a guide-mixing checkpoint.
+    pub temporal_guide: Option<Vec<f32>>,
+    /// Mean learned mixtures for this crop, before radiance reconstruction.
+    pub mix: Option<MixStats>,
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+pub struct MixStats {
+    /// Share assigned to the learned sample gather rather than the guide.
+    pub gather: f64,
+    /// Requested previous-output share before reprojection validity.
+    pub history: f64,
+    /// Previous-output share after invalid sub-pixels hard-close the gate.
+    pub valid_history: f64,
+    pub valid_fraction: f64,
+}
+
+fn mix_stats(
+    weights: &[f32],
+    config: &ModelConfig,
+    previous_validity: Option<&[f32]>,
+) -> Option<MixStats> {
+    let guide_channels = config.guide_mix_channels() as usize;
+    let history_channels = config.history_mix_channels() as usize;
+    if guide_channels + history_channels == 0 {
+        return None;
+    }
+    let spatial = (config.tile * config.tile) as usize;
+    let spatial_channels = (config.scale * config.scale * config.gather_taps()) as usize;
+    let gate = |value: f32| value / (value + 1.0);
+    let mean = |values: &[f32]| {
+        values.iter().map(|&value| gate(value) as f64).sum::<f64>() / values.len().max(1) as f64
+    };
+    let mut stats = MixStats::default();
+    if guide_channels != 0 {
+        let start = spatial_channels * spatial;
+        stats.gather = mean(&weights[start..start + guide_channels * spatial]);
+    }
+    if history_channels != 0 {
+        let start = (spatial_channels + guide_channels) * spatial;
+        let gates = &weights[start..start + history_channels * spatial];
+        stats.history = mean(gates);
+        if let Some(validity) = previous_validity {
+            assert_eq!(validity.len(), gates.len());
+            stats.valid_history = gates
+                .iter()
+                .zip(validity)
+                .map(|(&value, &valid)| (gate(value) * valid) as f64)
+                .sum::<f64>()
+                / gates.len().max(1) as f64;
+            stats.valid_fraction = validity.iter().map(|&value| value as f64).sum::<f64>()
+                / validity.len().max(1) as f64;
+        }
+    }
+    Some(stats)
+}
+
 /// Run the network over one crop and return the reconstructed high resolution
 /// image as interleaved linear RGB.
 ///
@@ -31,9 +90,10 @@ pub fn reconstruct(
     guided: Option<&[f32]>,
     sampler_steps: usize,
     seed: u64,
+    history_scale: f32,
     previous_output: Option<&[f32]>,
     previous_validity: Option<&[f32]>,
-) -> Vec<f32> {
+) -> Reconstruction {
     assert_eq!(config.batch, 1, "evaluation runs one crop at a time");
     let per_slot = (config.target_channels() * config.tile * config.tile) as usize;
 
@@ -41,8 +101,26 @@ pub fn reconstruct(
     let _ = input.write_conditioning(layout, config, crop, 0, &mut cond);
     session.set_input("cond", &cond);
     let sample = input.sample();
+    let guide = config.guide_mix.then(|| {
+        let current = input
+            .extra_taps()
+            .current
+            .expect("guide mixing is temporal");
+        let linear = batch::high_resolution_temporal_guide(
+            sample,
+            layout,
+            crop,
+            config.guide,
+            config.demodulation_offset,
+            current,
+            input.deviation().expect("guide mixing is temporal"),
+        );
+        let radiance = batch::remodulate_crop(&linear, sample, layout, crop, config);
+        let compressed = batch::compress_demodulated_crop(&linear, sample, layout, crop, config);
+        (compressed, radiance)
+    });
 
-    let residual = match config.objective {
+    let mut residual = match config.objective {
         Objective::Direct => {
             session.step();
             session.wait();
@@ -80,15 +158,38 @@ pub fn reconstruct(
         }
     };
 
+    if history_scale != 1.0 && config.history_mix_channels() != 0 {
+        let spatial = (config.tile * config.tile) as usize;
+        let start = (config.scale * config.scale * config.gather_taps()
+            + config.guide_mix_channels()) as usize
+            * spatial;
+        let len = config.history_mix_channels() as usize * spatial;
+        for value in &mut residual[start..start + len] {
+            *value *= history_scale;
+        }
+    }
+
+    let mix = mix_stats(&residual, config, previous_validity);
     let low = batch::crop_color(sample, layout, crop);
-    match config.prediction {
+    let image = match config.prediction {
         // One operation: the weights the network emitted are applied straight
         // to the sparse samples, with nothing filtered beforehand.
         Prediction::SubpixelKernel => {
             let mut extra = input.extra_taps();
+            extra.guide = guide.as_ref().map(|(compressed, _)| compressed.as_slice());
             extra.previous_output = previous_output;
             extra.previous_validity = previous_validity;
             batch::assemble_kernel(sample, layout, crop, &residual, config, extra)
+        }
+        Prediction::SubpixelResidual if config.demodulate => {
+            let base = batch::high_resolution_demodulated_base(
+                sample,
+                layout,
+                crop,
+                config.guide,
+                config.demodulation_offset,
+            );
+            batch::assemble_demodulated(&low, &base, &residual, sample, layout, crop, config)
         }
         Prediction::SubpixelResidual => {
             batch::assemble(&low, guided, &residual, [crop.tile as usize; 2], config)
@@ -117,6 +218,11 @@ pub fn reconstruct(
             }
             batch::high_resolution_guided_from_color(sample, layout, crop, config.guide, &full)
         }
+    };
+    Reconstruction {
+        image,
+        temporal_guide: guide.map(|(_, radiance)| radiance),
+        mix,
     }
 }
 

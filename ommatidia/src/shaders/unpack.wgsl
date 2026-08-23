@@ -29,7 +29,7 @@ struct UnpackParams {
     guide_normal_power: f32,
     guide_albedo_denominator: f32,
     history_ready: u32,
-    _pad1: u32,
+    guide_mix: u32,
     motion_scale: f32,
     rejection_depth_delta: f32,
     rejection_normal_cosine: f32,
@@ -40,6 +40,7 @@ struct UnpackParams {
 
 var<uniform> params: UnpackParams;
 var<storage, read> base_pixels: array<f32>;
+var<storage, read> guide_pixels: array<f32>;
 var<storage, read> residual: array<f32>;
 var t_depth: texture_2d<f32>;
 var t_normal: texture_2d<f32>;
@@ -97,6 +98,18 @@ fn load_base(texel_unclamped: vec2<i32>) -> vec3<f32> {
         base_pixels[0u * stride + offset],
         base_pixels[1u * stride + offset],
         base_pixels[2u * stride + offset],
+    );
+}
+
+fn load_guide(texel_unclamped: vec2<i32>) -> vec3<f32> {
+    let upper = vec2<i32>(i32(params.width) - 1, i32(params.height) - 1);
+    let texel = clamp(texel_unclamped, vec2<i32>(0), upper);
+    let stride = params.width * params.height;
+    let offset = u32(texel.y) * params.width + u32(texel.x);
+    return vec3<f32>(
+        guide_pixels[3u * stride + offset],
+        guide_pixels[4u * stride + offset],
+        guide_pixels[5u * stride + offset],
     );
 }
 
@@ -193,15 +206,22 @@ fn high_resolution_guided_base(destination: vec2<u32>) -> vec3<f32> {
             let texel = clamp_low(lower + vec2<i32>(dx, dy));
             let delta = vec2<f32>(texel) - position;
             let spatial = exp(-dot(delta, delta) / 4.5);
+            // The learned guide is already demodulated, so albedo differences
+            // must not keep illumination samples on one surface apart.
+            var candidate_albedo = textureLoad(t_albedo, texel, 0).xyz;
+            var tap = load_base(texel);
+            if params.guide_mix != 0u {
+                candidate_albedo = center_albedo;
+                tap = load_guide(texel);
+            }
             let weight = spatial * guide_similarity(
                 center_depth,
                 center_normal,
                 center_albedo,
                 load_low_depth(texel),
                 load_low_normal(texel),
-                textureLoad(t_albedo, texel, 0).xyz,
+                candidate_albedo,
             );
-            let tap = load_base(texel);
             sum += weight * tap;
             spatial_sum += spatial * tap;
             weight_sum += weight;
@@ -420,10 +440,24 @@ fn unpack_temporal(@builtin(global_invocation_id) id: vec3<u32>) {
             let slot = dy * params.scale + dx;
             let destination = id.xy * params.scale + vec2<u32>(dx, dy);
             let gathered = gather_kernel(source, slot, plane_stride, offset);
+            var current = gathered;
+            var history_offset = slots * taps;
+            if params.guide_mix != 0u {
+                let guided_linear = high_resolution_guided_base(destination);
+                let guided = vec3<f32>(
+                    compress(guided_linear.x),
+                    compress(guided_linear.y),
+                    compress(guided_linear.z),
+                );
+                let guide_mixture = residual[(history_offset + slot) * plane_stride + offset];
+                let gather_share = guide_mixture / (guide_mixture + 1.0);
+                current = mix(guided, gathered, gather_share);
+                history_offset += slots;
+            }
             let previous = reproject_history(destination, source);
-            let mixture = residual[(slots * taps + slot) * plane_stride + offset];
+            let mixture = residual[(history_offset + slot) * plane_stride + offset];
             let gate = previous.w * mixture / (mixture + 1.0);
-            let compressed = mix(gathered, previous.xyz, gate);
+            let compressed = mix(current, previous.xyz, gate);
 
             // Store exactly the compressed, demodulated representation the CPU
             // evaluator feeds back. The caller receives linear radiance after

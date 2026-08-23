@@ -61,6 +61,7 @@ const GAIN_PROBE_SAMPLES: usize = 16;
 struct Args {
     data: PathBuf,
     out: PathBuf,
+    resume_from: Option<PathBuf>,
     steps: usize,
     batch: u32,
     tile: u32,
@@ -82,6 +83,9 @@ struct Args {
     head_kernel: u32,
     temporal_weight: f32,
     temporal_motion_bias: f32,
+    relative_loss_weight: f32,
+    low_frequency_loss_weight: f32,
+    residual_bound: f32,
     teacher_every: usize,
     seed: u64,
     log_every: usize,
@@ -92,12 +96,15 @@ struct Args {
     eval_every: usize,
     checkpoint_every: usize,
     eval_only: bool,
+    eval_no_recurrence: bool,
+    history_scale: f32,
     allow_filtered_input: bool,
     device_id: Option<u32>,
     history_frames: u32,
     temporal_features: ommatidia::temporal::Features,
     unrejected_tap: bool,
     previous_output: bool,
+    guide_mix: bool,
 }
 
 const ADAM_BETA1: f32 = 0.9;
@@ -115,6 +122,7 @@ impl Default for Args {
         Self {
             data: PathBuf::from("data/train.omd"),
             out: PathBuf::from("runs/ommatidia"),
+            resume_from: None,
             steps: 1000,
             batch: 8,
             tile: 64,
@@ -136,6 +144,9 @@ impl Default for Args {
             head_kernel: 3,
             temporal_weight: 0.0,
             temporal_motion_bias: 0.0,
+            relative_loss_weight: 0.0,
+            low_frequency_loss_weight: 0.0,
+            residual_bound: 0.0,
             teacher_every: 250,
             seed: 0,
             log_every: 50,
@@ -146,12 +157,15 @@ impl Default for Args {
             eval_every: 0,
             checkpoint_every: 0,
             eval_only: false,
+            eval_no_recurrence: false,
+            history_scale: 1.0,
             allow_filtered_input: false,
             device_id: None,
             history_frames: 1,
             temporal_features: ommatidia::temporal::Features::Variance,
             unrejected_tap: false,
             previous_output: false,
+            guide_mix: false,
         }
     }
 }
@@ -163,6 +177,8 @@ usage: ommatidia-train [options]
 
   --data PATH          dataset to train on  [data/train.omd]
   --out STEM           checkpoint stem, gets .safetensors and .ron  [runs/ommatidia]
+  --resume-from STEM   load compatible weights and Adam state from another
+                       checkpoint; current flags define the new model contract
   --steps N            optimizer steps  [1000]
   --batch N            crops per step  [8]
   --tile N             square crop size, in input pixels  [64]
@@ -197,6 +213,14 @@ usage: ommatidia-train [options]
                        carry the flicker and are a small minority, so at an
                        even weight the term is decided by pixels that were
                        never going to be unstable  [0]
+  --relative-loss-weight F
+                       add F times linear relative error to residual training;
+                       protects dark surfaces from bright-region MSE [0]
+  --low-frequency-loss-weight F
+                       add F times MSE over 8x8 block-average residuals;
+                       suppresses coherent illumination mottling [0]
+  --residual-bound F   cap a subpixel correction to +/-F in compressed
+                       radiance using tanh; 0 retains the unbounded head [0]
   --teacher-every N    steps between resynchronising the detached copy of the
                        network that the temporal target is built from  [250]
   --head-kernel N      kernel size of the output convolution. A kernel head is
@@ -210,13 +234,15 @@ usage: ommatidia-train [options]
   --device-id ID       adapter ID for this standalone process (hex or decimal)
   --history-frames N   surface-reprojected sparse frames, 1 for spatial [1]
   --temporal-features KIND
-                       basic or variance history conditioning [variance]
+                       basic, variance, or phase history conditioning [variance]
   --unrejected-tap     second history tap: the reprojected previous estimate
                        with no surface gate, so a wrongly rejected sample can
                        still be recovered. Kernel checkpoints only
   --previous-output    mix the previous reconstructed frame, warped, after
                        the spatial gather, one gate per output sub-pixel.
                        That is the picture a temporal upscaler reuses
+  --guide-mix          blend the sample gather with the deterministic HR guide,
+                       using one learned gate per output sub-pixel
   --log-every N        steps between loss lines  [50]
   --eval-out DIR       write comparison PNGs of the first held-out crop
   --val-fraction F     share of the set held out for scoring  [0.15]
@@ -228,6 +254,10 @@ usage: ommatidia-train [options]
   --eval-only          load the checkpoint at --out and score it without
                        training, so a finished run can be re-examined under a
                        different --sampler-steps
+  --no-recurrence      eval-only ablation: close the previous-output gate while
+                       retaining sparse temporal accumulation
+  --history-scale F    eval-only multiplier for the learned previous-output
+                       mixture, before bounding it to [0, 1]  [1]
   --color-only         condition on colour alone, ignoring the dataset's
                        G-buffer planes; the other half of that ablation is
                        simply leaving this off
@@ -254,6 +284,7 @@ fn parse_from(argv: impl Iterator<Item = String>) -> Result<Args, String> {
             }
             "--data" => args.data = PathBuf::from(value()?),
             "--out" => args.out = PathBuf::from(value()?),
+            "--resume-from" => args.resume_from = Some(PathBuf::from(value()?)),
             "--steps" => args.steps = value()?.parse().map_err(|e| format!("--steps: {e}"))?,
             "--batch" => args.batch = value()?.parse().map_err(|e| format!("--batch: {e}"))?,
             "--tile" => args.tile = value()?.parse().map_err(|e| format!("--tile: {e}"))?,
@@ -330,6 +361,21 @@ fn parse_from(argv: impl Iterator<Item = String>) -> Result<Args, String> {
                     .parse()
                     .map_err(|e| format!("--temporal-motion-bias: {e}"))?
             }
+            "--relative-loss-weight" => {
+                args.relative_loss_weight = value()?
+                    .parse()
+                    .map_err(|e| format!("--relative-loss-weight: {e}"))?
+            }
+            "--low-frequency-loss-weight" => {
+                args.low_frequency_loss_weight = value()?
+                    .parse()
+                    .map_err(|e| format!("--low-frequency-loss-weight: {e}"))?
+            }
+            "--residual-bound" => {
+                args.residual_bound = value()?
+                    .parse()
+                    .map_err(|e| format!("--residual-bound: {e}"))?
+            }
             "--teacher-every" => {
                 args.teacher_every = value()?
                     .parse()
@@ -352,17 +398,25 @@ fn parse_from(argv: impl Iterator<Item = String>) -> Result<Args, String> {
                 args.temporal_features = match value()?.as_str() {
                     "basic" => ommatidia::temporal::Features::Basic,
                     "variance" => ommatidia::temporal::Features::Variance,
+                    "phase" => ommatidia::temporal::Features::Phase,
                     other => return Err(format!("unknown temporal features {other:?}")),
                 }
             }
             "--unrejected-tap" => args.unrejected_tap = true,
             "--previous-output" => args.previous_output = true,
+            "--guide-mix" => args.guide_mix = true,
             "--log-every" => {
                 args.log_every = value()?.parse().map_err(|e| format!("--log-every: {e}"))?
             }
             "--eval-out" => args.eval_out = Some(PathBuf::from(value()?)),
             "--color-only" => args.color_only = true,
             "--eval-only" => args.eval_only = true,
+            "--no-recurrence" => args.eval_no_recurrence = true,
+            "--history-scale" => {
+                args.history_scale = value()?
+                    .parse()
+                    .map_err(|e| format!("--history-scale: {e}"))?
+            }
             "--allow-filtered-input" => args.allow_filtered_input = true,
             "--val-fraction" => {
                 args.val_fraction = value()?
@@ -397,6 +451,18 @@ fn parse_from(argv: impl Iterator<Item = String>) -> Result<Args, String> {
     }
     if args.history_frames == 0 {
         return Err("--history-frames must be positive".into());
+    }
+    if args.eval_only && args.resume_from.is_some() {
+        return Err("--resume-from cannot be combined with --eval-only".into());
+    }
+    if args.eval_no_recurrence && !args.eval_only {
+        return Err("--no-recurrence is an --eval-only ablation".into());
+    }
+    if !args.history_scale.is_finite() || args.history_scale <= 0.0 {
+        return Err("--history-scale must be finite and positive".into());
+    }
+    if args.history_scale != 1.0 && !args.eval_only {
+        return Err("--history-scale is an --eval-only ablation".into());
     }
     Ok(args)
 }
@@ -492,11 +558,13 @@ fn main() {
         None => args.reconstruction_base,
     };
     if reconstruction_base == ReconstructionBase::HighResolutionGuided
+        || args.guide_mix
         || args.history_frames > 1
         || args.temporal_weight != 0.0
         || stored
             .as_ref()
             .is_some_and(|config| config.temporal.is_some())
+        || stored.as_ref().is_some_and(|config| config.guide_mix)
     {
         for plane in [
             ommatidia::Plane::Depth,
@@ -543,10 +611,14 @@ fn main() {
         blocks_per_level: args.blocks_per_level,
         num_groups: args.num_groups,
         residual_gain: 1.0,
+        relative_loss_weight: args.relative_loss_weight,
+        low_frequency_loss_weight: args.low_frequency_loss_weight,
+        residual_bound: args.residual_bound,
         objective: args.objective,
         prediction,
         kernel_radius,
         demodulate,
+        guide_mix: args.guide_mix,
         demodulation_offset,
         head_kernel: args.head_kernel,
         temporal_weight: args.temporal_weight,
@@ -692,6 +764,14 @@ fn main() {
     );
     model.initialize(&mut session, args.seed);
     session.set_adam(args.learning_rate, ADAM_BETA1, ADAM_BETA2, ADAM_EPSILON);
+    if let Some(stem) = &args.resume_from {
+        let weights = checkpoint::Paths::from_stem(stem).weights;
+        if let Err(e) = session.load_checkpoint(&weights) {
+            eprintln!("cannot resume from {}: {e}", weights.display());
+            std::process::exit(1);
+        }
+        println!("resumed weights and Adam state from {}", weights.display());
+    }
 
     // The temporal loss compares this frame against the network's own answer
     // for the previous one. That answer has to come from somewhere the gradient
@@ -756,6 +836,9 @@ fn main() {
         let batch = batcher.next().expect("cannot read a batch");
         session.set_input("cond", &batch.cond);
         session.set_input("target", &batch.target);
+        if !batch.loss_scale.is_empty() {
+            session.set_input("loss_scale", &batch.loss_scale);
+        }
         if let (Some(teacher), Some(temporal)) = (teacher.as_mut(), batch.temporal.as_ref()) {
             if step.is_multiple_of(args.teacher_every)
                 && let Err(e) = session
@@ -767,6 +850,9 @@ fn main() {
             }
             teacher.set_input("cond", &temporal.cond);
             teacher.set_input("taps", &temporal.taps);
+            if !temporal.guide.is_empty() {
+                teacher.set_input("guide", &temporal.guide);
+            }
             if config.history_mix_channels() != 0 {
                 teacher.set_input("history", &temporal.history);
                 teacher.set_input("history_validity", &temporal.history_validity);
@@ -844,6 +930,9 @@ fn main() {
         }
         if !batch.taps.is_empty() {
             session.set_input("taps", &batch.taps);
+        }
+        if !batch.guide.is_empty() {
+            session.set_input("guide", &batch.guide);
         }
         if diffusing {
             session.set_input("x_t", &batch.x_t);
@@ -1007,6 +1096,7 @@ impl Evaluator {
         let mut network_scores = eval::Scores::default();
         let mut guided_scores = eval::Scores::default();
         let mut hr_guided_scores = eval::Scores::default();
+        let mut temporal_guide_scores = eval::Scores::default();
         // Detail is only meaningful against the canonical frame's own.
         let mut reference_detail = 0.0f64;
         let sequence_length = batcher.sequence_length();
@@ -1036,12 +1126,15 @@ impl Evaluator {
         let mut moving_base_total = 0.0f64;
         let mut moving_network_total = 0.0f64;
         let mut moving_values = 0usize;
+        let mut mix_total = eval::MixStats::default();
+        let mut mix_crops = 0usize;
         let mut previous_temporal: Vec<Option<TemporalFrame>> =
             (0..crops.len()).map(|_| None).collect();
         let mut counted = 0usize;
         let started = std::time::Instant::now();
 
-        let uses_previous_output = self.config.temporal.is_some_and(|t| t.previous_output);
+        let uses_previous_output =
+            self.config.temporal.is_some_and(|t| t.previous_output) && !args.eval_no_recurrence;
         'outer: for index in split.validation() {
             if !batcher.has_history(index) && !uses_previous_output {
                 previous_temporal.iter_mut().for_each(|slot| *slot = None);
@@ -1093,7 +1186,7 @@ impl Evaluator {
                             scale,
                         )
                     });
-                let predicted = eval::reconstruct(
+                let reconstruction = eval::reconstruct(
                     &mut self.session,
                     &self.config,
                     schedule,
@@ -1105,6 +1198,7 @@ impl Evaluator {
                     // Vary the sampler noise per crop, so the score is not one
                     // lucky or unlucky draw repeated.
                     args.seed.wrapping_add(counted as u64),
+                    args.history_scale,
                     warped_history
                         .as_ref()
                         .map(|history| history.color.as_slice()),
@@ -1112,6 +1206,9 @@ impl Evaluator {
                         .as_ref()
                         .map(|history| history.validity.as_slice()),
                 );
+                let predicted = reconstruction.image;
+                let temporal_guide = reconstruction.temporal_guide;
+                let mix = reconstruction.mix;
                 if seeding {
                     let current_surfaces = batch::crop_hr_surfaces(sample, &layout, crop);
                     let reference = batch::crop_reference(sample, &layout, crop);
@@ -1122,7 +1219,11 @@ impl Evaluator {
                         crop.tile as usize,
                         self.config.scale as usize,
                     );
-                    let seed_base = hr_guided.clone().or(guided.clone()).unwrap_or(bilinear);
+                    let seed_base = temporal_guide
+                        .clone()
+                        .or(hr_guided.clone())
+                        .or(guided.clone())
+                        .unwrap_or(bilinear);
                     previous_temporal[crop_index] = Some(TemporalFrame {
                         compressed: batch::compress_linear_crop(
                             &predicted,
@@ -1153,6 +1254,13 @@ impl Evaluator {
                     self.config.scale as usize,
                 );
                 let extent = (crop.tile * self.config.scale) as usize;
+                if let Some(stats) = mix {
+                    mix_total.gather += stats.gather;
+                    mix_total.history += stats.history;
+                    mix_total.valid_history += stats.valid_history;
+                    mix_total.valid_fraction += stats.valid_fraction;
+                    mix_crops += 1;
+                }
                 nearest_scores.add(&baseline, &reference, extent);
                 bilinear_scores.add(&bilinear, &reference, extent);
                 network_scores.add(&predicted, &reference, extent);
@@ -1167,6 +1275,9 @@ impl Evaluator {
                 if let Some(hr_guided) = &hr_guided {
                     hr_guided_scores.add(hr_guided, &reference, extent);
                 }
+                if let Some(temporal_guide) = &temporal_guide {
+                    temporal_guide_scores.add(temporal_guide, &reference, extent);
+                }
 
                 let temporal_base = match self.config.reconstruction_base {
                     ReconstructionBase::Nearest => &baseline,
@@ -1180,9 +1291,11 @@ impl Evaluator {
                     // A kernel checkpoint has no base of its own, so it is held
                     // against the best deterministic reconstruction the dataset
                     // can support. Anything weaker would flatter it.
-                    ReconstructionBase::Sample => {
-                        hr_guided.as_ref().or(guided.as_ref()).unwrap_or(&bilinear)
-                    }
+                    ReconstructionBase::Sample => temporal_guide
+                        .as_ref()
+                        .or(hr_guided.as_ref())
+                        .or(guided.as_ref())
+                        .unwrap_or(&bilinear),
                 };
                 if self.config.temporal.is_some()
                     && let Some(motion) = eval::temporal_motion(&input, &layout, crop)
@@ -1288,10 +1401,18 @@ impl Evaluator {
                     });
                 }
 
-                // The first crop also goes out as images, for eyeballing.
-                if counted == 0
-                    && let Some(dir) = dir
-                {
+                // A temporal preview has to show mature history. The old
+                // `counted == 0` rule selected frame 2 of 4, immediately after
+                // reset, and visually understated the very mechanism being
+                // evaluated. Keep the first crop, but take it from the last
+                // frame of the first held-out sequence. Spatial datasets keep
+                // their original first-crop behaviour.
+                let preview = if sequence_length == 1 {
+                    counted == 0
+                } else {
+                    index == split.validation().start + sequence_length - 1 && crop_index == 0
+                };
+                if preview && let Some(dir) = dir {
                     let hr_extent = crop.tile * self.config.scale;
                     for (name, image, width) in [
                         ("input", &low, crop.tile),
@@ -1317,6 +1438,13 @@ impl Evaluator {
                             eprintln!("cannot write {}: {e}", path.display());
                         }
                     }
+                    if let Some(temporal_guide) = &temporal_guide {
+                        let path = dir.join("temporal-guide.png");
+                        if let Err(e) = eval::write_png(&path, temporal_guide, hr_extent, hr_extent)
+                        {
+                            eprintln!("cannot write {}: {e}", path.display());
+                        }
+                    }
                 }
                 counted += 1;
             }
@@ -1334,6 +1462,9 @@ impl Evaluator {
                 ("guided", guided_scores.mse())
             }
             ReconstructionBase::HighResolutionGuided => ("HR guide", hr_guided_scores.mse()),
+            ReconstructionBase::Sample if self.config.guide_mix => {
+                ("TAA guide", temporal_guide_scores.mse())
+            }
             ReconstructionBase::Sample if has_hr_guides => ("HR guide", hr_guided_scores.mse()),
             ReconstructionBase::Sample if has_guides => ("guided", guided_scores.mse()),
             ReconstructionBase::Sample => ("bilinear", bilinear_scores.mse()),
@@ -1356,10 +1487,28 @@ impl Evaluator {
         if has_hr_guides {
             println!("  {}", hr_guided_scores.line("HR guide", reference_detail));
         }
+        if self.config.guide_mix {
+            println!(
+                "  {}",
+                temporal_guide_scores.line("TAA guide", reference_detail)
+            );
+        }
         println!(
             "  {} ({gain:+.2} dB versus {base_name})",
             network_scores.line("network", reference_detail)
         );
+        if mix_crops != 0 {
+            let count = mix_crops as f64;
+            println!(
+                "  learned mixtures: gather {:.1}% (guide {:.1}%), history {:.1}% requested / \
+                 {:.1}% valid over {:.1}% valid pixels",
+                100.0 * mix_total.gather / count,
+                100.0 * (1.0 - mix_total.gather / count),
+                100.0 * mix_total.history / count,
+                100.0 * mix_total.valid_history / count,
+                100.0 * mix_total.valid_fraction / count,
+            );
+        }
         if self.config.temporal.is_some() {
             for frame in 0..sequence_length {
                 if reference_detail_by_sequence_frame[frame] == 0.0 {
@@ -1495,6 +1644,10 @@ mod cli_tests {
                 }
                 "--temporal-features" => vec![vec!["--temporal-features", "variance"]],
                 "--val-fraction" => vec![vec!["--val-fraction", "0.1"]],
+                "--no-recurrence" => vec![vec!["--eval-only", "--no-recurrence"]],
+                "--history-scale" => {
+                    vec![vec!["--eval-only", "--history-scale", "2"]]
+                }
                 _ => vec![vec![&flag, VALUE], vec![&flag]],
             };
             let accepted = candidates.iter().any(|words| parse(words).is_ok());

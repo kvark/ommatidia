@@ -156,9 +156,23 @@ four-frame Blade run reduced display-space 16x16-block fluctuation from
 finite-sample canonical reference measured 0.000010. That is a runtime sanity
 check rather than a replacement for the linear-HDR validation above.
 
-| accumulated HR guide | recurrent Ommatidium | 1,024-spp reference |
+A newer image-quality arm isolates reconstruction from physical motion: sixteen
+independent 1-spp frames visit the exact 2x projection grid, leaving four path
+samples at each output subpixel, and are scored against a 16,384-spp reference.
+Over all fifteen non-reset full frames of the first held-out sequence, the
+accumulated HR guide reaches 26.84 dB / 0.8186 SSIM and retains 62% of reference
+detail. The demodulated residual reaches 28.58 dB / 0.8863 SSIM, retains 79%,
+and improves 16x16-block low-frequency PSNR from 33.03 to 36.61 dB. A
+block-average training term and a relative dark-region safety bound remove the
+visible ceiling/wall clouds without adding inference parameters or a Meganeura
+operation. The remaining glossy-highlight softness is real; total radiance is
+still filtered as one lobe, so split diffuse/specular training data is the next
+quality step. This static experiment does not replace the moving-sequence
+validation above.
+
+| accumulated HR guide, 16 frames | phase-history Ommatidium | 16,384-spp reference |
 |---|---|---|
-| ![Accumulated guide with broad horizontal illumination bands](docs/temporal-low-frequency/hr-guided.png) | ![Temporal Ommatidium output with the broad bands suppressed](docs/temporal-low-frequency/predicted.png) | ![High-sample reference for the temporal validation crop](docs/temporal-low-frequency/reference.png) |
+| ![Accumulated high-resolution guide on the held-out glossy scene](docs/temporal-low-frequency/hr-guided.png) | ![Phase-history Ommatidium output with low-frequency clouds suppressed](docs/temporal-low-frequency/predicted.png) | ![Converged high-sample reference showing the remaining glossy-highlight gap](docs/temporal-low-frequency/reference.png) |
 
 The full data recipe, radius gate, metrics, rejected initialization, and 4-spp
 control are in the
@@ -375,6 +389,13 @@ renderer has over photographic super-resolution—it can provide exact
 silhouettes rather than ask the upscaler to infer them. Input-resolution planes
 come from sparse shading; output-resolution planes may require a separate
 primary-surface pass in a pure path tracer.
+The sparse radiance and low-resolution G-buffer must describe the same primary
+ray. If the path tracer jitters a ray inside the pixel while the G-buffer stays
+at its centre, silhouette pixels carry one surface's light beside another
+surface's depth and normal, and no denoiser can recover the missing
+correspondence. Blade captures therefore disable its internal primary-ray
+jitter; an application that jitters its whole camera/G-buffer consistently can
+leave that application-level jitter in place.
 The trainer takes the plane set from the file header, so `--color-only` gives
 the other arm of that ablation without regenerating anything.
 

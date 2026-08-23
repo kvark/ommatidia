@@ -25,9 +25,15 @@ pub struct Batch {
     /// checkpoint. See [`ommatidia::diffusion`] for why the diffusion target
     /// is the signal rather than the noise.
     pub target: Vec<f32>,
+    /// Per-value square root of the relative loss weight. Empty for ordinary
+    /// MSE, so the common path carries no extra graph input.
+    pub loss_scale: Vec<f32>,
     /// `[batch, 3 * taps, tile, tile]`: the sparse samples a predicted kernel
     /// gathers. Empty unless the checkpoint predicts kernels.
     pub taps: Vec<f32>,
+    /// `[batch, 3 * scale^2, tile, tile]`: deterministic high-resolution
+    /// guide in the same compressed layout as a gathered image.
+    pub guide: Vec<f32>,
     /// Everything the temporal loss needs, empty unless it is switched on.
     pub temporal: Option<TemporalBatch>,
 }
@@ -39,6 +45,7 @@ pub struct TemporalBatch {
     /// network can be run on it.
     pub cond: Vec<f32>,
     pub taps: Vec<f32>,
+    pub guide: Vec<f32>,
     /// History reset for the previous frame's teacher (current colour, no warp).
     pub history: Vec<f32>,
     /// Per-sub-pixel validity for `history`. Reset frames leave this zero, so
@@ -71,6 +78,7 @@ impl InputSample {
             Self::Temporal(prepared) => batch::ExtraTaps {
                 current: Some(&prepared.current_color),
                 unrejected: Some(&prepared.unrejected),
+                guide: None,
                 previous_output: None,
                 previous_validity: None,
             },
@@ -81,6 +89,13 @@ impl InputSample {
         match self {
             Self::Spatial(sample) => sample,
             Self::Temporal(prepared) => &prepared.sample,
+        }
+    }
+
+    pub fn deviation(&self) -> Option<&[f32]> {
+        match self {
+            Self::Spatial(_) => None,
+            Self::Temporal(prepared) => Some(&prepared.deviation),
         }
     }
 
@@ -266,6 +281,26 @@ impl Batcher {
         }
     }
 
+    fn make_guide(
+        sample: &Sample,
+        current_color: &[f32],
+        deviation: &[f32],
+        layout: &Layout,
+        crop: Crop,
+        config: &ModelConfig,
+    ) -> Vec<f32> {
+        let linear = batch::high_resolution_temporal_guide(
+            sample,
+            layout,
+            crop,
+            config.guide,
+            config.demodulation_offset,
+            current_color,
+            deviation,
+        );
+        batch::compress_demodulated_crop(&linear, sample, layout, crop, config)
+    }
+
     /// Build one batch.
     pub fn next(&mut self) -> Result<Batch, ommatidia::dataset::Error> {
         // Cloned up front: the crop draw needs `&mut self`, and the config
@@ -280,7 +315,17 @@ impl Batcher {
             x_t: Vec::new(),
             t_emb: Vec::new(),
             target: vec![0.0; config.loss_len()],
+            loss_scale: if config.relative_loss_weight != 0.0 {
+                vec![0.0; config.target_len()]
+            } else {
+                Vec::new()
+            },
             taps: vec![0.0; config.tap_len()],
+            guide: if config.guide_mix {
+                vec![0.0; config.loss_len()]
+            } else {
+                Vec::new()
+            },
             temporal: self.paired.then(|| {
                 let texels = (config.batch * config.tile * config.tile) as usize;
                 let pixels = texels * (config.scale * config.scale) as usize;
@@ -292,6 +337,11 @@ impl Batcher {
                 TemporalBatch {
                     cond: vec![0.0; config.cond_len()],
                     taps: vec![0.0; config.tap_len()],
+                    guide: if config.guide_mix {
+                        vec![0.0; config.loss_len()]
+                    } else {
+                        Vec::new()
+                    },
                     history: vec![
                         0.0;
                         (config.batch * config.image_channels() * config.tile * config.tile)
@@ -314,6 +364,11 @@ impl Batcher {
             out.x_t = vec![0.0; config.target_len()];
             out.t_emb = vec![0.0; config.time_len()];
         }
+        // The 13x13 deterministic guide is independent for every crop and is
+        // much more expensive on the CPU than packing the other tensors. Keep
+        // sample reads deterministic and parallelise only this pure work after
+        // the batch has been assembled.
+        let mut guide_jobs = Vec::new();
 
         for slot in 0..batch_size {
             let index = if config.temporal.is_some() {
@@ -362,6 +417,16 @@ impl Batcher {
                     &mut self.residual,
                 );
             }
+            if !out.loss_scale.is_empty() {
+                batch::write_relative_loss_scale(
+                    sample.sample(),
+                    &self.layout,
+                    crop,
+                    slot,
+                    &config,
+                    &mut out.loss_scale,
+                );
+            }
             if !out.taps.is_empty() {
                 batch::write_taps(
                     sample.sample(),
@@ -372,6 +437,22 @@ impl Batcher {
                     sample.extra_taps(),
                     &mut out.taps,
                 );
+            }
+            if !out.guide.is_empty() {
+                let current = sample
+                    .extra_taps()
+                    .current
+                    .expect("guide mixing is temporal")
+                    .to_vec();
+                let deviation = sample.deviation().unwrap().to_vec();
+                guide_jobs.push((
+                    slot,
+                    false,
+                    sample.sample().clone(),
+                    current,
+                    deviation,
+                    crop,
+                ));
             }
             if let (Some(earlier), Some(temporal)) = (&earlier, out.temporal.as_mut()) {
                 earlier.write_conditioning(&self.layout, &config, crop, slot, &mut temporal.cond);
@@ -384,6 +465,22 @@ impl Batcher {
                     earlier.extra_taps(),
                     &mut temporal.taps,
                 );
+                if !temporal.guide.is_empty() {
+                    let current = earlier
+                        .extra_taps()
+                        .current
+                        .expect("guide mixing is temporal")
+                        .to_vec();
+                    let deviation = earlier.deviation().unwrap().to_vec();
+                    guide_jobs.push((
+                        slot,
+                        true,
+                        earlier.sample().clone(),
+                        current,
+                        deviation,
+                        crop,
+                    ));
+                }
                 if config.history_mix_channels() != 0 {
                     batch::write_reset_history(
                         earlier.sample(),
@@ -420,6 +517,36 @@ impl Batcher {
                 out.target[slot * loss_per_slot..(slot + 1) * loss_per_slot]
                     .copy_from_slice(&self.residual);
             }
+        }
+
+        let layout = self.layout;
+        let guides = std::thread::scope(|scope| {
+            let handles: Vec<_> = guide_jobs
+                .into_iter()
+                .map(|(slot, temporal, sample, current, deviation, crop)| {
+                    let config = &config;
+                    scope.spawn(move || {
+                        (
+                            slot,
+                            temporal,
+                            Self::make_guide(&sample, &current, &deviation, &layout, crop, config),
+                        )
+                    })
+                })
+                .collect();
+            handles
+                .into_iter()
+                .map(|handle| handle.join().expect("guide worker panicked"))
+                .collect::<Vec<_>>()
+        });
+        for (slot, temporal, guide) in guides {
+            let destination = if temporal {
+                &mut out.temporal.as_mut().unwrap().guide
+            } else {
+                &mut out.guide
+            };
+            let per_slot = guide.len();
+            destination[slot * per_slot..(slot + 1) * per_slot].copy_from_slice(&guide);
         }
 
         Ok(out)

@@ -196,6 +196,26 @@ pub struct ModelConfig {
     /// the value training multiplied by. See [`crate::batch::write_residual`]
     /// for why a diffusion model cannot be trained without it.
     pub residual_gain: f32,
+    /// Weight of a relative-error term in residual training. A value of zero
+    /// is ordinary compressed-space MSE; positive values keep dark surfaces
+    /// from being sacrificed to small absolute error in bright regions.
+    #[serde(default)]
+    pub relative_loss_weight: f32,
+    /// Weight of an additional MSE between 8x8 block-average residuals.
+    ///
+    /// Ordinary per-value MSE gives a coherent error across a smooth patch no
+    /// more importance than the same energy spread across independent grain.
+    /// This term matches the evaluator's 16x16-output low-frequency metric at
+    /// 2x scale and specifically penalizes visible illumination mottling. The
+    /// averaging lives only in the training graph, so it adds no parameters or
+    /// inference work.
+    #[serde(default)]
+    pub low_frequency_loss_weight: f32,
+    /// Maximum absolute correction in compressed radiance. Zero preserves the
+    /// historical unbounded head; positive values apply `bound * tanh` before
+    /// reconstruction, making residual checkpoints safe on dark surfaces.
+    #[serde(default)]
+    pub residual_bound: f32,
     pub objective: Objective,
     /// What the graph's output tensor represents.
     #[serde(default = "legacy_prediction")]
@@ -208,8 +228,8 @@ pub struct ModelConfig {
     /// Exact coefficients used by the CPU trainer and GPU reconstruction.
     #[serde(default = "legacy_guide_config")]
     pub guide: GuideConfig,
-    /// Reconstruct radiance divided by albedo, and multiply the exact
-    /// output-resolution albedo back afterwards.
+    /// Reconstruct illumination after dividing radiance by albedo, and
+    /// multiply the exact output-resolution albedo back afterwards.
     ///
     /// The albedo is known exactly at output resolution, so a reconstruction
     /// that carries it through the filter is asking a network to recover
@@ -221,6 +241,15 @@ pub struct ModelConfig {
     /// are all one flat colour, which is why it looked worthless before.
     #[serde(default)]
     pub demodulate: bool,
+    /// Blend the learned sample gather with the deterministic high-resolution
+    /// guide, using one learned gate per output sub-pixel.
+    ///
+    /// The guide is deliberately outside the gather kernel: on flat surfaces
+    /// it is a much lower-variance estimate, while on textured surfaces a
+    /// gather over the validated accumulated samples preserves detail better.
+    /// One extra head channel per output sub-pixel chooses between them.
+    #[serde(default)]
+    pub guide_mix: bool,
     /// Added to the albedo on both sides of a demodulated reconstruction.
     ///
     /// It bounds how far demodulation can rescale a pixel, and that bound is
@@ -300,12 +329,16 @@ impl Default for ModelConfig {
             time_embed_dim: 256,
             // Overwritten from the data; 1.0 leaves the residual as it is.
             residual_gain: 1.0,
+            relative_loss_weight: 0.0,
+            low_frequency_loss_weight: 0.0,
+            residual_bound: 0.0,
             objective: Objective::Direct,
             prediction: Prediction::SubpixelResidual,
             reconstruction_base: ReconstructionBase::GuidedBilinear,
             guide: GuideConfig::TUNED,
             kernel_radius: legacy_kernel_radius(),
             demodulate: false,
+            guide_mix: false,
             demodulation_offset: legacy_demodulation_offset(),
             head_kernel: legacy_head_kernel(),
             temporal_weight: 0.0,
@@ -329,13 +362,16 @@ impl ModelConfig {
     /// Extra conditioning a temporal checkpoint appends after the stored
     /// planes. Zero when there is no history.
     pub fn temporal_auxiliary_channels(&self) -> u32 {
-        match self.temporal {
+        let base = match self.temporal {
             None => 0,
             Some(temporal) if self.prediction == Prediction::SubpixelKernel => {
                 temporal.gather_auxiliary_channels()
             }
             Some(temporal) => temporal.auxiliary_channels(),
-        }
+        };
+        base + self
+            .temporal
+            .map_or(0, |temporal| temporal.phase_channels(self.scale))
     }
 
     /// Reprojected-history taps the gather reads, beyond the spatial ones.
@@ -369,6 +405,16 @@ impl ModelConfig {
                 self.scale * self.scale
             }
             _ => 0,
+        }
+    }
+
+    /// Mix gates for the deterministic high-resolution guide, one per output
+    /// sub-pixel. Not counted in [`Self::gather_taps`].
+    pub fn guide_mix_channels(&self) -> u32 {
+        if self.guide_mix && self.prediction == Prediction::SubpixelKernel {
+            self.scale * self.scale
+        } else {
+            0
         }
     }
 
@@ -410,7 +456,9 @@ impl ModelConfig {
             // Spatial gather weights, sub-pixel major, plus one mix gate per
             // sub-pixel when previous-output history is blended after the gather.
             Prediction::SubpixelKernel => {
-                self.scale * self.scale * self.gather_taps() + self.history_mix_channels()
+                self.scale * self.scale * self.gather_taps()
+                    + self.guide_mix_channels()
+                    + self.history_mix_channels()
             }
         }
     }
@@ -593,6 +641,9 @@ impl ModelConfig {
             if self.cond_planes.contains(Plane::Motion) {
                 return Err("motion is consumed by reprojection, not by the model".into());
             }
+            if temporal.features.has_phase() && !self.cond_planes.contains(Plane::Jitter) {
+                return Err("phase history needs the projection-jitter conditioning plane".into());
+            }
         }
         if self.prediction == Prediction::LowResolutionResidual
             && self.reconstruction_base != ReconstructionBase::HighResolutionGuided
@@ -609,8 +660,13 @@ impl ModelConfig {
             );
         }
         if self.demodulate {
-            if self.prediction != Prediction::SubpixelKernel {
-                return Err("demodulation is part of the sample gather".into());
+            let supported = self.prediction == Prediction::SubpixelKernel
+                || (self.prediction == Prediction::SubpixelResidual
+                    && self.reconstruction_base == ReconstructionBase::HighResolutionGuided);
+            if !supported {
+                return Err(
+                    "demodulation needs a sample gather or an HR-guided subpixel residual".into(),
+                );
             }
             if !self.cond_planes.contains(Plane::DiffuseAlbedo) {
                 return Err("demodulation divides by the albedo, so it has to have one".into());
@@ -620,6 +676,24 @@ impl ModelConfig {
                     "demodulation offset {} must be finite and positive",
                     self.demodulation_offset
                 ));
+            }
+        }
+        if self.guide_mix {
+            if self.prediction != Prediction::SubpixelKernel {
+                return Err("guide mixing is part of the sample gather".into());
+            }
+            if !self.demodulate {
+                return Err("guide mixing operates in demodulated illumination space".into());
+            }
+            if self.temporal.is_none() {
+                return Err("guide mixing needs accumulated temporal samples".into());
+            }
+            for plane in [Plane::Depth, Plane::Normal, Plane::DiffuseAlbedo] {
+                if !self.cond_planes.contains(plane) {
+                    return Err(format!(
+                        "guide mixing requires the {plane:?} conditioning plane"
+                    ));
+                }
             }
         }
         if self.prediction == Prediction::SubpixelKernel {
@@ -675,6 +749,34 @@ impl ModelConfig {
                 "residual_gain {} must be finite and positive",
                 self.residual_gain
             ));
+        }
+        if !self.relative_loss_weight.is_finite() || self.relative_loss_weight < 0.0 {
+            return Err(format!(
+                "relative loss weight {} must be finite and non-negative",
+                self.relative_loss_weight
+            ));
+        }
+        if !self.low_frequency_loss_weight.is_finite() || self.low_frequency_loss_weight < 0.0 {
+            return Err(format!(
+                "low-frequency loss weight {} must be finite and non-negative",
+                self.low_frequency_loss_weight
+            ));
+        }
+        if !self.residual_bound.is_finite() || !(0.0..1.0).contains(&self.residual_bound) {
+            return Err(format!(
+                "residual bound {} must be finite and in [0, 1)",
+                self.residual_bound
+            ));
+        }
+        if self.residual_bound != 0.0 && self.prediction != Prediction::SubpixelResidual {
+            return Err("a residual bound currently targets subpixel residuals".into());
+        }
+        if self.relative_loss_weight != 0.0 && self.prediction != Prediction::SubpixelResidual {
+            return Err("relative loss weighting currently targets subpixel residuals".into());
+        }
+        if self.low_frequency_loss_weight != 0.0 && self.prediction != Prediction::SubpixelResidual
+        {
+            return Err("low-frequency loss currently targets subpixel residuals".into());
         }
         for (name, value) in [
             ("spatial_sigma", self.guide.spatial_sigma),
@@ -954,16 +1056,56 @@ pub(crate) fn bilinear_kernel_bias(config: &ModelConfig) -> Vec<f32> {
             out[(slot * taps + tap) as usize] = inverse_softplus(weight.max(FLOOR));
         }
     }
-    // Mix gates sit after the spatial weights, same softplus, mapped to
-    // m/(m+1) in the gather. The floor ignores history until training
-    // moves it.
-    if config.history_mix_channels() != 0 {
-        let mix_bias = inverse_softplus(FLOOR);
+    // Mix gates sit after the spatial weights and share the softplus. Guide
+    // mixing starts at 25% gather, the conservative fixed blend that cleaned
+    // flat-material validation while leaving a useful gradient in both
+    // directions. History starts at the floor and is ignored until training
+    // finds evidence for it.
+    if config.guide_mix_channels() != 0 {
+        let gather_share = 0.25;
+        let mix_bias = inverse_softplus(gather_share / (1.0 - gather_share));
         for slot in 0..slots {
             out[(slots * taps + slot) as usize] = mix_bias;
         }
     }
+    if config.history_mix_channels() != 0 {
+        let mix_bias = inverse_softplus(FLOOR);
+        let offset = slots * taps + config.guide_mix_channels();
+        for slot in 0..slots {
+            out[(offset + slot) as usize] = mix_bias;
+        }
+    }
     out
+}
+
+/// Blend an image with a second source using one softplus gate per sub-pixel.
+/// The head value `m` becomes the bounded share `m/(m+1)` and is repeated over
+/// RGB. An optional validity mask hard-closes history at rejected pixels.
+fn blend_subpixel(
+    graph: &mut Graph,
+    image: NodeId,
+    source: NodeId,
+    gates: NodeId,
+    validity: Option<NodeId>,
+    shape: [u32; 3],
+) -> NodeId {
+    let [batch, slots, spatial] = shape;
+    let gate_len = (batch * slots * spatial) as usize;
+    let gate_ones = graph.constant(vec![1.0; gate_len], &[gate_len]);
+    let denominator = graph.add(gates, gate_ones);
+    let mut gates = graph.div(gates, denominator);
+    if let Some(validity) = validity {
+        gates = graph.mul(gates, validity);
+    }
+    let twice = graph.concat(gates, gates, batch, slots, slots, spatial);
+    let gates_rgb = graph.concat(twice, gates, batch, 2 * slots, slots, spatial);
+    let image_len = (batch * 3 * slots * spatial) as usize;
+    let ones = graph.constant(vec![1.0; image_len], &[image_len]);
+    let negative_gates = graph.neg(gates_rgb);
+    let keep = graph.add(ones, negative_gates);
+    let from_image = graph.mul(keep, image);
+    let from_source = graph.mul(gates_rgb, source);
+    graph.add(from_image, from_source)
 }
 
 /// Reconstruct the image from predicted gather weights, inside the graph.
@@ -977,20 +1119,38 @@ pub(crate) fn bilinear_kernel_bias(config: &ModelConfig) -> Vec<f32> {
 /// the one shape meganeura has no primitive for — summing a channel group —
 /// and expressing it as a convolution keeps the whole gather at about sixty
 /// operations instead of the thousand a per-channel decomposition would need.
-fn gather(graph: &mut Graph, config: &ModelConfig, weights: NodeId, extent: [u32; 2]) -> NodeId {
+fn gather(
+    graph: &mut Graph,
+    config: &ModelConfig,
+    weights: NodeId,
+    extent: [u32; 2],
+    history_inputs: Option<(NodeId, NodeId)>,
+) -> NodeId {
     let batch = config.batch;
     let [width, height] = extent;
     let spatial = width * height;
     let taps = config.gather_taps();
     let slots = config.scale * config.scale;
-    let mix = config.history_mix_channels();
-    let (weights, mix_gates) = if mix == 0 {
+    let guide_mix = config.guide_mix_channels();
+    let history_mix = config.history_mix_channels();
+    let mixes = guide_mix + history_mix;
+    let (weights, mix_gates) = if mixes == 0 {
         (weights, None)
     } else {
         let spatial_ch = slots * taps;
-        let w = graph.split_a(weights, batch, spatial_ch, mix, spatial);
-        let m = graph.split_b(weights, batch, spatial_ch, mix, spatial);
+        let w = graph.split_a(weights, batch, spatial_ch, mixes, spatial);
+        let m = graph.split_b(weights, batch, spatial_ch, mixes, spatial);
         (w, Some(m))
+    };
+    let (guide_gates, history_gates) = match (guide_mix, history_mix, mix_gates) {
+        (0, 0, None) => (None, None),
+        (_, 0, Some(gates)) => (Some(gates), None),
+        (0, _, Some(gates)) => (None, Some(gates)),
+        (_, _, Some(gates)) => (
+            Some(graph.split_a(gates, batch, guide_mix, history_mix, spatial)),
+            Some(graph.split_b(gates, batch, guide_mix, history_mix, spatial)),
+        ),
+        _ => unreachable!(),
     };
 
     // Peel one group of `group` channels at a time off the front.
@@ -1037,35 +1197,32 @@ fn gather(graph: &mut Graph, config: &ModelConfig, weights: NodeId, extent: [u32
             written += 1;
         }
     }
-    let image = image.expect("a kernel checkpoint reconstructs at least one channel");
-    let Some(gates) = mix_gates else {
-        return image;
-    };
-    // Previous reconstruction, already warped, in the same compressed
-    // sub-pixel layout as `image`. Reprojection validity hard-closes the gate
-    // at disocclusions and outside the frame; a rejected zero is storage, not
-    // black radiance. One gate per sub-pixel is then repeated over RGB so a
-    // history mix is a picture blend, not a second kernel.
-    let history = graph.input("history", &[(batch * 3 * slots * spatial) as usize]);
-    let history_validity = graph.input("history_validity", &[(batch * slots * spatial) as usize]);
-    let mix_ones = graph.constant(
-        vec![1.0; (batch * slots * spatial) as usize],
-        &[(batch * slots * spatial) as usize],
-    );
-    let mix_denom = graph.add(gates, mix_ones);
-    let gates = graph.div(gates, mix_denom);
-    let gates = graph.mul(gates, history_validity);
-    let twice = graph.concat(gates, gates, batch, slots, slots, spatial);
-    let gates_rgb = graph.concat(twice, gates, batch, 2 * slots, slots, spatial);
-    let ones = graph.constant(
-        vec![1.0; (batch * 3 * slots * spatial) as usize],
-        &[(batch * 3 * slots * spatial) as usize],
-    );
-    let keep = graph.neg(gates_rgb);
-    let keep = graph.add(ones, keep);
-    let from_now = graph.mul(keep, image);
-    let from_then = graph.mul(gates_rgb, history);
-    graph.add(from_now, from_then)
+    let mut image = image.expect("a kernel checkpoint reconstructs at least one channel");
+    if let Some(gates) = guide_gates {
+        let guide = graph.input("guide", &[(batch * 3 * slots * spatial) as usize]);
+        image = blend_subpixel(graph, guide, image, gates, None, [batch, slots, spatial]);
+    }
+    if let Some(gates) = history_gates {
+        // Previous reconstruction, already warped, in the same compressed
+        // sub-pixel layout as `image`. Reprojection validity hard-closes the
+        // gate at disocclusions and outside the frame; a rejected zero is
+        // storage, not black radiance.
+        let (history, history_validity) = history_inputs.unwrap_or_else(|| {
+            (
+                graph.input("history", &[(batch * 3 * slots * spatial) as usize]),
+                graph.input("history_validity", &[(batch * slots * spatial) as usize]),
+            )
+        });
+        image = blend_subpixel(
+            graph,
+            image,
+            history,
+            gates,
+            Some(history_validity),
+            [batch, slots, spatial],
+        );
+    }
+    image
 }
 
 /// What the built graph produces.
@@ -1119,6 +1276,39 @@ pub fn build_for_extent(
     build_ending(config, ending, extent)
 }
 
+/// MSE between non-overlapping block averages, independently per channel.
+///
+/// A fixed diagonal convolution expresses this with the operations Meganeura
+/// already uses for the network. Only gradients with respect to `output` are
+/// useful; the averaging kernel is a graph constant.
+fn low_frequency_mse(
+    graph: &mut Graph,
+    output: NodeId,
+    target: NodeId,
+    batch: u32,
+    channels: u32,
+    extent: [u32; 2],
+) -> NodeId {
+    const BLOCK: u32 = 8;
+    let [width, height] = extent;
+    let block = BLOCK.min(width).min(height);
+    let area = (block * block) as usize;
+    let mut weights = vec![0.0; channels as usize * channels as usize * area];
+    for channel in 0..channels as usize {
+        let base = (channel * channels as usize + channel) * area;
+        weights[base..base + area].fill(1.0 / area as f32);
+    }
+    let kernel = graph.constant(weights, &[channels as usize * channels as usize * area]);
+    let average = |graph: &mut Graph, image| {
+        graph.conv2d(
+            image, kernel, batch, channels, height, width, channels, block, block, block, 0,
+        )
+    };
+    let output = average(graph, output);
+    let target = average(graph, target);
+    graph.mse_loss(output, target)
+}
+
 /// Build the network for a chosen ending.
 pub fn build_ending(
     config: &ModelConfig,
@@ -1144,6 +1334,21 @@ pub fn build_ending(
     let cond = builder
         .g
         .input("cond", &[config.cond_len_for_extent(extent)]);
+
+    // The final history blend needs these tensors in a training/image graph.
+    // Runtime prediction ends at the weights and performs the blend in WGSL.
+    let slots = config.scale * config.scale;
+    let history_inputs =
+        (config.history_mix_channels() != 0 && ending != Ending::Prediction).then(|| {
+            (
+                builder
+                    .g
+                    .input("history", &[(batch * 3 * slots * spatial) as usize]),
+                builder
+                    .g
+                    .input("history_validity", &[(batch * slots * spatial) as usize]),
+            )
+        });
 
     // Under diffusion the network sees the noised residual next to the
     // conditioning, and the noise level tells it how much of what it sees is
@@ -1299,13 +1504,21 @@ pub fn build_ending(
         // Mix gates share this softplus so the prediction graph stays the
         // same shape as a spatial kernel; gather maps `m` to `m/(m+1)`.
         builder.g.softplus(biased, 1.0)
+    } else if config.residual_bound != 0.0 {
+        let bounded = builder.g.tanh(output);
+        let len = config.target_len_for_extent(extent);
+        let scale = builder.g.constant(
+            vec![config.residual_bound * config.residual_gain; len],
+            &[len],
+        );
+        builder.g.mul(bounded, scale)
     } else {
         output
     };
 
     let params = builder.params;
     if ending == Ending::Image {
-        let image = gather(&mut graph, config, output, extent);
+        let image = gather(&mut graph, config, output, extent, history_inputs);
         graph.set_outputs(vec![image]);
         return Ok(Model {
             graph,
@@ -1320,13 +1533,11 @@ pub fn build_ending(
     let loss = if training {
         let loss = match config.prediction {
             Prediction::SubpixelKernel => {
-                let image = gather(&mut graph, config, output, extent);
+                let image = gather(&mut graph, config, output, extent, history_inputs);
                 let len = (batch * config.image_channels() * spatial) as usize;
                 let target = graph.input("target", &[len]);
-                let spatial_loss = graph.mse_loss(image, target);
-                if config.temporal_weight == 0.0 {
-                    spatial_loss
-                } else {
+                let mut loss = graph.mse_loss(image, target);
+                if config.temporal_weight != 0.0 {
                     // The temporal metric compares this frame's change against
                     // the reference's, motion-compensated:
                     //
@@ -1350,12 +1561,34 @@ pub fn build_ending(
                     let temporal_loss = graph.mse_loss(masked, target);
                     let weight = graph.scalar(config.temporal_weight);
                     let scaled = graph.mul(temporal_loss, weight);
-                    graph.add(spatial_loss, scaled)
+                    loss = graph.add(loss, scaled);
                 }
+                loss
             }
             _ => {
                 let target = graph.input("target", &[config.target_len_for_extent(extent)]);
-                graph.mse_loss(output, target)
+                let mut loss = if config.relative_loss_weight == 0.0 {
+                    graph.mse_loss(output, target)
+                } else {
+                    let scale = graph.input("loss_scale", &[config.target_len_for_extent(extent)]);
+                    let output = graph.mul(output, scale);
+                    let target = graph.mul(target, scale);
+                    graph.mse_loss(output, target)
+                };
+                if config.low_frequency_loss_weight != 0.0 {
+                    let low = low_frequency_mse(
+                        &mut graph,
+                        output,
+                        target,
+                        batch,
+                        config.target_channels(),
+                        extent,
+                    );
+                    let weight = graph.scalar(config.low_frequency_loss_weight);
+                    let low = graph.mul(low, weight);
+                    loss = graph.add(loss, low);
+                }
+                loss
             }
         };
         graph.set_outputs(vec![loss]);
@@ -1448,6 +1681,7 @@ mod tests {
     #[test]
     fn previous_output_mix_is_not_a_gather_tap() {
         let mut c = small();
+        c.objective = Objective::Direct;
         c.prediction = Prediction::SubpixelKernel;
         c.reconstruction_base = ReconstructionBase::Sample;
         c.kernel_radius = 2;
@@ -1463,6 +1697,33 @@ mod tests {
         assert_eq!(c.gather_taps(), 25);
         assert_eq!(c.history_mix_channels(), 4);
         assert_eq!(c.target_channels(), 25 * 4 + 4);
+    }
+
+    #[test]
+    fn guide_mix_costs_only_one_gate_per_subpixel() {
+        let mut c = small();
+        c.objective = Objective::Direct;
+        c.prediction = Prediction::SubpixelKernel;
+        c.reconstruction_base = ReconstructionBase::Sample;
+        c.kernel_radius = 2;
+        c.cond_planes = c
+            .cond_planes
+            .with(Plane::Depth)
+            .with(Plane::Normal)
+            .with(Plane::DiffuseAlbedo);
+        c.demodulate = true;
+        c.guide_mix = true;
+        c.temporal = Some(crate::temporal::Config {
+            frames: 4,
+            rejection: crate::temporal::RejectionConfig::default(),
+            features: crate::temporal::Features::Variance,
+            unrejected_tap: false,
+            previous_output: true,
+        });
+        assert_eq!(c.gather_taps(), 25);
+        assert_eq!(c.guide_mix_channels(), 4);
+        assert_eq!(c.target_channels(), 25 * 4 + 4 + 4);
+        assert!(c.validate().is_ok());
     }
 
     #[test]
@@ -1528,6 +1789,26 @@ mod tests {
         assert_eq!(model.graph.outputs(), &[loss]);
         // A loss is a scalar.
         assert_eq!(model.graph.node(loss).ty.num_elements(), 1);
+    }
+
+    #[test]
+    fn low_frequency_loss_is_training_only_and_parameter_free() {
+        let mut baseline = small();
+        baseline.objective = Objective::Direct;
+        let baseline_params = build(&baseline, true).unwrap().params.len();
+
+        baseline.low_frequency_loss_weight = 4.0;
+        let trained = build(&baseline, true).unwrap();
+        assert_eq!(trained.params.len(), baseline_params);
+        assert_eq!(
+            trained.graph.node(trained.loss.unwrap()).ty.num_elements(),
+            1
+        );
+        assert!(build(&baseline, false).unwrap().loss.is_none());
+
+        baseline.prediction = Prediction::SubpixelKernel;
+        baseline.reconstruction_base = ReconstructionBase::Sample;
+        assert!(baseline.validate().unwrap_err().contains("low-frequency"));
     }
 
     #[test]

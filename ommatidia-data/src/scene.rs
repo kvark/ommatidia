@@ -600,7 +600,16 @@ pub fn split_moving_geometry(geometries: Vec<Surface>, seed: u64) -> (Vec<Surfac
 /// the origin.
 pub fn camera(config: &SceneConfig, rng: &mut Rng) -> blade_render::Camera {
     let fov_y = 0.6 + 0.4 * rng.uniform();
-    let azimuth = std::f32::consts::TAU * rng.uniform();
+    // The canopy closes the +X side of the scene with a wall. A camera sampled
+    // behind that wall sees its unlit back face fill almost the whole frame,
+    // producing a technically valid but useless near-black training sample.
+    // Keep canopy cameras in the open -X hemisphere; the target still varies
+    // over a full half-circle and remains off-centre below.
+    let azimuth = if config.canopy {
+        std::f32::consts::FRAC_PI_2 + std::f32::consts::PI * rng.uniform()
+    } else {
+        std::f32::consts::TAU * rng.uniform()
+    };
     // Kept off the horizon and off straight-down: both degenerate framings.
     let elevation = 0.15 + 0.5 * rng.uniform();
     let distance = config.spread * (1.4 + 0.8 * rng.uniform());
@@ -766,6 +775,18 @@ fn matrix_to_quaternion(columns: [[f32; 3]; 3]) -> mint::Quaternion<f32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn canopy_cameras_stay_on_the_open_side() {
+        let config = SceneConfig {
+            canopy: true,
+            ..SceneConfig::default()
+        };
+        let mut rng = Rng::new(17);
+        for _ in 0..1_000 {
+            assert!(camera(&config, &mut rng).pos.x <= 1.0e-5);
+        }
+    }
 
     fn rotate(q: mint::Quaternion<f32>, v: [f32; 3]) -> [f32; 3] {
         let u = [q.v.x, q.v.y, q.v.z];

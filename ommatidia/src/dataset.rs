@@ -83,10 +83,16 @@ pub enum Plane {
     /// Unused by the static model; reserved so that adding temporal context
     /// does not invalidate datasets generated before it.
     Motion = 6,
+    /// Projection offset of the current input sample, in input-pixel units.
+    ///
+    /// This is constant across a frame. Temporal super-resolution needs it to
+    /// place a jittered low-resolution sample at the correct output subpixel;
+    /// motion alone only describes the offset *difference* between frames.
+    Jitter = 7,
 }
 
 /// Every plane, in the order they are stored in a record.
-pub const ALL_PLANES: [Plane; 7] = [
+pub const ALL_PLANES: [Plane; 8] = [
     Plane::Color,
     Plane::Depth,
     Plane::Normal,
@@ -94,6 +100,7 @@ pub const ALL_PLANES: [Plane; 7] = [
     Plane::SpecularF0,
     Plane::Roughness,
     Plane::Motion,
+    Plane::Jitter,
 ];
 
 impl Plane {
@@ -102,7 +109,7 @@ impl Plane {
         match self {
             Self::Color | Self::Normal | Self::DiffuseAlbedo | Self::SpecularF0 => 3,
             Self::Depth | Self::Roughness => 1,
-            Self::Motion => 2,
+            Self::Motion | Self::Jitter => 2,
         }
     }
 

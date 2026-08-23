@@ -73,7 +73,7 @@ struct PackParams {
     compose_blade_radiance: u32,
     decode_blade_gbuffer: u32,
     reconstruction_base: u32,
-    _pad1: u32,
+    guide_mix: u32,
     guide_spatial_denominator: f32,
     guide_depth_denominator: f32,
     guide_normal_power: f32,
@@ -84,13 +84,16 @@ struct PackParams {
     rejection_depth_delta: f32,
     rejection_normal_cosine: f32,
     rejection_albedo_delta2: f32,
-    _pad2: [u32; 2],
+    demodulation_offset: f32,
+    _pad2: u32,
+    jitter: [f32; 2],
 }
 
 #[derive(blade_macros::ShaderData)]
 struct UnpackData {
     params: UnpackParams,
     base_pixels: gpu::BufferPiece,
+    guide_pixels: gpu::BufferPiece,
     residual: gpu::BufferPiece,
     t_depth: gpu::TextureView,
     t_normal: gpu::TextureView,
@@ -105,6 +108,7 @@ struct UnpackData {
 struct TemporalUnpackData {
     params: UnpackParams,
     base_pixels: gpu::BufferPiece,
+    guide_pixels: gpu::BufferPiece,
     residual: gpu::BufferPiece,
     t_depth: gpu::TextureView,
     t_normal: gpu::TextureView,
@@ -140,7 +144,7 @@ struct UnpackParams {
     guide_normal_power: f32,
     guide_albedo_denominator: f32,
     history_ready: u32,
-    _pad1: u32,
+    guide_mix: u32,
     motion_scale: f32,
     rejection_depth_delta: f32,
     rejection_normal_cosine: f32,
@@ -188,6 +192,7 @@ pub struct FrameInputs {
     has_high_resolution_gbuffer: bool,
     has_motion: bool,
     motion_scale: f32,
+    jitter: [f32; 2],
 }
 
 impl FrameInputs {
@@ -215,6 +220,7 @@ impl FrameInputs {
             has_high_resolution_gbuffer: false,
             has_motion: false,
             motion_scale: 1.0,
+            jitter: [0.0; 2],
         }
     }
 
@@ -249,6 +255,7 @@ impl FrameInputs {
             has_high_resolution_gbuffer: false,
             has_motion: false,
             motion_scale: 1.0,
+            jitter: [0.0; 2],
         }
     }
 
@@ -276,6 +283,20 @@ impl FrameInputs {
         self.motion = motion;
         self.has_motion = true;
         self.motion_scale = 1.0;
+        self
+    }
+
+    /// Add the current projection offset in input-pixel units.
+    ///
+    /// The renderer must apply the same offset to the sparse radiance and
+    /// G-buffer projections. It is only read by checkpoints trained with the
+    /// [`Plane::Jitter`] conditioning plane.
+    pub fn with_jitter(mut self, jitter: [f32; 2]) -> Self {
+        assert!(
+            jitter.into_iter().all(f32::is_finite),
+            "projection jitter must be finite"
+        );
+        self.jitter = jitter;
         self
     }
 
@@ -336,6 +357,7 @@ impl FrameInputs {
             has_high_resolution_gbuffer: false,
             has_motion: true,
             motion_scale: 1.0 / 0.02,
+            jitter: [0.0; 2],
         }
     }
 
@@ -365,6 +387,7 @@ impl FrameInputs {
             has_high_resolution_gbuffer: false,
             has_motion: true,
             motion_scale: 1.0 / 0.02,
+            jitter: [0.0; 2],
         }
     }
 }
@@ -389,6 +412,7 @@ impl std::fmt::Display for UpscalerError {
 impl std::error::Error for UpscalerError {}
 
 const LOW_HISTORY_PLANES: u64 = 13;
+const GUIDE_HISTORY_PLANES: u64 = 16;
 
 struct HistoryTexture {
     texture: gpu::Texture,
@@ -433,6 +457,7 @@ impl HistoryTexture {
 
 struct TemporalRuntime {
     low_history: [gpu::Buffer; 2],
+    low_history_planes: u64,
     output: [HistoryTexture; 2],
     surface0: [HistoryTexture; 2],
     surface1: [HistoryTexture; 2],
@@ -444,10 +469,15 @@ struct TemporalRuntime {
 }
 
 impl TemporalRuntime {
-    fn new(context: &gpu::Context, input_extent: [u32; 2], scale: u32) -> Self {
+    fn new(context: &gpu::Context, input_extent: [u32; 2], scale: u32, guide_mix: bool) -> Self {
+        let low_history_planes = if guide_mix {
+            GUIDE_HISTORY_PLANES
+        } else {
+            LOW_HISTORY_PLANES
+        };
         let low_bytes = input_extent[0] as u64
             * input_extent[1] as u64
-            * LOW_HISTORY_PLANES
+            * low_history_planes
             * size_of::<f32>() as u64;
         let low_history = std::array::from_fn(|index| {
             context.create_buffer(gpu::BufferDesc {
@@ -503,6 +533,7 @@ impl TemporalRuntime {
         });
         Self {
             low_history,
+            low_history_planes,
             output,
             surface0,
             surface1,
@@ -565,6 +596,7 @@ pub struct Upscaler {
     schedule: crate::diffusion::Schedule,
     sampler_steps: usize,
     pack_pipeline: gpu::ComputePipeline,
+    guide_pipeline: Option<gpu::ComputePipeline>,
     unpack_pipeline: gpu::ComputePipeline,
     /// Host-side scratch for the diffusion sampler's state. Empty for direct
     /// checkpoints, whose output stays on the GPU.
@@ -622,15 +654,22 @@ impl Upscaler {
                 "this experimental checkpoint needs the history-enabled pack/unpack path".into(),
             ));
         }
+        if config.prediction == model::Prediction::SubpixelResidual && config.demodulate {
+            return Err(UpscalerError::Config(
+                "demodulated residual checkpoints are experimental and not in native unpack yet"
+                    .into(),
+            ));
+        }
         if let Some(temporal) = config.temporal
             && (config.objective != Objective::Direct
                 || config.prediction != model::Prediction::SubpixelKernel
                 || !temporal.previous_output
-                || temporal.unrejected_tap)
+                || temporal.unrejected_tap
+                || temporal.features.has_phase())
         {
             return Err(UpscalerError::Config(
                 "native temporal inference supports direct kernel checkpoints with the \
-                 previous-output mix and no unrejected gather tap"
+                 previous-output mix, variance-or-basic features, and no unrejected gather tap"
                     .into(),
             ));
         }
@@ -682,6 +721,13 @@ impl Upscaler {
                 "pack"
             }),
         });
+        let guide_pipeline = config.guide_mix.then(|| {
+            context.create_compute_pipeline(gpu::ComputePipelineDesc {
+                name: "ommatidia-guide",
+                data_layouts: &[&pack_layout],
+                compute: pack_shader.at("filter_temporal_guide"),
+            })
+        });
         let unpack_pipeline = context.create_compute_pipeline(gpu::ComputePipelineDesc {
             name: "ommatidia-unpack",
             data_layouts: &[&unpack_layout],
@@ -703,11 +749,12 @@ impl Upscaler {
         });
         let base_buffer = context.create_buffer(gpu::BufferDesc {
             name: "ommatidia-reconstruction-base",
-            size: (input_extent[0] * input_extent[1] * 3) as u64 * 4,
+            size: (input_extent[0] * input_extent[1] * if config.guide_mix { 6 } else { 3 }) as u64
+                * 4,
             memory: gpu::Memory::Device,
         });
-        let temporal =
-            temporal_checkpoint.then(|| TemporalRuntime::new(&context, input_extent, config.scale));
+        let temporal = temporal_checkpoint
+            .then(|| TemporalRuntime::new(&context, input_extent, config.scale, config.guide_mix));
 
         let host_scratch_len = if config.objective == Objective::Diffusion {
             per_slot
@@ -722,6 +769,7 @@ impl Upscaler {
             config,
             input_extent,
             pack_pipeline,
+            guide_pipeline,
             unpack_pipeline,
             x: vec![0.0; host_scratch_len],
             next: vec![0.0; host_scratch_len],
@@ -795,7 +843,7 @@ impl Upscaler {
             compose_blade_radiance: inputs.compose_blade_radiance as u32,
             decode_blade_gbuffer: inputs.decode_blade_gbuffer as u32,
             reconstruction_base: self.config.reconstruction_base as u32,
-            _pad1: 0,
+            guide_mix: self.config.guide_mix as u32,
             guide_spatial_denominator: self.config.guide.spatial_denominator(),
             guide_depth_denominator: self.config.guide.depth_denominator(),
             guide_normal_power: self.config.guide.normal_power,
@@ -806,33 +854,44 @@ impl Upscaler {
             rejection_depth_delta: rejection.depth_delta,
             rejection_normal_cosine: rejection.normal_cosine,
             rejection_albedo_delta2: rejection.albedo_delta2,
-            _pad2: [0; 2],
+            demodulation_offset: self.config.demodulation_offset,
+            _pad2: 0,
+            jitter: inputs.jitter,
         };
 
-        let mut pass = encoder.compute("ommatidia-pack");
-        let mut commands = pass.with(&self.pack_pipeline);
         if let Some(temporal) = &self.temporal {
             let current = temporal.current();
-            commands.bind(
-                0,
-                &TemporalPackData {
-                    params,
-                    t_color: inputs.color,
-                    t_diffuse_radiance: inputs.diffuse_radiance,
-                    t_specular_radiance: inputs.specular_radiance,
-                    t_emissive: inputs.emissive,
-                    t_depth: inputs.depth,
-                    t_normal: inputs.normal,
-                    t_albedo: inputs.albedo,
-                    t_specular: inputs.specular,
-                    t_motion: inputs.motion,
-                    previous_low_history: temporal.low_history[temporal.previous].into(),
-                    current_low_history: temporal.low_history[current].into(),
-                    cond,
-                    base: self.base_buffer.into(),
-                },
-            );
+            let data = || TemporalPackData {
+                params,
+                t_color: inputs.color,
+                t_diffuse_radiance: inputs.diffuse_radiance,
+                t_specular_radiance: inputs.specular_radiance,
+                t_emissive: inputs.emissive,
+                t_depth: inputs.depth,
+                t_normal: inputs.normal,
+                t_albedo: inputs.albedo,
+                t_specular: inputs.specular,
+                t_motion: inputs.motion,
+                previous_low_history: temporal.low_history[temporal.previous].into(),
+                current_low_history: temporal.low_history[current].into(),
+                cond,
+                base: self.base_buffer.into(),
+            };
+            {
+                let mut pass = encoder.compute("ommatidia-pack");
+                let mut commands = pass.with(&self.pack_pipeline);
+                commands.bind(0, &data());
+                commands.dispatch([width.div_ceil(8), height.div_ceil(8), 1]);
+            }
+            if let Some(pipeline) = &self.guide_pipeline {
+                let mut pass = encoder.compute("ommatidia-guide");
+                let mut commands = pass.with(pipeline);
+                commands.bind(0, &data());
+                commands.dispatch([width.div_ceil(8), height.div_ceil(8), 1]);
+            }
         } else {
+            let mut pass = encoder.compute("ommatidia-pack");
+            let mut commands = pass.with(&self.pack_pipeline);
             commands.bind(
                 0,
                 &PackData {
@@ -849,8 +908,8 @@ impl Upscaler {
                     base: self.base_buffer.into(),
                 },
             );
+            commands.dispatch([width.div_ceil(8), height.div_ceil(8), 1]);
         }
-        commands.dispatch([width.div_ceil(8), height.div_ceil(8), 1]);
     }
 
     /// Run the network, leaving the predicted residual in its output buffer.
@@ -948,7 +1007,7 @@ impl Upscaler {
             guide_normal_power: self.config.guide.normal_power,
             guide_albedo_denominator: self.config.guide.albedo_denominator(),
             history_ready: history_ready as u32,
-            _pad1: 0,
+            guide_mix: self.config.guide_mix as u32,
             motion_scale: inputs.motion_scale,
             rejection_depth_delta: rejection.depth_delta,
             rejection_normal_cosine: rejection.normal_cosine,
@@ -964,6 +1023,7 @@ impl Upscaler {
                 &TemporalUnpackData {
                     params,
                     base_pixels: self.base_buffer.into(),
+                    guide_pixels: self.base_buffer.into(),
                     residual,
                     t_depth: inputs.depth,
                     t_normal: inputs.normal,
@@ -990,6 +1050,7 @@ impl Upscaler {
             &UnpackData {
                 params,
                 base_pixels: self.base_buffer.into(),
+                guide_pixels: self.base_buffer.into(),
                 residual,
                 t_depth: inputs.depth,
                 t_normal: inputs.normal,
@@ -1073,9 +1134,11 @@ impl Upscaler {
         }
         let input_texels = self.input_extent[0] as u64 * self.input_extent[1] as u64;
         let output_texels = input_texels * self.config.scale as u64 * self.config.scale as u64;
-        // Two 13-plane f32 accumulation buffers. At output resolution each
-        // ping-pong set has two RGBA16F textures and one RGBA8 texture.
-        2 * input_texels * LOW_HISTORY_PLANES * size_of::<f32>() as u64
+        // Two f32 accumulation buffers, extended by three guide planes only
+        // for guide-mixing checkpoints. At output resolution each ping-pong
+        // set has two RGBA16F textures and one RGBA8 texture.
+        let low_history_planes = self.temporal.as_ref().unwrap().low_history_planes;
+        2 * input_texels * low_history_planes * size_of::<f32>() as u64
             + 2 * output_texels * (8 + 8 + 4)
     }
 
@@ -1116,6 +1179,9 @@ impl Upscaler {
         self.context.destroy_buffer(self.base_buffer);
         self.context
             .destroy_compute_pipeline(&mut self.pack_pipeline);
+        if let Some(mut pipeline) = self.guide_pipeline.take() {
+            self.context.destroy_compute_pipeline(&mut pipeline);
+        }
         self.context
             .destroy_compute_pipeline(&mut self.unpack_pipeline);
     }
@@ -1139,6 +1205,8 @@ mod tests {
         assert_eq!(PlaneSet::new().with(Plane::DiffuseAlbedo).bits(), 8);
         assert_eq!(PlaneSet::new().with(Plane::SpecularF0).bits(), 16);
         assert_eq!(PlaneSet::new().with(Plane::Roughness).bits(), 32);
+        assert_eq!(PlaneSet::new().with(Plane::Motion).bits(), 64);
+        assert_eq!(PlaneSet::new().with(Plane::Jitter).bits(), 128);
     }
 
     #[test]
