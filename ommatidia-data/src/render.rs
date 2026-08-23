@@ -300,6 +300,8 @@ pub struct Frame {
     /// Laid out as [`crate::gbuffer::PLANES`] describes, ready to sit after the
     /// colour planes in a dataset record.
     pub gbuffer: Option<Vec<f32>>,
+    /// Planar diffuse illumination, specular radiance, and direct emission.
+    pub radiance: Option<Vec<f32>>,
 }
 
 /// Render one frame of one scene and read back the linear radiance.
@@ -318,9 +320,18 @@ pub fn capture(
     pass: Pass,
     svgf_input: bool,
     probe: Option<&crate::gbuffer::Probe>,
+    radiance_probe: Option<&crate::radiance::Probe>,
 ) -> Frame {
     let debug_config = blade_render::DebugConfig::default();
     let mut temp = blade_render::FrameResources::default();
+    let mut ray_config = pass.ray_config();
+    // Lobe targets are demodulated by the separately captured primary
+    // albedo. Stochastic primary coverage would mix several materials into
+    // one pixel and make that factorisation undefined, so split captures use
+    // the same centre ray as their G-buffer at both resolutions.
+    if radiance_probe.is_some() {
+        ray_config.jitter_primary_rays = false;
+    }
 
     encoder.start();
     asset_hub.flush(encoder, &mut temp.buffers);
@@ -342,7 +353,7 @@ pub fn capture(
             encoder,
             pass.mode(),
             debug_config,
-            pass.ray_config(),
+            ray_config,
             (pass == Pass::RealTime && svgf_input).then_some(blade_render::DenoiserConfig {
                 num_passes: 3,
                 temporal_weight: 0.1,
@@ -373,6 +384,10 @@ pub fn capture(
     // the frame the loop above just finished.
     if let Some(probe) = probe {
         probe.record(encoder, &renderer.view_gbuffer());
+    }
+    if let Some(probe) = radiance_probe {
+        assert_ne!(pass, Pass::RealTime, "ReSTIR uses a different lobe source");
+        probe.record(encoder, &renderer.view_accumulated_radiance());
     }
 
     encoder.init_texture(target.texture());
@@ -407,6 +422,7 @@ pub fn capture(
     // readable below.
     let color = target.read_linear(context, encoder);
     let gbuffer = probe.map(|probe| probe.read());
+    let radiance = radiance_probe.map(|probe| probe.read());
 
     for buffer in temp.buffers {
         context.destroy_buffer(buffer);
@@ -414,7 +430,11 @@ pub fn capture(
     for structure in temp.acceleration_structures {
         context.destroy_acceleration_structure(structure);
     }
-    Frame { color, gbuffer }
+    Frame {
+        color,
+        gbuffer,
+        radiance,
+    }
 }
 
 #[cfg(test)]

@@ -9,6 +9,7 @@
 //! the canonical path tracer at high resolution.
 
 mod gbuffer;
+mod radiance;
 mod render;
 mod scene;
 mod texture;
@@ -34,6 +35,7 @@ struct Args {
     random_camera_motion: f32,
     object_motion: f32,
     projection_jitter: bool,
+    split_radiance: bool,
     canopy: bool,
     ground_patches: usize,
     textures: bool,
@@ -66,6 +68,7 @@ impl Default for Args {
             random_camera_motion: 0.0,
             object_motion: 0.0,
             projection_jitter: false,
+            split_radiance: false,
             canopy: false,
             ground_patches: 0,
             textures: false,
@@ -120,6 +123,8 @@ usage: ommatidia-data [options]
   --projection-jitter       shift each low-resolution projection by a
                             deterministic subpixel offset. The high-resolution
                             reference remains stable
+  --split-radiance          store diffuse illumination, specular radiance, and
+                            direct emission as separate input/reference planes
   --seed N                  base seed for scenes and cameras  [0]
   --device-id ID            adapter ID for this standalone process (hex or decimal)
   --shader-dir PATH         blade-render shader directory [../blade/blade-render/code]
@@ -198,6 +203,7 @@ fn parse_args() -> Result<Args, String> {
                     .map_err(|e| format!("--object-motion: {e}"))?
             }
             "--projection-jitter" => args.projection_jitter = true,
+            "--split-radiance" => args.split_radiance = true,
             "--canopy" => args.canopy = true,
             "--textures" => args.textures = true,
             "--gloss" => args.gloss = true,
@@ -260,6 +266,12 @@ fn parse_args() -> Result<Args, String> {
     }
     if args.svgf_input && args.restir_input {
         return Err("--svgf-input and --restir-input are mutually exclusive".into());
+    }
+    if args.split_radiance && (args.svgf_input || args.restir_input) {
+        return Err("--split-radiance currently requires unbiased path-traced input".into());
+    }
+    if args.split_radiance && (!args.gbuffer || !args.hr_gbuffer) {
+        return Err("--split-radiance requires the low and high-resolution G-buffers".into());
     }
     if args.reference_from.is_some() && !args.gbuffer {
         return Err("--reference-from needs the G-buffer to verify scene alignment".into());
@@ -545,6 +557,15 @@ fn from_planes(rgb: &[f16], texels: usize) -> Vec<f32> {
 /// transpose followed by a straight conversion.
 fn to_record(frame: &render::Frame, texels: usize) -> Vec<f16> {
     let mut out = to_planes(&frame.color, texels);
+    if let Some(ref planes) = frame.radiance {
+        assert_eq!(planes.len(), radiance::plane_set().channels() * texels);
+        out.reserve(planes.len());
+        out.extend(
+            planes
+                .iter()
+                .map(|&value| f16::from_f32(value.clamp(0.0, dataset::F16_MAX))),
+        );
+    }
     if let Some(ref planes) = frame.gbuffer {
         assert!(
             [gbuffer::channels(false), gbuffer::channels(true)]
@@ -569,6 +590,40 @@ fn append_jitter(record: &mut Vec<f16>, texels: usize, jitter: [f32; 2]) {
     for component in jitter {
         record.extend(std::iter::repeat_n(f16::from_f32(component), texels));
     }
+}
+
+fn report_lobe_reconstruction(label: &str, frame: &render::Frame, texels: usize) {
+    let lobes = frame.radiance.as_ref().expect("split capture has no lobes");
+    let gbuffer = frame
+        .gbuffer
+        .as_ref()
+        .expect("split capture needs an albedo");
+    let albedo_base = gbuffer::plane_set(false)
+        .channel_offset(Plane::DiffuseAlbedo)
+        .unwrap();
+    let mut squared = 0.0f64;
+    let mut relative = 0.0f64;
+    let mut count = 0usize;
+    for component in 0..3 {
+        let diffuse = &lobes[component * texels..(component + 1) * texels];
+        let specular = &lobes[(3 + component) * texels..(4 + component) * texels];
+        let emissive = &lobes[(6 + component) * texels..(7 + component) * texels];
+        let albedo =
+            &gbuffer[(albedo_base + component) * texels..(albedo_base + component + 1) * texels];
+        for index in 0..texels {
+            let reconstructed = albedo[index] * diffuse[index] + specular[index] + emissive[index];
+            let reference = frame.color[index * 3 + component];
+            let error = reconstructed - reference;
+            squared += f64::from(error * error);
+            relative += f64::from(error.abs() / (reference.abs() + 0.01));
+            count += 1;
+        }
+    }
+    println!(
+        "{label} lobe reconstruction: RMSE {:.6}, mean relative {:.4}%",
+        (squared / count as f64).sqrt(),
+        100.0 * relative / count as f64,
+    );
 }
 
 /// Report the range of every stored plane in the first record.
@@ -659,6 +714,23 @@ fn main() {
     if args.projection_jitter {
         lr_planes = lr_planes.with(Plane::Jitter);
     }
+    if args.split_radiance {
+        lr_planes = lr_planes
+            .with(Plane::DiffuseIllumination)
+            .with(Plane::SpecularRadiance)
+            .with(Plane::EmissiveRadiance);
+    }
+    let mut hr_planes = if args.hr_gbuffer {
+        gbuffer::plane_set(false).with(Plane::Color)
+    } else {
+        PlaneSet::new().with(Plane::Color)
+    };
+    if args.split_radiance {
+        hr_planes = hr_planes
+            .with(Plane::DiffuseIllumination)
+            .with(Plane::SpecularRadiance)
+            .with(Plane::EmissiveRadiance);
+    }
     let layout = Layout {
         scale: args.scale,
         lr_width: args.lr_width,
@@ -671,11 +743,7 @@ fn main() {
             InputSource::PathTrace
         },
         lr_planes,
-        hr_planes: if args.hr_gbuffer {
-            gbuffer::plane_set(false).with(Plane::Color)
-        } else {
-            PlaneSet::new().with(Plane::Color)
-        },
+        hr_planes,
     };
 
     if let Some(parent) = args.out.parent() {
@@ -777,6 +845,11 @@ fn main() {
     let hr_probe = args
         .hr_gbuffer
         .then(|| gbuffer::Probe::new(&context, hr_size, false));
+    let lr_radiance_probe = args
+        .split_radiance
+        .then(|| radiance::Probe::new(&context, lr_size));
+    let hr_radiance_probe =
+        (args.split_radiance && need_hr_render).then(|| radiance::Probe::new(&context, hr_size));
     let sync_point = context.submit(&mut encoder);
     assert!(
         context.wait_for(&sync_point, 30_000).unwrap(),
@@ -892,6 +965,7 @@ fn main() {
             input_pass,
             args.svgf_input,
             lr_probe.as_ref(),
+            lr_radiance_probe.as_ref(),
         );
         let (hr, reference_lr) = if let Some(reader) = &mut reference_reader {
             let source_layout = *reader.layout();
@@ -916,15 +990,24 @@ fn main() {
                     render::Pass::PathTrace { frames: 1 },
                     false,
                     hr_probe.as_ref(),
+                    hr_radiance_probe.as_ref(),
                 )
                 .gbuffer
             } else if reference_has_hr_gbuffer {
-                Some(
-                    sample.hr[color_len..]
-                        .iter()
-                        .map(|value| value.to_f32())
-                        .collect(),
-                )
+                let mut out =
+                    Vec::with_capacity(gbuffer::channels(false) * source_layout.hr_texels());
+                for plane in gbuffer::PLANES {
+                    for component in 0..plane.channels() {
+                        out.extend(
+                            sample
+                                .hr_channel(&source_layout, plane, component)
+                                .expect("reference is missing an HR G-buffer plane")
+                                .iter()
+                                .map(|value| value.to_f32()),
+                        );
+                    }
+                }
+                Some(out)
             } else {
                 None
             };
@@ -932,6 +1015,21 @@ fn main() {
                 render::Frame {
                     color: from_planes(&sample.hr[..color_len], source_layout.hr_texels()),
                     gbuffer,
+                    radiance: args.split_radiance.then(|| {
+                        let mut out = Vec::with_capacity(9 * source_layout.hr_texels());
+                        for plane in radiance::PLANES {
+                            for component in 0..plane.channels() {
+                                out.extend(
+                                    sample
+                                        .hr_channel(&source_layout, plane, component)
+                                        .expect("split reference is missing a radiance plane")
+                                        .iter()
+                                        .map(|value| value.to_f32()),
+                                );
+                            }
+                        }
+                        out
+                    }),
                 },
                 Some(sample.lr),
             )
@@ -951,10 +1049,16 @@ fn main() {
                     },
                     false,
                     hr_probe.as_ref(),
+                    hr_radiance_probe.as_ref(),
                 ),
                 None,
             )
         };
+
+        if args.split_radiance && index == 0 {
+            report_lobe_reconstruction("input", &lr, layout.lr_texels());
+            report_lobe_reconstruction("reference", &hr, layout.hr_texels());
+        }
 
         let predicted = match (&mut upscaler, &neural_target) {
             (Some(upscaler), Some(target)) => {
@@ -1066,6 +1170,12 @@ fn main() {
         probe.destroy(&context);
     }
     if let Some(probe) = hr_probe {
+        probe.destroy(&context);
+    }
+    if let Some(probe) = lr_radiance_probe {
+        probe.destroy(&context);
+    }
+    if let Some(probe) = hr_radiance_probe {
         probe.destroy(&context);
     }
     if let Some(mut upscaler) = upscaler {
