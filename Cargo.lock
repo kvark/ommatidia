@@ -1865,7 +1865,7 @@ dependencies = [
 [[package]]
 name = "naga"
 version = "29.0.0"
-source = "git+https://github.com/gfx-rs/wgpu?rev=78b4dfd0cb1ef5ed208fefe80ae2f855db3609bb#78b4dfd0cb1ef5ed208fefe80ae2f855db3609bb"
+source = "git+https://github.com/gfx-rs/wgpu?rev=cefd48f6cff61d64abe1cdb4002c4e39bfc2c728#cefd48f6cff61d64abe1cdb4002c4e39bfc2c728"
 dependencies = [
  "arrayvec",
  "bit-set",

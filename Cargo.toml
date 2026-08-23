@@ -26,7 +26,7 @@ choir = "0.7"
 png = "0.18"
 serde = { version = "1", features = ["derive"] }
 ron = "0.8"
-naga = { version = "29.0.0", git = "https://github.com/gfx-rs/wgpu", rev = "78b4dfd0cb1ef5ed208fefe80ae2f855db3609bb", features = ["wgsl-in"] }
+naga = { version = "29.0.0", git = "https://github.com/gfx-rs/wgpu", rev = "cefd48f6cff61d64abe1cdb4002c4e39bfc2c728", features = ["wgsl-in"] }
 
 # meganeura pins blade-graphics to a git revision; blade-render uses the
 # path dependency from its own workspace. Both have to resolve to the same

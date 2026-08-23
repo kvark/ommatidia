@@ -1487,4 +1487,25 @@ fn check_kernel_parity(config: &ModelConfig, label: &str) {
             }
         }
     }
+
+    upscaler.destroy();
+    drop(upscaler);
+    context.destroy_buffer(readback);
+    context.destroy_texture_view(output_view);
+    context.destroy_texture(output);
+    for (texture, view, staging) in [
+        (_texture, view, _staging),
+        (_dt, depth_view, _ds),
+        (_nt, normal_view, _ns),
+        (_at, albedo_view, _as),
+        (_st, specular_view, _ss),
+        (_hdt, hr_depth_view, _hds),
+        (_hnt, hr_normal_view, _hns),
+        (_hat, hr_albedo_view, _has),
+    ] {
+        context.destroy_buffer(staging);
+        context.destroy_texture_view(view);
+        context.destroy_texture(texture);
+    }
+    context.destroy_command_encoder(&mut encoder);
 }
