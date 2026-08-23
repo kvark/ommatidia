@@ -158,25 +158,38 @@ check rather than a replacement for the linear-HDR validation above.
 
 A newer image-quality arm isolates reconstruction from physical motion: sixteen
 independent 1-spp frames visit the exact 2x projection grid, leaving four path
-samples at each output subpixel, and are scored against a 16,384-spp reference.
-Over all fifteen non-reset full frames of the first held-out sequence, the
-accumulated HR guide reaches 26.84 dB / 0.8186 SSIM and retains 62% of reference
-detail. The demodulated residual reaches 28.58 dB / 0.8863 SSIM, retains 79%,
-and improves 16x16-block low-frequency PSNR from 33.03 to 36.61 dB. A
-block-average training term and a relative dark-region safety bound remove the
-visible ceiling/wall clouds without adding inference parameters or a Meganeura
-operation. The remaining glossy-highlight softness is real; total radiance is
-still filtered as one lobe, so split diffuse/specular training data is the next
-quality step. This static experiment does not replace the moving-sequence
-validation above.
+samples at each output subpixel. Its held-out targets are now separate
+16,384-spp captures; reference grain is no longer being mistaken for model
+quality.
 
-| accumulated HR guide, 16 frames | phase-history Ommatidium | 16,384-spp reference |
-|---|---|---|
-| ![Accumulated high-resolution guide on the held-out glossy scene](docs/temporal-low-frequency/hr-guided.png) | ![Phase-history Ommatidium output with low-frequency clouds suppressed](docs/temporal-low-frequency/predicted.png) | ![Converged high-sample reference showing the remaining glossy-highlight gap](docs/temporal-low-frequency/reference.png) |
+Across 60 non-reset full frames from four held-out sequences, the accumulated
+HR guide reaches 28.11 dB / 0.8467 SSIM. Capturing first-response diffuse,
+specular, and emissive radiance separately, filtering demodulated diffuse and
+rough specular with five geometry-aware à-trous scales, then restoring exact
+output-resolution albedo raises that to 29.87 dB / 0.9165. The compact learned
+residual reaches 30.01 dB / 0.9161, retains 74% of reference detail, and raises
+16x16-block low-frequency PSNR from the HR guide's 32.60 to 34.48 dB. On the
+mature fifteenth frame it reaches 30.71 dB / 0.9255 and 35.89 dB low-frequency
+PSNR.
+
+This is real progress, but not the goal: broad wall illumination variation is
+still visible, and the final RGB residual is worth only 0.14 dB over the fixed
+split-lobe estimator. A 1.23M-parameter U-Net with global bottleneck attention
+was worse (+0.03 dB at equal training), so that code was removed. The next
+quality experiment is learned per-lobe filter selection, not a larger final
+colour residual. This static projection-grid experiment also does not replace
+the moving-sequence validation above.
+
+| accumulated HR guide, 16 frames | split-lobe à-trous estimate | Ommatidium residual | 16,384-spp reference |
+|---|---|---|---|
+| ![Accumulated high-resolution guide on the held-out glossy scene](docs/temporal-low-frequency/hr-guided.png) | ![Roughness-aware split-radiance multiscale reconstruction](docs/temporal-low-frequency/split-guided.png) | ![Phase-lobe Ommatidium output, with remaining broad wall variation visible](docs/temporal-low-frequency/predicted.png) | ![Independent 16,384-spp reference](docs/temporal-low-frequency/reference.png) |
 
 The full data recipe, radius gate, metrics, rejected initialization, and 4-spp
 control are in the
 [`1-spp temporal result`](docs/results/temporal-validity-1spp-2026-08-22.md).
+The split-radiance capture contract, clean-reference audit, multiscale filter,
+and architecture controls are recorded in the
+[`split-radiance result`](docs/results/split-radiance-atrous-2026-08-23.md).
 
 ### Why the ReSTIR control is darker
 
@@ -384,7 +397,7 @@ seed cannot silently pair unrelated input and ground truth.
 
 Each sample stores the colour alongside the renderer's own depth, normals,
 albedo, specular reflectance, and roughness. With `--hr-gbuffer`, it also stores
-output-resolution depth, normal, and albedo. That is the structural advantage a
+output-resolution depth, normal, albedo, specular reflectance, and roughness. That is the structural advantage a
 renderer has over photographic super-resolution—it can provide exact
 silhouettes rather than ask the upscaler to infer them. Input-resolution planes
 come from sparse shading; output-resolution planes may require a separate
