@@ -191,6 +191,20 @@ The split-radiance capture contract, clean-reference audit, multiscale filter,
 and architecture controls are recorded in the
 [`split-radiance result`](docs/results/split-radiance-atrous-2026-08-23.md).
 
+A 32-scene follow-up now measures the next target without growing the runtime:
+selecting one of the six already-computed filter scales independently for
+diffuse and specular, constant over 8x8 output blocks. The oracle improves the
+fixed estimator from 31.11 to 32.82 dB, SSIM from 0.9349 to 0.9441, and
+low-frequency PSNR from 35.33 to 38.68 dB while preserving luminance. Reusing
+the preceding frame's reference-derived choices retains most of the gain, so
+the decision is stable enough to try learning. It remains an oracle, not a
+product result; the next implementation step is a small per-lobe mixture head
+proven in the CPU evaluator before its GPU contract grows.
+
+| fixed split-lobe estimator | 8x8 per-lobe scale oracle | 16,384-spp reference |
+|---|---|---|
+| ![Fixed multiscale split-lobe estimate](docs/lobe-scale-oracle/fixed.png) | ![Per-lobe scale-selection quality ceiling](docs/lobe-scale-oracle/oracle-b8.png) | ![Independent clean reference for the scale-selection audit](docs/lobe-scale-oracle/reference.png) |
+
 ### Why the ReSTIR control is darker
 
 Blade's linear-HDR regression shows that no-reuse ReSTIR carries 99.1% and

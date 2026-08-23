@@ -85,6 +85,65 @@ agrees with the earlier compute-matched shifted-window experiment: attention is
 not automatically a better denoiser when the output parameterisation asks for
 an unpredictable final-colour residual.
 
+## Per-lobe scale oracle
+
+The next target was gated before adding another model head. For every frame,
+`lobe-scale-oracle` reconstructs the unfiltered diffuse and specular lobes plus
+the result after each of the five existing à-trous passes. It selects one scale
+per lobe and constant 8x8, 16x16, or 32x32 output block against independently
+rendered clean lobe planes, then restores output-resolution albedo and direct
+emission. The block constraint prevents selection from following individual
+Monte Carlo samples.
+
+This audit uses all 32 scenes, not the four-scene validation subset above: 480
+non-reset frames against 32 independently captured 16,384-spp references.
+
+| reconstruction | PSNR | SSIM | relMSE | detail | energy | LF PSNR |
+|---|---:|---:|---:|---:|---:|---:|
+| fixed split-lobe filter | 31.11 dB | 0.9349 | 0.08618 | 76.5% | 0.997 | 35.33 dB |
+| lobe oracle, 8x8 blocks | **32.82 dB** | **0.9441** | 0.07375 | **80.2%** | 0.996 | **38.68 dB** |
+| previous frame's 8x8 labels | 32.43 dB | 0.9429 | **0.04934** | **80.2%** | 0.997 | 37.79 dB |
+| lobe oracle, 16x16 blocks | 32.39 dB | 0.9434 | 0.08020 | 78.6% | 0.996 | 37.71 dB |
+| previous frame's 16x16 labels | 32.25 dB | 0.9433 | 0.05061 | 78.3% | 0.997 | 37.27 dB |
+
+The 8x8 oracle is +1.71 dB overall and +3.35 dB on low-frequency error while
+preserving energy and more reference detail. The selected scales are genuinely
+spatial: the 8x8 diffuse histogram ranges from 26.4% unfiltered to 31.5% fully
+filtered, and specular from 31.4% to 22.5%. Applying the preceding frame's
+reference-derived labels retains most of the gain. That is evidence that the
+target is temporally stable; it is not evidence of a deployable predictor,
+because those labels still require the reference.
+
+| fixed split-lobe filter | 8x8 lobe oracle | 16,384-spp reference |
+|---|---|---|
+| ![Fixed split-lobe reconstruction](../lobe-scale-oracle/fixed.png) | ![Block-constrained per-lobe scale oracle](../lobe-scale-oracle/oracle-b8.png) | ![Independent clean reference](../lobe-scale-oracle/reference.png) |
+
+The data and score can be reproduced without retained local state:
+
+```sh
+cargo run --release -p ommatidia-data -- \
+  --out data/lobe-scale-reference.omd --samples 32 --lr 128x128 --scale 2 \
+  --canonical-frames 4096 --canonical-bounces 8 --input-frames 1 \
+  --canopy --ground-patches 8 --textures --gloss --split-radiance \
+  --seed 62000 --hr-gbuffer
+
+cargo run --release -p ommatidia-data -- \
+  --out data/lobe-scale-input.omd --samples 32 --lr 128x128 --scale 2 \
+  --canonical-bounces 8 --input-frames 1 --sequence-frames 16 \
+  --canopy --ground-patches 8 --textures --gloss --projection-jitter \
+  --split-radiance --seed 62000 --hr-gbuffer \
+  --reference-from data/lobe-scale-reference.omd
+
+cargo run --release -p ommatidia-train --bin lobe-scale-oracle -- \
+  --data data/lobe-scale-input.omd \
+  --reference-data data/lobe-scale-reference.omd --blocks 8,16,32
+```
+
+`--canonical-frames 4096` accumulates four paths per frame, hence 16,384 paths
+per output pixel. The generator's optional `--device-id` is intentionally
+absent: adapter selection is only needed when running this standalone tool and
+is not part of Ommatidium's integration contract.
+
 ## Longer history control
 
 Running the unchanged 16-frame weights on an otherwise identical 64-frame
@@ -95,8 +154,9 @@ window is therefore useful policy, not the architectural fix.
 ## Decision
 
 Keep the renderer lobe contract and multiscale estimator. Do not keep the
-failed transformer branch. The next learned target should select filter scale
-or sample weights per lobe before composition, so the network makes a
-predictable denoising decision and can preserve sharp glossy/shadow structure.
-The current native runtime rejects split-lobe checkpoints until those planes
-and the multiscale reconstruction have a matching GPU pack/unpack path.
+failed transformer branch. The scale oracle clears the quality gate, so the
+next learned target should predict a low-resolution mixture over the existing
+filter scales per lobe before composition. It should be proven in the CPU
+evaluator before adding a GPU contract or Meganeura operation. The current
+native runtime rejects split-lobe checkpoints until those planes and the
+multiscale reconstruction have a matching GPU pack/unpack path.
