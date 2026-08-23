@@ -660,6 +660,12 @@ impl Upscaler {
                     .into(),
             ));
         }
+        if config.reconstruction_base == model::ReconstructionBase::SplitRadianceGuided {
+            return Err(UpscalerError::Config(
+                "split-radiance checkpoints are experimental and not in native pack/unpack yet"
+                    .into(),
+            ));
+        }
         if let Some(temporal) = config.temporal
             && (config.objective != Objective::Direct
                 || config.prediction != model::Prediction::SubpixelKernel

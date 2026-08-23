@@ -180,7 +180,11 @@ pub fn write_temporal_conditioning(
     }
     // A gather checkpoint has no base to describe, so it is not given one.
     let guided = (config.prediction != Prediction::SubpixelKernel).then(|| {
-        let guided = guided_color(&prepared.sample, layout, crop, config.guide);
+        let guided = if config.reconstruction_base == ReconstructionBase::SplitRadianceGuided {
+            split_guided_low_color(&prepared.sample, layout, crop, config.guide)
+        } else {
+            guided_color(&prepared.sample, layout, crop, config.guide)
+        };
         for component in 0..3 {
             let base = (stored_channels + 4 + component) * texels;
             for y in 0..tile {
@@ -235,6 +239,27 @@ pub fn write_temporal_conditioning(
                 for x in 0..tile {
                     destination[base + y * tile + x] =
                         prepared.phase_count[(source_row + x) * slots + phase];
+                }
+            }
+        }
+        if config.temporal.unwrap().features.has_phase_lobes() {
+            assert_eq!(
+                prepared.phase_radiance.len(),
+                layout.lr_texels() * slots * 9
+            );
+            let radiance_base = count_base + slots;
+            for component in 0..9 {
+                for phase in 0..slots {
+                    let base = (radiance_base + component * slots + phase) * texels;
+                    for y in 0..tile {
+                        let source_row = (crop.y as usize + y) * stride + crop.x as usize;
+                        for x in 0..tile {
+                            let source = (source_row + x) * slots + phase;
+                            destination[base + y * tile + x] = transform::compress(
+                                prepared.phase_radiance[source * 9 + component],
+                            );
+                        }
+                    }
                 }
             }
         }
@@ -689,6 +714,259 @@ pub fn high_resolution_guided_from_color(
     high_resolution_guided(sample, layout, crop, guide, Some(low_color), None, None)
 }
 
+fn high_resolution_denoised_from_color(
+    sample: &Sample,
+    layout: &Layout,
+    crop: Crop,
+    guide: GuideConfig,
+    low_color: &[f32],
+) -> Vec<f32> {
+    assert_eq!(low_color.len(), layout.lr_texels() * 3);
+    let filtered = denoised_low_color(sample, layout, guide, low_color);
+    high_resolution_guided(sample, layout, crop, guide, Some(&filtered), None, None)
+}
+
+fn denoised_low_color(
+    sample: &Sample,
+    layout: &Layout,
+    guide: GuideConfig,
+    low_color: &[f32],
+) -> Vec<f32> {
+    assert_eq!(low_color.len(), layout.lr_texels() * 3);
+    let width = layout.lr_width as usize;
+    let height = layout.lr_height as usize;
+    let mut filtered = low_color.to_vec();
+    // Five à-trous passes cover a 63x63 footprint with 45 taps per texel.
+    // Repeating the dense 13x13 guide reaches less far with an order of
+    // magnitude more work and produces the same broad overlapping kernels.
+    for pass in 0..5 {
+        let step = 1i32 << pass;
+        let mut next = vec![0.0; low_color.len()];
+        for y in 0..height {
+            for x in 0..width {
+                let center_depth =
+                    transform::encode_depth(plane_value(sample, layout, Plane::Depth, 0, x, y));
+                let center_normal = std::array::from_fn(|component| {
+                    plane_value(sample, layout, Plane::Normal, component, x, y)
+                });
+                let center_albedo = std::array::from_fn(|component| {
+                    plane_value(sample, layout, Plane::DiffuseAlbedo, component, x, y)
+                });
+                let mut sum = [0.0; 3];
+                let mut weight_sum = 0.0;
+                for (dy, wy) in [(-1, 1.0), (0, 2.0), (1, 1.0)] {
+                    let sy = (y as i32 + dy * step).clamp(0, height as i32 - 1) as usize;
+                    for (dx, wx) in [(-1, 1.0), (0, 2.0), (1, 1.0)] {
+                        let sx = (x as i32 + dx * step).clamp(0, width as i32 - 1) as usize;
+                        let depth = transform::encode_depth(plane_value(
+                            sample,
+                            layout,
+                            Plane::Depth,
+                            0,
+                            sx,
+                            sy,
+                        ));
+                        let normal = std::array::from_fn(|component| {
+                            plane_value(sample, layout, Plane::Normal, component, sx, sy)
+                        });
+                        let albedo = std::array::from_fn(|component| {
+                            plane_value(sample, layout, Plane::DiffuseAlbedo, component, sx, sy)
+                        });
+                        let weight = wx
+                            * wy
+                            * guide_similarity(
+                                guide,
+                                center_depth,
+                                center_normal,
+                                center_albedo,
+                                depth,
+                                normal,
+                                albedo,
+                            );
+                        let source = (sy * width + sx) * 3;
+                        for component in 0..3 {
+                            sum[component] += weight * filtered[source + component];
+                        }
+                        weight_sum += weight;
+                    }
+                }
+                let destination = (y * width + x) * 3;
+                for component in 0..3 {
+                    next[destination + component] = sum[component] / weight_sum.max(1.0e-12);
+                }
+            }
+        }
+        filtered = next;
+    }
+    filtered
+}
+
+fn interleaved_low_plane(sample: &Sample, layout: &Layout, plane: Plane) -> Vec<f32> {
+    assert_eq!(plane.channels(), 3);
+    let texels = layout.lr_texels();
+    let base = layout
+        .lr_planes
+        .channel_offset(plane)
+        .unwrap_or_else(|| panic!("dataset has no {plane:?} plane"));
+    let mut out = vec![0.0; texels * 3];
+    for component in 0..3 {
+        let source = &sample.lr[(base + component) * texels..(base + component + 1) * texels];
+        for (index, value) in source.iter().enumerate() {
+            out[index * 3 + component] = value.to_f32();
+        }
+    }
+    out
+}
+
+fn specular_filter_share(roughness: f32) -> f32 {
+    // Below 0.05 the lobe is mirror-like and filtering destroys reflections.
+    // By 0.5 it is broad enough that retaining a raw Monte Carlo sample only
+    // preserves variance. Smoothstep avoids a visible material threshold.
+    let t = ((roughness - 0.05) / 0.45).clamp(0.0, 1.0);
+    t * t * (3.0 - 2.0 * t)
+}
+
+/// The low-resolution signal underlying [`high_resolution_split_base`].
+///
+/// A residual model needs to see the reconstruction it is correcting. Feeding
+/// the historical combined-colour bilateral guide here hid the actual lobe
+/// filter from the network and made zero the safest learned correction.
+fn split_guided_low_color(
+    sample: &Sample,
+    layout: &Layout,
+    crop: Crop,
+    guide: GuideConfig,
+) -> Vec<f32> {
+    let diffuse_guide = GuideConfig {
+        albedo_sigma: 1.0e6,
+        ..guide
+    };
+    let diffuse = denoised_low_color(
+        sample,
+        layout,
+        diffuse_guide,
+        &interleaved_low_plane(sample, layout, Plane::DiffuseIllumination),
+    );
+    let specular = interleaved_low_plane(sample, layout, Plane::SpecularRadiance);
+    let specular_smooth = denoised_low_color(sample, layout, diffuse_guide, &specular);
+    let emissive = interleaved_low_plane(sample, layout, Plane::EmissiveRadiance);
+    let width = layout.lr_width as usize;
+    let tile = crop.tile as usize;
+    let mut out = vec![0.0; tile * tile * 3];
+    for y in 0..tile {
+        let sy = crop.y as usize + y;
+        for x in 0..tile {
+            let sx = crop.x as usize + x;
+            let source = (sy * width + sx) * 3;
+            let specular_share =
+                specular_filter_share(plane_value(sample, layout, Plane::Roughness, 0, sx, sy));
+            for component in 0..3 {
+                let albedo = plane_value(sample, layout, Plane::DiffuseAlbedo, component, sx, sy);
+                let filtered_specular = specular[source + component]
+                    + specular_share
+                        * (specular_smooth[source + component] - specular[source + component]);
+                out[(y * tile + x) * 3 + component] = albedo * diffuse[source + component]
+                    + filtered_specular
+                    + emissive[source + component];
+            }
+        }
+    }
+    out
+}
+
+/// Reconstruct the three primary-radiance components independently, then
+/// restore exact output-resolution diffuse albedo.
+///
+/// A combined-radiance filter cannot preserve a sharp glossy reflection while
+/// aggressively reducing diffuse Monte Carlo noise: those signals require
+/// different filters. This baseline establishes the value of the renderer's
+/// lobe split before a learned multi-head reconstruction is introduced.
+pub fn high_resolution_split_base(
+    sample: &Sample,
+    layout: &Layout,
+    crop: Crop,
+    guide: GuideConfig,
+) -> Vec<f32> {
+    for plane in [
+        Plane::DiffuseIllumination,
+        Plane::SpecularRadiance,
+        Plane::EmissiveRadiance,
+    ] {
+        assert!(layout.lr_planes.contains(plane), "input has no {plane:?}");
+    }
+    assert!(
+        layout.hr_planes.contains(Plane::DiffuseAlbedo),
+        "split reconstruction needs output-resolution albedo"
+    );
+    assert!(
+        layout.hr_planes.contains(Plane::Roughness),
+        "split reconstruction needs output-resolution roughness"
+    );
+
+    // Diffuse illumination is broad and high variance, so it benefits from
+    // the full low-resolution denoising pass before joint upsampling. It has
+    // already been divided by diffuse albedo, so an albedo edge is no longer
+    // a signal edge: rejecting differently coloured neighbours here turns
+    // texture into needlessly correlated low-frequency noise.
+    let diffuse_guide = GuideConfig {
+        albedo_sigma: 1.0e6,
+        ..guide
+    };
+    let diffuse = high_resolution_denoised_from_color(
+        sample,
+        layout,
+        crop,
+        diffuse_guide,
+        &interleaved_low_plane(sample, layout, Plane::DiffuseIllumination),
+    );
+    let specular_low = interleaved_low_plane(sample, layout, Plane::SpecularRadiance);
+    let specular_sharp =
+        high_resolution_guided_from_color(sample, layout, crop, diffuse_guide, &specular_low);
+    let specular_smooth =
+        high_resolution_denoised_from_color(sample, layout, crop, diffuse_guide, &specular_low);
+    // Direct emission is a primary-surface property, not an integral to blur.
+    // Joint upsampling locates its boundary while retaining its exact value.
+    let emissive = high_resolution_guided_from_color(
+        sample,
+        layout,
+        crop,
+        guide,
+        &interleaved_low_plane(sample, layout, Plane::EmissiveRadiance),
+    );
+    let width = (crop.tile * layout.scale) as usize;
+    let scale = layout.scale as usize;
+    let mut out = vec![0.0; width * width * 3];
+    for y in 0..width {
+        for x in 0..width {
+            let global_x = crop.x as usize * scale + x;
+            let global_y = crop.y as usize * scale + y;
+            for component in 0..3 {
+                let index = (y * width + x) * 3 + component;
+                let albedo = hr_plane_value(
+                    sample,
+                    layout,
+                    Plane::DiffuseAlbedo,
+                    component,
+                    global_x,
+                    global_y,
+                );
+                let specular_share = specular_filter_share(hr_plane_value(
+                    sample,
+                    layout,
+                    Plane::Roughness,
+                    0,
+                    global_x,
+                    global_y,
+                ));
+                let specular = specular_sharp[index]
+                    + specular_share * (specular_smooth[index] - specular_sharp[index]);
+                out[index] = albedo * diffuse[index] + specular + emissive[index];
+            }
+        }
+    }
+    out
+}
+
 fn high_resolution_guided(
     sample: &Sample,
     layout: &Layout,
@@ -904,6 +1182,12 @@ pub fn write_residual(
         } else {
             high_resolution_guided_base(sample, layout, crop, config.guide)
         }),
+        ReconstructionBase::SplitRadianceGuided => Some(high_resolution_split_base(
+            sample,
+            layout,
+            crop,
+            config.guide,
+        )),
         ReconstructionBase::Nearest | ReconstructionBase::Bilinear => None,
         ReconstructionBase::Sample => {
             panic!("a kernel checkpoint has no residual over a base; see write_kernel_target")
@@ -932,7 +1216,8 @@ pub fn write_residual(
                                 scale,
                             ),
                             ReconstructionBase::GuidedBilinear
-                            | ReconstructionBase::HighResolutionGuided => guided.as_ref().unwrap()
+                            | ReconstructionBase::HighResolutionGuided
+                            | ReconstructionBase::SplitRadianceGuided => guided.as_ref().unwrap()
                                 [((y * scale + dy) * tile * scale + x * scale + dx) * 3 + c],
                             ReconstructionBase::Sample => {
                                 unreachable!("a kernel checkpoint has no base to correct")
@@ -1882,7 +2167,8 @@ pub fn assemble(
                                 c,
                             ),
                             ReconstructionBase::GuidedBilinear
-                            | ReconstructionBase::HighResolutionGuided => guided
+                            | ReconstructionBase::HighResolutionGuided
+                            | ReconstructionBase::SplitRadianceGuided => guided
                                 .expect("guided reconstruction needs a prefiltered base")
                                 [((y * scale + dy) * out_width + x * scale + dx) * 3 + c],
                             ReconstructionBase::Sample => {
@@ -2252,6 +2538,41 @@ mod tests {
         write_residual(&s, &l, crop, 0, &config, &mut residual);
         let low = crop_color(&s, &l, crop);
         let rebuilt = assemble(&low, Some(&guided), &residual, [6, 6], &config);
+        let reference = crop_reference(&s, &l, crop);
+        for (actual, expected) in rebuilt.iter().zip(reference) {
+            assert!((actual - expected).abs() < 1e-3);
+        }
+    }
+
+    #[test]
+    fn split_guided_residual_round_trip_recovers_the_reference() {
+        let mut l = layout(2, 8, 8);
+        l.lr_planes = l
+            .lr_planes
+            .with(Plane::DiffuseIllumination)
+            .with(Plane::SpecularRadiance)
+            .with(Plane::EmissiveRadiance)
+            .with(Plane::Normal)
+            .with(Plane::DiffuseAlbedo)
+            .with(Plane::Roughness);
+        l.hr_planes = l
+            .hr_planes
+            .with(Plane::Depth)
+            .with(Plane::Normal)
+            .with(Plane::DiffuseAlbedo)
+            .with(Plane::Roughness);
+        let s = sample(&l, 10);
+        let crop = Crop {
+            x: 1,
+            y: 1,
+            tile: 6,
+        };
+        let config = reconstruction_config(2, ReconstructionBase::SplitRadianceGuided);
+        let base = high_resolution_split_base(&s, &l, crop, config.guide);
+        let mut residual = vec![0.0; 3 * 4 * 36];
+        write_residual(&s, &l, crop, 0, &config, &mut residual);
+        let low = crop_color(&s, &l, crop);
+        let rebuilt = assemble(&low, Some(&base), &residual, [6, 6], &config);
         let reference = crop_reference(&s, &l, crop);
         for (actual, expected) in rebuilt.iter().zip(reference) {
             assert!((actual - expected).abs() < 1e-3);

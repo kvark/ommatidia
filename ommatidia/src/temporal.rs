@@ -188,7 +188,8 @@ impl Config {
 
     /// Raw stratified sample history, space-to-depth colour plus sample count.
     pub fn phase_channels(self, scale: u32) -> u32 {
-        u32::from(self.features.has_phase()) * 4 * scale * scale
+        let values = 4 + 9 * u32::from(self.features.has_phase_lobes());
+        u32::from(self.features.has_phase()) * values * scale * scale
     }
 }
 
@@ -203,6 +204,9 @@ pub enum Features {
     /// subpixel positions. This preserves the information an LR accumulator
     /// necessarily collapses before a temporal upscaler can see it.
     Phase,
+    /// Phase history plus diffuse illumination, specular radiance, and direct
+    /// emission retained separately at every output subpixel.
+    PhaseLobes,
 }
 
 impl Features {
@@ -211,7 +215,11 @@ impl Features {
     }
 
     pub fn has_phase(self) -> bool {
-        self == Self::Phase
+        matches!(self, Self::Phase | Self::PhaseLobes)
+    }
+
+    pub fn has_phase_lobes(self) -> bool {
+        self == Self::PhaseLobes
     }
 }
 
@@ -231,17 +239,48 @@ pub struct PreparedSample {
     pub phase_color: Vec<f32>,
     /// Per input texel and output subpixel, normalized to the expected maximum.
     pub phase_count: Vec<f32>,
+    /// Per input texel, output subpixel, and nine split-radiance components.
+    /// Empty unless [`Features::PhaseLobes`] is selected.
+    pub phase_radiance: Vec<f32>,
 }
 
 #[derive(Clone)]
 struct History {
     color: Vec<f32>,
+    radiance: Vec<f32>,
     count: Vec<f32>,
     luminance: Vec<f32>,
     luminance_square: Vec<f32>,
     unrejected: Vec<f32>,
     phase_color: Vec<f32>,
     phase_count: Vec<f32>,
+    phase_radiance: Vec<f32>,
+}
+
+const RADIANCE_PLANES: [Plane; 3] = [
+    Plane::DiffuseIllumination,
+    Plane::SpecularRadiance,
+    Plane::EmissiveRadiance,
+];
+
+fn read_split_radiance(sample: &Sample, layout: &Layout) -> Option<Vec<f32>> {
+    if !RADIANCE_PLANES
+        .into_iter()
+        .all(|plane| layout.lr_planes.contains(plane))
+    {
+        return None;
+    }
+    let texels = layout.lr_texels();
+    let mut out = vec![0.0; texels * 9];
+    for (plane_index, plane) in RADIANCE_PLANES.into_iter().enumerate() {
+        for component in 0..3 {
+            for index in 0..texels {
+                out[index * 9 + plane_index * 3 + component] =
+                    self::plane(sample, layout, plane, component, index);
+            }
+        }
+    }
+    Some(out)
 }
 
 fn phase_slot(sample: &Sample, layout: &Layout) -> Option<usize> {
@@ -317,21 +356,31 @@ fn initial(sample: &Sample, layout: &Layout) -> History {
     let slots = (layout.scale * layout.scale) as usize;
     let mut phase_color = vec![0.0; texels * slots * 3];
     let mut phase_count = vec![0.0; texels * slots];
+    let split_radiance = read_split_radiance(sample, layout);
+    let mut phase_radiance = split_radiance
+        .as_ref()
+        .map_or_else(Vec::new, |_| vec![0.0; texels * slots * 9]);
     if let Some(slot) = phase_slot(sample, layout) {
         for index in 0..texels {
             phase_count[index * slots + slot] = 1.0;
             phase_color[(index * slots + slot) * 3..(index * slots + slot + 1) * 3]
                 .copy_from_slice(&color[index * 3..index * 3 + 3]);
+            if let Some(split) = &split_radiance {
+                phase_radiance[(index * slots + slot) * 9..(index * slots + slot + 1) * 9]
+                    .copy_from_slice(&split[index * 9..index * 9 + 9]);
+            }
         }
     }
     History {
         unrejected: color.clone(),
         color,
+        radiance: split_radiance.unwrap_or_default(),
         count: vec![1.0; texels],
         luminance_square: luminance.iter().map(|value| value * value).collect(),
         luminance,
         phase_color,
         phase_count,
+        phase_radiance,
     }
 }
 
@@ -399,6 +448,56 @@ fn reproject_history(
     })
 }
 
+fn reproject_radiance(
+    history: &History,
+    previous: &Sample,
+    layout: &Layout,
+    current: Surface,
+    position: [f32; 2],
+    config: Config,
+) -> Option<Vec<f32>> {
+    if history.radiance.is_empty() {
+        return None;
+    }
+    let width = layout.lr_width as usize;
+    let height = layout.lr_height as usize;
+    let [x, y] = position;
+    if x < 0.0 || y < 0.0 || x > (width - 1) as f32 || y > (height - 1) as f32 {
+        return None;
+    }
+    let x0 = x.floor();
+    let y0 = y.floor();
+    let tx = x - x0;
+    let ty = y - y0;
+    let mut sum = vec![0.0; 9];
+    let mut weighted_count = 0.0;
+    for (dx, wx) in [(0.0, 1.0 - tx), (1.0, tx)] {
+        for (dy, wy) in [(0.0, 1.0 - ty), (1.0, ty)] {
+            let bilinear_weight = wx * wy;
+            if bilinear_weight == 0.0 {
+                continue;
+            }
+            let sx = (x0 + dx).clamp(0.0, (width - 1) as f32) as usize;
+            let sy = (y0 + dy).clamp(0.0, (height - 1) as f32) as usize;
+            let index = sy * width + sx;
+            if !current.matches(surface_at(previous, layout, index), config.rejection) {
+                continue;
+            }
+            let weight = bilinear_weight * history.count[index];
+            for (channel, value) in sum.iter_mut().enumerate() {
+                *value += weight * history.radiance[index * 9 + channel];
+            }
+            weighted_count += weight;
+        }
+    }
+    (weighted_count > 0.0).then(|| {
+        for value in &mut sum {
+            *value /= weighted_count;
+        }
+        sum
+    })
+}
+
 fn accumulate(
     current: &Sample,
     previous: &Sample,
@@ -414,14 +513,17 @@ fn accumulate(
         .chunks_exact(3)
         .map(|rgb| [rgb[0], rgb[1], rgb[2]])
         .collect();
+    let current_radiance = read_split_radiance(current, layout);
     let mut next = History {
         color: vec![0.0; texels * 3],
+        radiance: vec![0.0; history.radiance.len()],
         count: vec![1.0; texels],
         luminance: vec![0.0; texels],
         luminance_square: vec![0.0; texels],
         unrejected: vec![0.0; texels * 3],
         phase_color: history.phase_color.clone(),
         phase_count: history.phase_count.clone(),
+        phase_radiance: history.phase_radiance.clone(),
     };
     let phase = phase_slot(current, layout);
     let slots = (layout.scale * layout.scale) as usize;
@@ -437,14 +539,10 @@ fn accumulate(
                 && position[1] >= 0.0
                 && position[0] <= (width - 1) as f32
                 && position[1] <= (height - 1) as f32;
-            let prior = reproject_history(
-                history,
-                previous,
-                layout,
-                surface_at(current, layout, index),
-                position,
-                config,
-            );
+            let surface = surface_at(current, layout, index);
+            let prior = reproject_history(history, previous, layout, surface, position, config);
+            let prior_radiance =
+                reproject_radiance(history, previous, layout, surface, position, config);
             let (prior_color, count, prior_luminance, prior_luminance_square) =
                 prior.unwrap_or(([0.0; 3], 0.0, 0.0, 0.0));
             let current_rgb = [
@@ -459,6 +557,15 @@ fn accumulate(
                     let destination = phase_index * 3 + channel;
                     next.phase_color[destination] =
                         (next.phase_color[destination] * count + current_value) / (count + 1.0);
+                }
+                if let Some(current_radiance) = &current_radiance {
+                    for channel in 0..9 {
+                        let destination = phase_index * 9 + channel;
+                        next.phase_radiance[destination] = (next.phase_radiance[destination]
+                            * count
+                            + current_radiance[index * 9 + channel])
+                            / (count + 1.0);
+                    }
                 }
                 next.phase_count[phase_index] = count + 1.0;
             }
@@ -476,6 +583,17 @@ fn accumulate(
                 next.color[index * 3 + channel] =
                     (current_value + count * prior_color[channel]) / (count + 1.0);
                 next.unrejected[index * 3 + channel] = warped[channel];
+            }
+            if let Some(current_radiance) = &current_radiance {
+                let lobe_count = if prior_radiance.is_some() { count } else { 0.0 };
+                for channel in 0..9 {
+                    let current_value = current_radiance[index * 9 + channel];
+                    let prior_value = prior_radiance
+                        .as_ref()
+                        .map_or(0.0, |radiance| radiance[channel]);
+                    next.radiance[index * 9 + channel] =
+                        (current_value + lobe_count * prior_value) / (lobe_count + 1.0);
+                }
             }
             let luminance = compressed_luminance(current_rgb);
             next.luminance[index] = (luminance + count * prior_luminance) / (count + 1.0);
@@ -576,6 +694,17 @@ fn finish(mut sample: Sample, history: History, layout: &Layout, config: Config)
                 f16::from_f32(history.color[index * 3 + channel]);
         }
     }
+    if !history.radiance.is_empty() {
+        for (plane_index, plane) in RADIANCE_PLANES.into_iter().enumerate() {
+            let base = layout.lr_planes.channel_offset(plane).unwrap();
+            for component in 0..3 {
+                for index in 0..texels {
+                    sample.lr[(base + component) * texels + index] =
+                        f16::from_f32(history.radiance[index * 9 + plane_index * 3 + component]);
+                }
+            }
+        }
+    }
     PreparedSample {
         sample,
         current_color,
@@ -599,6 +728,7 @@ fn finish(mut sample: Sample, history: History, layout: &Layout, config: Config)
                 count / (config.frames as f32 / (layout.scale * layout.scale) as f32).max(1.0)
             })
             .collect(),
+        phase_radiance: history.phase_radiance,
     }
 }
 
@@ -616,6 +746,9 @@ mod tests {
             lr_source: InputSource::PathTrace,
             lr_planes: PlaneSet::new()
                 .with(Plane::Color)
+                .with(Plane::DiffuseIllumination)
+                .with(Plane::SpecularRadiance)
+                .with(Plane::EmissiveRadiance)
                 .with(Plane::Depth)
                 .with(Plane::Normal)
                 .with(Plane::DiffuseAlbedo)
@@ -635,6 +768,13 @@ mod tests {
             };
             let color = layout.lr_planes.channel_offset(Plane::Color).unwrap();
             sample.lr[color] = f16::from_f32(frame as f32 + 1.0);
+            for (plane_index, plane) in RADIANCE_PLANES.into_iter().enumerate() {
+                let base = layout.lr_planes.channel_offset(plane).unwrap();
+                for component in 0..3 {
+                    sample.lr[base + component] =
+                        f16::from_f32((100 * plane_index + 10 * component + frame) as f32);
+                }
+            }
             let normal = layout.lr_planes.channel_offset(Plane::Normal).unwrap();
             sample.lr[normal + 2] = f16::ONE;
             let jitter_base = layout.lr_planes.channel_offset(Plane::Jitter).unwrap();
@@ -651,7 +791,7 @@ mod tests {
             Config {
                 frames: 4,
                 rejection: RejectionConfig::default(),
-                features: Features::Phase,
+                features: Features::PhaseLobes,
                 unrejected_tap: false,
                 previous_output: false,
             },
@@ -662,6 +802,30 @@ mod tests {
             .collect();
         assert_eq!(red, vec![1.0, 2.0, 3.0, 4.0]);
         assert_eq!(prepared.phase_count, vec![1.0; 4]);
+        assert_eq!(prepared.phase_radiance.len(), 4 * 9);
+        for phase in 0..4 {
+            for component in 0..9 {
+                let plane = component / 3;
+                let channel = component % 3;
+                assert_eq!(
+                    prepared.phase_radiance[phase * 9 + component],
+                    (100 * plane + 10 * channel + phase) as f32
+                );
+            }
+        }
+        for (plane_index, plane) in RADIANCE_PLANES.into_iter().enumerate() {
+            for component in 0..3 {
+                let accumulated = prepared
+                    .sample
+                    .lr_channel(&layout, plane, component)
+                    .unwrap()[0]
+                    .to_f32();
+                assert_eq!(
+                    accumulated,
+                    (100 * plane_index + 10 * component) as f32 + 1.5
+                );
+            }
+        }
         std::fs::remove_file(path).unwrap();
     }
 
@@ -885,12 +1049,14 @@ mod tests {
         }
         let mut history = History {
             color: vec![2.0, 0.0, 0.0, 100.0, 0.0, 0.0],
+            radiance: Vec::new(),
             count: vec![4.0, 4.0],
             luminance: vec![0.2, 0.9],
             luminance_square: vec![0.04, 0.81],
             unrejected: Vec::new(),
             phase_color: Vec::new(),
             phase_count: Vec::new(),
+            phase_radiance: Vec::new(),
         };
         let config = Config {
             frames: 8,

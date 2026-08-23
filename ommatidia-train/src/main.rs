@@ -197,8 +197,9 @@ usage: ommatidia-train [options]
   --prediction KIND    subpixel or low-color residual, or kernel for the
                        single-operation sample gather  [subpixel]
   --reconstruction-base KIND
-                       nearest, bilinear, guided, hr-guided, or sample, which
-                       is the only one with no separate denoise  [guided]
+                       nearest, bilinear, guided, hr-guided, split-guided, or
+                       sample, which is the only one with no separate denoise
+                       [guided]
   --kernel-radius N    half-width of the neighbourhood a kernel gathers, in
                        input pixels  [2]
   --demodulate         gather radiance divided by albedo and multiply the exact
@@ -234,7 +235,8 @@ usage: ommatidia-train [options]
   --device-id ID       adapter ID for this standalone process (hex or decimal)
   --history-frames N   surface-reprojected sparse frames, 1 for spatial [1]
   --temporal-features KIND
-                       basic, variance, or phase history conditioning [variance]
+                       basic, variance, phase, or phase-lobes history
+                       conditioning [variance]
   --unrejected-tap     second history tap: the reprojected previous estimate
                        with no surface gate, so a wrongly rejected sample can
                        still be recovered. Kernel checkpoints only
@@ -337,6 +339,7 @@ fn parse_from(argv: impl Iterator<Item = String>) -> Result<Args, String> {
                     "bilinear" => ReconstructionBase::Bilinear,
                     "guided" => ReconstructionBase::GuidedBilinear,
                     "hr-guided" => ReconstructionBase::HighResolutionGuided,
+                    "split-guided" => ReconstructionBase::SplitRadianceGuided,
                     "sample" => ReconstructionBase::Sample,
                     other => return Err(format!("unknown reconstruction base {other:?}")),
                 }
@@ -399,6 +402,7 @@ fn parse_from(argv: impl Iterator<Item = String>) -> Result<Args, String> {
                     "basic" => ommatidia::temporal::Features::Basic,
                     "variance" => ommatidia::temporal::Features::Variance,
                     "phase" => ommatidia::temporal::Features::Phase,
+                    "phase-lobes" => ommatidia::temporal::Features::PhaseLobes,
                     other => return Err(format!("unknown temporal features {other:?}")),
                 }
             }
@@ -557,8 +561,10 @@ fn main() {
         None if args.color_only => ReconstructionBase::Bilinear,
         None => args.reconstruction_base,
     };
-    if reconstruction_base == ReconstructionBase::HighResolutionGuided
-        || args.guide_mix
+    if matches!(
+        reconstruction_base,
+        ReconstructionBase::HighResolutionGuided | ReconstructionBase::SplitRadianceGuided
+    ) || args.guide_mix
         || args.history_frames > 1
         || args.temporal_weight != 0.0
         || stored
@@ -572,7 +578,11 @@ fn main() {
             ommatidia::Plane::DiffuseAlbedo,
         ] {
             if !layout.hr_planes.contains(plane) {
-                let why = if reconstruction_base == ReconstructionBase::HighResolutionGuided {
+                let why = if matches!(
+                    reconstruction_base,
+                    ReconstructionBase::HighResolutionGuided
+                        | ReconstructionBase::SplitRadianceGuided
+                ) {
                     "high-resolution guided reconstruction"
                 } else {
                     "the teacher's reprojection"
@@ -580,6 +590,12 @@ fn main() {
                 eprintln!("{why} needs the HR {plane:?} plane");
                 std::process::exit(1);
             }
+        }
+        if reconstruction_base == ReconstructionBase::SplitRadianceGuided
+            && !layout.hr_planes.contains(ommatidia::Plane::Roughness)
+        {
+            eprintln!("split-radiance reconstruction needs the HR Roughness plane");
+            std::process::exit(1);
         }
     }
 
@@ -1096,6 +1112,7 @@ impl Evaluator {
         let mut network_scores = eval::Scores::default();
         let mut guided_scores = eval::Scores::default();
         let mut hr_guided_scores = eval::Scores::default();
+        let mut split_guided_scores = eval::Scores::default();
         let mut temporal_guide_scores = eval::Scores::default();
         // Detail is only meaningful against the canonical frame's own.
         let mut reference_detail = 0.0f64;
@@ -1116,6 +1133,15 @@ impl Evaluator {
         ]
         .into_iter()
         .all(|plane| layout.hr_planes.contains(plane));
+        let has_split_radiance = [
+            ommatidia::Plane::DiffuseIllumination,
+            ommatidia::Plane::SpecularRadiance,
+            ommatidia::Plane::EmissiveRadiance,
+        ]
+        .into_iter()
+        .all(|plane| layout.lr_planes.contains(plane))
+            && layout.hr_planes.contains(ommatidia::Plane::DiffuseAlbedo)
+            && layout.hr_planes.contains(ommatidia::Plane::Roughness);
         let mut temporal_base_total = 0.0f64;
         let mut temporal_network_total = 0.0f64;
         let mut temporal_counted = 0usize;
@@ -1158,9 +1184,13 @@ impl Evaluator {
                 let hr_guided = has_hr_guides.then(|| {
                     batch::high_resolution_guided_base(sample, &layout, crop, self.config.guide)
                 });
+                let split_guided = has_split_radiance.then(|| {
+                    batch::high_resolution_split_base(sample, &layout, crop, self.config.guide)
+                });
                 let model_base = match self.config.reconstruction_base {
                     ReconstructionBase::GuidedBilinear => guided.as_deref(),
                     ReconstructionBase::HighResolutionGuided => hr_guided.as_deref(),
+                    ReconstructionBase::SplitRadianceGuided => split_guided.as_deref(),
                     ReconstructionBase::Nearest
                     | ReconstructionBase::Bilinear
                     | ReconstructionBase::Sample => None,
@@ -1275,6 +1305,9 @@ impl Evaluator {
                 if let Some(hr_guided) = &hr_guided {
                     hr_guided_scores.add(hr_guided, &reference, extent);
                 }
+                if let Some(split_guided) = &split_guided {
+                    split_guided_scores.add(split_guided, &reference, extent);
+                }
                 if let Some(temporal_guide) = &temporal_guide {
                     temporal_guide_scores.add(temporal_guide, &reference, extent);
                 }
@@ -1288,6 +1321,9 @@ impl Evaluator {
                     ReconstructionBase::HighResolutionGuided => {
                         hr_guided.as_ref().expect("HR-guided model has an HR guide")
                     }
+                    ReconstructionBase::SplitRadianceGuided => split_guided
+                        .as_ref()
+                        .expect("split-radiance model has a split guide"),
                     // A kernel checkpoint has no base of its own, so it is held
                     // against the best deterministic reconstruction the dataset
                     // can support. Anything weaker would flatter it.
@@ -1438,6 +1474,12 @@ impl Evaluator {
                             eprintln!("cannot write {}: {e}", path.display());
                         }
                     }
+                    if let Some(split_guided) = &split_guided {
+                        let path = dir.join("split-guided.png");
+                        if let Err(e) = eval::write_png(&path, split_guided, hr_extent, hr_extent) {
+                            eprintln!("cannot write {}: {e}", path.display());
+                        }
+                    }
                     if let Some(temporal_guide) = &temporal_guide {
                         let path = dir.join("temporal-guide.png");
                         if let Err(e) = eval::write_png(&path, temporal_guide, hr_extent, hr_extent)
@@ -1462,6 +1504,7 @@ impl Evaluator {
                 ("guided", guided_scores.mse())
             }
             ReconstructionBase::HighResolutionGuided => ("HR guide", hr_guided_scores.mse()),
+            ReconstructionBase::SplitRadianceGuided => ("split guide", split_guided_scores.mse()),
             ReconstructionBase::Sample if self.config.guide_mix => {
                 ("TAA guide", temporal_guide_scores.mse())
             }
@@ -1486,6 +1529,12 @@ impl Evaluator {
         }
         if has_hr_guides {
             println!("  {}", hr_guided_scores.line("HR guide", reference_detail));
+        }
+        if has_split_radiance {
+            println!(
+                "  {}",
+                split_guided_scores.line("split guide", reference_detail)
+            );
         }
         if self.config.guide_mix {
             println!(

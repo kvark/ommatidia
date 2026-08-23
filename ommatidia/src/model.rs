@@ -78,6 +78,9 @@ pub enum ReconstructionBase {
     /// No deterministic base at all: the network gathers the input samples
     /// itself. The only reconstruction that is a single operation.
     Sample = 4,
+    /// Reconstruct renderer-provided diffuse, specular, and emissive radiance
+    /// independently before predicting a correction to their composition.
+    SplitRadianceGuided = 5,
 }
 
 fn legacy_reconstruction_base() -> ReconstructionBase {
@@ -644,6 +647,17 @@ impl ModelConfig {
             if temporal.features.has_phase() && !self.cond_planes.contains(Plane::Jitter) {
                 return Err("phase history needs the projection-jitter conditioning plane".into());
             }
+            if temporal.features.has_phase_lobes() {
+                for plane in [
+                    Plane::DiffuseIllumination,
+                    Plane::SpecularRadiance,
+                    Plane::EmissiveRadiance,
+                ] {
+                    if !self.cond_planes.contains(plane) {
+                        return Err(format!("phase-lobe history requires {plane:?}"));
+                    }
+                }
+            }
         }
         if self.prediction == Prediction::LowResolutionResidual
             && self.reconstruction_base != ReconstructionBase::HighResolutionGuided
@@ -722,6 +736,26 @@ impl ModelConfig {
                         "guided reconstruction requires the {plane:?} conditioning plane"
                     ));
                 }
+            }
+        }
+        if self.reconstruction_base == ReconstructionBase::SplitRadianceGuided {
+            for plane in [
+                Plane::DiffuseIllumination,
+                Plane::SpecularRadiance,
+                Plane::EmissiveRadiance,
+                Plane::Depth,
+                Plane::Normal,
+                Plane::DiffuseAlbedo,
+                Plane::Roughness,
+            ] {
+                if !self.cond_planes.contains(plane) {
+                    return Err(format!(
+                        "split-radiance reconstruction requires the {plane:?} conditioning plane"
+                    ));
+                }
+            }
+            if self.demodulate {
+                return Err("split radiance restores diffuse albedo before the residual".into());
             }
         }
         if self.temporal_weight != 0.0 {
@@ -1724,6 +1758,25 @@ mod tests {
         assert_eq!(c.guide_mix_channels(), 4);
         assert_eq!(c.target_channels(), 25 * 4 + 4 + 4);
         assert!(c.validate().is_ok());
+    }
+
+    #[test]
+    fn split_reconstruction_requires_each_renderer_lobe() {
+        let mut c = small();
+        c.objective = Objective::Direct;
+        c.reconstruction_base = ReconstructionBase::SplitRadianceGuided;
+        c.cond_planes = c
+            .cond_planes
+            .with(Plane::Depth)
+            .with(Plane::Normal)
+            .with(Plane::DiffuseAlbedo)
+            .with(Plane::Roughness)
+            .with(Plane::DiffuseIllumination)
+            .with(Plane::SpecularRadiance)
+            .with(Plane::EmissiveRadiance);
+        assert!(c.validate().is_ok());
+        c.cond_planes = c.cond_planes.without(Plane::SpecularRadiance);
+        assert!(c.validate().unwrap_err().contains("SpecularRadiance"));
     }
 
     #[test]
