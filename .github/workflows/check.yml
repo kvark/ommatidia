@@ -18,7 +18,7 @@ env:
   RUST_BACKTRACE: 1
   # Path dependencies live in sibling checkouts, so pin their exact commits
   # just as Cargo.lock pins registry and Git dependencies.
-  BLADE_REV: 5c9edc354619f19fe9788fc762da984576cc722d
+  BLADE_REV: e1e5d669b07faa78367b49cf5da562c400a6f350
   MEGANEURA_REV: 3c15aae3ead66865318e69635305b6bb04d8a262
 
 jobs:
