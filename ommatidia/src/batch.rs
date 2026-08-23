@@ -80,7 +80,8 @@ fn encode(plane: Plane, value: f16) -> f32 {
         | Plane::DiffuseAlbedo
         | Plane::SpecularF0
         | Plane::Roughness
-        | Plane::Motion => value,
+        | Plane::Motion
+        | Plane::Jitter => value,
     }
 }
 
@@ -188,7 +189,7 @@ pub fn write_temporal_conditioning(
         }
         guided
     });
-    if config.temporal.unwrap().features == crate::temporal::Features::Variance {
+    if config.temporal.unwrap().features.has_variance() {
         let deviation_channel = if config.prediction == Prediction::SubpixelKernel {
             4
         } else {
@@ -199,6 +200,39 @@ pub fn write_temporal_conditioning(
             let source_row = (crop.y as usize + y) * stride + crop.x as usize;
             for x in 0..tile {
                 destination[base + y * tile + x] = prepared.deviation[source_row + x];
+            }
+        }
+    }
+    if config.temporal.unwrap().features.has_phase() {
+        let slots = (config.scale * config.scale) as usize;
+        let auxiliary = if config.prediction == Prediction::SubpixelKernel {
+            4 + usize::from(config.temporal.unwrap().features.has_variance())
+        } else {
+            7 + usize::from(config.temporal.unwrap().features.has_variance())
+        };
+        let phase_base = stored_channels + auxiliary;
+        for component in 0..3 {
+            for phase in 0..slots {
+                let base = (phase_base + component * slots + phase) * texels;
+                for y in 0..tile {
+                    let source_row = (crop.y as usize + y) * stride + crop.x as usize;
+                    for x in 0..tile {
+                        let source = (source_row + x) * slots + phase;
+                        destination[base + y * tile + x] =
+                            transform::compress(prepared.phase_color[source * 3 + component]);
+                    }
+                }
+            }
+        }
+        let count_base = phase_base + 3 * slots;
+        for phase in 0..slots {
+            let base = (count_base + phase) * texels;
+            for y in 0..tile {
+                let source_row = (crop.y as usize + y) * stride + crop.x as usize;
+                for x in 0..tile {
+                    destination[base + y * tile + x] =
+                        prepared.phase_count[(source_row + x) * slots + phase];
+                }
             }
         }
     }
@@ -282,12 +316,46 @@ fn guide_similarity(
     weight * (-albedo_delta2 / albedo_denominator).exp()
 }
 
+fn clamp_bright_outlier(mut linear: [f32; 3], mut bounded: [f32; 3]) -> [f32; 3] {
+    for value in &mut bounded {
+        *value = transform::decompress(*value);
+    }
+    let luminance = |color: [f32; 3]| 0.2126 * color[0] + 0.7152 * color[1] + 0.0722 * color[2];
+    let linear_luminance = luminance(linear);
+    let robust_luminance = luminance(bounded);
+    // The offset leaves dim pixels alone, where a ratio is unstable. A 50%
+    // allowance keeps ordinary Monte Carlo variation linear while clipping
+    // the orders-of-magnitude disagreement caused by a firefly.
+    let limit = 1.5 * robust_luminance + 0.02;
+    let scale = (limit / linear_luminance.max(1e-12)).min(1.0);
+    for value in &mut linear {
+        *value *= scale;
+    }
+    linear
+}
+
 fn guided_texel(
     sample: &Sample,
     layout: &Layout,
     center_x: i32,
     center_y: i32,
     guide: GuideConfig,
+) -> [f32; 3] {
+    guided_texel_in_space(sample, layout, center_x, center_y, guide, None, None)
+}
+
+/// The same bilateral filter, optionally using a bounded-radiance mean to
+/// identify bright outliers. The result remains a linear mean unless it is far
+/// brighter than that robust estimate, so ordinary regions preserve energy
+/// while one rare path cannot turn into a large low-frequency halo.
+fn guided_texel_in_space(
+    sample: &Sample,
+    layout: &Layout,
+    center_x: i32,
+    center_y: i32,
+    guide: GuideConfig,
+    demodulation_offset: Option<f32>,
+    source_color: Option<&[f32]>,
 ) -> [f32; 3] {
     let width = layout.lr_width as i32;
     let height = layout.lr_height as i32;
@@ -307,6 +375,7 @@ fn guided_texel(
     ];
     let spatial_denominator = 2.0 * guide.spatial_sigma * guide.spatial_sigma;
     let mut sum = [0.0f32; 3];
+    let mut robust_sum = [0.0f32; 3];
     let mut weight_sum = 0.0f32;
 
     for dy in -GUIDE_RADIUS..=GUIDE_RADIUS {
@@ -334,17 +403,37 @@ fn guided_texel(
                 center_albedo,
                 depth,
                 normal,
-                albedo,
+                if demodulation_offset.is_some() {
+                    center_albedo
+                } else {
+                    albedo
+                },
             );
 
             for (component, value) in sum.iter_mut().enumerate() {
-                *value += weight * plane_value(sample, layout, Plane::Color, component, x, y);
+                let mut color = source_color.map_or_else(
+                    || plane_value(sample, layout, Plane::Color, component, x, y),
+                    |source| source[(y * width as usize + x) * 3 + component],
+                );
+                if let Some(offset) = demodulation_offset {
+                    color /= albedo[component] + offset;
+                }
+                *value += weight * color;
+                if demodulation_offset.is_some() {
+                    robust_sum[component] += weight * transform::compress(color);
+                }
             }
             weight_sum += weight;
         }
     }
     for value in &mut sum {
         *value /= weight_sum.max(1e-12);
+    }
+    if demodulation_offset.is_some() {
+        for value in &mut robust_sum {
+            *value /= weight_sum.max(1e-12);
+        }
+        sum = clamp_bright_outlier(sum, robust_sum);
     }
     sum
 }
@@ -427,7 +516,158 @@ pub fn high_resolution_guided_base(
     crop: Crop,
     guide: GuideConfig,
 ) -> Vec<f32> {
-    high_resolution_guided(sample, layout, crop, guide, None)
+    high_resolution_guided(sample, layout, crop, guide, None, None, None)
+}
+
+/// Output-resolution illumination reconstructed after dividing low-resolution
+/// radiance by diffuse albedo.
+///
+/// Unlike [`high_resolution_guided_base`], this intentionally leaves the exact
+/// output-resolution albedo out. A residual model can learn the smoother
+/// illumination error, then [`assemble_demodulated`] restores that albedo once
+/// at the end. The zero-residual path therefore matches the same formulation
+/// already used by the safe kernel checkpoints.
+pub fn high_resolution_demodulated_base(
+    sample: &Sample,
+    layout: &Layout,
+    crop: Crop,
+    guide: GuideConfig,
+    demodulation_offset: f32,
+) -> Vec<f32> {
+    high_resolution_guided(
+        sample,
+        layout,
+        crop,
+        guide,
+        None,
+        Some(demodulation_offset),
+        None,
+    )
+}
+
+fn temporally_clamped_color(
+    sample: &Sample,
+    layout: &Layout,
+    guide: GuideConfig,
+    demodulation_offset: f32,
+    current_color: &[f32],
+    deviation: &[f32],
+) -> Vec<f32> {
+    assert_eq!(current_color.len(), layout.lr_texels() * 3);
+    assert_eq!(deviation.len(), layout.lr_texels());
+    let width = layout.lr_width as i32;
+    let height = layout.lr_height as i32;
+    let mut out = vec![0.0; current_color.len()];
+    for center_y in 0..height {
+        for center_x in 0..width {
+            let cx = center_x as usize;
+            let cy = center_y as usize;
+            let center_depth =
+                transform::encode_depth(plane_value(sample, layout, Plane::Depth, 0, cx, cy));
+            let center_normal = [
+                plane_value(sample, layout, Plane::Normal, 0, cx, cy),
+                plane_value(sample, layout, Plane::Normal, 1, cx, cy),
+                plane_value(sample, layout, Plane::Normal, 2, cx, cy),
+            ];
+            let center_albedo = [
+                plane_value(sample, layout, Plane::DiffuseAlbedo, 0, cx, cy),
+                plane_value(sample, layout, Plane::DiffuseAlbedo, 1, cx, cy),
+                plane_value(sample, layout, Plane::DiffuseAlbedo, 2, cx, cy),
+            ];
+            let mut lower = [1.0f32; 3];
+            let mut upper = [0.0f32; 3];
+            for dy in -1..=1 {
+                let y = (center_y + dy).clamp(0, height - 1) as usize;
+                for dx in -1..=1 {
+                    let x = (center_x + dx).clamp(0, width - 1) as usize;
+                    let depth =
+                        transform::encode_depth(plane_value(sample, layout, Plane::Depth, 0, x, y));
+                    let normal = [
+                        plane_value(sample, layout, Plane::Normal, 0, x, y),
+                        plane_value(sample, layout, Plane::Normal, 1, x, y),
+                        plane_value(sample, layout, Plane::Normal, 2, x, y),
+                    ];
+                    let albedo = [
+                        plane_value(sample, layout, Plane::DiffuseAlbedo, 0, x, y),
+                        plane_value(sample, layout, Plane::DiffuseAlbedo, 1, x, y),
+                        plane_value(sample, layout, Plane::DiffuseAlbedo, 2, x, y),
+                    ];
+                    if guide_similarity(
+                        guide,
+                        center_depth,
+                        center_normal,
+                        center_albedo,
+                        depth,
+                        normal,
+                        center_albedo,
+                    ) < 0.1
+                    {
+                        continue;
+                    }
+                    let index = y * width as usize + x;
+                    for component in 0..3 {
+                        let illumination = current_color[index * 3 + component]
+                            / (albedo[component] + demodulation_offset);
+                        let value = transform::compress(illumination);
+                        lower[component] = lower[component].min(value);
+                        upper[component] = upper[component].max(value);
+                    }
+                }
+            }
+            let index = cy * width as usize + cx;
+            let dark_current = upper.into_iter().all(|value| value < 0.1);
+            let expansion = if dark_current { 0.02 } else { 0.1 };
+            for component in 0..3 {
+                let albedo = center_albedo[component] + demodulation_offset;
+                let accumulated =
+                    plane_value(sample, layout, Plane::Color, component, cx, cy) / albedo;
+                let compressed = transform::compress(accumulated);
+                let illumination = if (dark_current || deviation[index] > 0.35)
+                    && (compressed < lower[component] - 0.3 || compressed > upper[component] + 0.3)
+                {
+                    transform::decompress(compressed.clamp(
+                        (lower[component] - expansion).max(0.0),
+                        (upper[component] + expansion).min(1.0),
+                    ))
+                } else {
+                    accumulated
+                };
+                out[index * 3 + component] = illumination * albedo;
+            }
+        }
+    }
+    out
+}
+
+/// Demodulated guide with temporal anti-lag. Accepted accumulation is clamped
+/// to the current frame's same-surface 3×3 range before spatial filtering, so
+/// a moving light cannot leave bright history on otherwise valid geometry.
+pub fn high_resolution_temporal_guide(
+    sample: &Sample,
+    layout: &Layout,
+    crop: Crop,
+    guide: GuideConfig,
+    demodulation_offset: f32,
+    current_color: &[f32],
+    deviation: &[f32],
+) -> Vec<f32> {
+    let clamped = temporally_clamped_color(
+        sample,
+        layout,
+        guide,
+        demodulation_offset,
+        current_color,
+        deviation,
+    );
+    high_resolution_guided(
+        sample,
+        layout,
+        crop,
+        guide,
+        None,
+        Some(demodulation_offset),
+        Some(&clamped),
+    )
 }
 
 /// Joint bilateral upsampling of an already-denoised low-resolution colour.
@@ -443,7 +683,7 @@ pub fn high_resolution_guided_from_color(
     low_color: &[f32],
 ) -> Vec<f32> {
     assert_eq!(low_color.len(), layout.lr_texels() * 3);
-    high_resolution_guided(sample, layout, crop, guide, Some(low_color))
+    high_resolution_guided(sample, layout, crop, guide, Some(low_color), None, None)
 }
 
 fn high_resolution_guided(
@@ -452,6 +692,8 @@ fn high_resolution_guided(
     crop: Crop,
     guide: GuideConfig,
     low_color: Option<&[f32]>,
+    demodulation_offset: Option<f32>,
+    source_color: Option<&[f32]>,
 ) -> Vec<f32> {
     const RADIUS: i32 = 2;
     const PADDING: i32 = RADIUS + 1;
@@ -468,9 +710,31 @@ fn high_resolution_guided(
             let source_y = (origin_y + y as i32).clamp(0, layout.lr_height as i32 - 1);
             low[y * padded_width + x] = if let Some(color) = low_color {
                 let index = (source_y as usize * layout.lr_width as usize + source_x as usize) * 3;
-                [color[index], color[index + 1], color[index + 2]]
+                if let Some(offset) = demodulation_offset {
+                    std::array::from_fn(|component| {
+                        color[index + component]
+                            / (plane_value(
+                                sample,
+                                layout,
+                                Plane::DiffuseAlbedo,
+                                component,
+                                source_x as usize,
+                                source_y as usize,
+                            ) + offset)
+                    })
+                } else {
+                    [color[index], color[index + 1], color[index + 2]]
+                }
             } else {
-                guided_texel(sample, layout, source_x, source_y, guide)
+                guided_texel_in_space(
+                    sample,
+                    layout,
+                    source_x,
+                    source_y,
+                    guide,
+                    demodulation_offset,
+                    source_color,
+                )
             };
         }
     }
@@ -545,7 +809,11 @@ fn high_resolution_guided(
                         center_albedo,
                         depth,
                         normal,
-                        albedo,
+                        if demodulation_offset.is_some() {
+                            center_albedo
+                        } else {
+                            albedo
+                        },
                     );
                     let local_x = (source_x - origin_x) as usize;
                     let local_y = (source_y - origin_y) as usize;
@@ -622,12 +890,17 @@ pub fn write_residual(
     let hr_stride = layout.hr_width() as usize;
     let guided = match reconstruction_base {
         ReconstructionBase::GuidedBilinear => Some(guided_base(sample, layout, crop, config.guide)),
-        ReconstructionBase::HighResolutionGuided => Some(high_resolution_guided_base(
-            sample,
-            layout,
-            crop,
-            config.guide,
-        )),
+        ReconstructionBase::HighResolutionGuided => Some(if config.demodulate {
+            high_resolution_demodulated_base(
+                sample,
+                layout,
+                crop,
+                config.guide,
+                config.demodulation_offset,
+            )
+        } else {
+            high_resolution_guided_base(sample, layout, crop, config.guide)
+        }),
         ReconstructionBase::Nearest | ReconstructionBase::Bilinear => None,
         ReconstructionBase::Sample => {
             panic!("a kernel checkpoint has no residual over a base; see write_kernel_target")
@@ -643,7 +916,7 @@ pub fn write_residual(
                 let source_x = crop.x as usize + x;
                 for dy in 0..scale {
                     for dx in 0..scale {
-                        let base = match reconstruction_base {
+                        let base_linear = match reconstruction_base {
                             ReconstructionBase::Nearest => {
                                 low[source_y * lr_stride + source_x].to_f32()
                             }
@@ -662,13 +935,63 @@ pub fn write_residual(
                                 unreachable!("a kernel checkpoint has no base to correct")
                             }
                         };
-                        let base = transform::compress(base);
+                        let base = transform::compress(base_linear);
                         let hy = source_y * scale + dy;
                         let hx = source_x * scale + dx;
-                        let reference = transform::compress(high[hy * hr_stride + hx].to_f32());
+                        let mut reference_linear = high[hy * hr_stride + hx].to_f32();
+                        if config.demodulate {
+                            reference_linear /=
+                                hr_plane_value(sample, layout, Plane::DiffuseAlbedo, c, hx, hy)
+                                    + config.demodulation_offset;
+                        }
+                        let reference = transform::compress(reference_linear);
                         let channel = c * sub + dy * scale + dx;
                         out[slot * per_slot + (channel * tile + y) * tile + x] =
                             (reference - base) * gain;
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Square-root weighting for a blend of absolute and linear relative error.
+///
+/// The graph multiplies both prediction and target by this value before MSE,
+/// yielding `error² * (1 + weight / (reference² + 0.01))`. This mirrors the
+/// evaluator's relative denominator while retaining the ordinary absolute
+/// term that preserves bright-region PSNR.
+pub fn write_relative_loss_scale(
+    sample: &Sample,
+    layout: &Layout,
+    crop: Crop,
+    slot: usize,
+    config: &ModelConfig,
+    out: &mut [f32],
+) {
+    assert_eq!(config.prediction, Prediction::SubpixelResidual);
+    let scale = layout.scale as usize;
+    let tile = crop.tile as usize;
+    let subpixels = scale * scale;
+    let per_slot = 3 * subpixels * tile * tile;
+    assert!(out.len() >= (slot + 1) * per_slot);
+    let hr_base = layout.hr_planes.channel_offset(Plane::Color).unwrap();
+    let hr_texels = layout.hr_texels();
+    let hr_stride = layout.hr_width() as usize;
+    for component in 0..3 {
+        let high =
+            &sample.hr[(hr_base + component) * hr_texels..(hr_base + component + 1) * hr_texels];
+        for y in 0..tile {
+            for x in 0..tile {
+                for sub_y in 0..scale {
+                    for sub_x in 0..scale {
+                        let hx = (crop.x as usize + x) * scale + sub_x;
+                        let hy = (crop.y as usize + y) * scale + sub_y;
+                        let reference = high[hy * hr_stride + hx].to_f32();
+                        let channel = component * subpixels + sub_y * scale + sub_x;
+                        out[slot * per_slot + (channel * tile + y) * tile + x] = (1.0
+                            + config.relative_loss_weight / (reference * reference + 0.01))
+                            .sqrt();
                     }
                 }
             }
@@ -905,6 +1228,59 @@ pub fn compress_linear_crop(
     crop: Crop,
     config: &ModelConfig,
 ) -> Vec<f32> {
+    compress_crop(linear, sample, layout, crop, config, config.demodulate)
+}
+
+/// Compress a crop that is already in demodulated-illumination space.
+pub fn compress_demodulated_crop(
+    linear: &[f32],
+    sample: &Sample,
+    layout: &Layout,
+    crop: Crop,
+    config: &ModelConfig,
+) -> Vec<f32> {
+    compress_crop(linear, sample, layout, crop, config, false)
+}
+
+/// Restore output-resolution albedo to a linear illumination crop.
+pub fn remodulate_crop(
+    illumination: &[f32],
+    sample: &Sample,
+    layout: &Layout,
+    crop: Crop,
+    config: &ModelConfig,
+) -> Vec<f32> {
+    let scale = config.scale as usize;
+    let extent = crop.tile as usize * scale;
+    assert_eq!(illumination.len(), extent * extent * 3);
+    let mut radiance = illumination.to_vec();
+    for y in 0..extent {
+        for x in 0..extent {
+            let global_x = crop.x as usize * scale + x;
+            let global_y = crop.y as usize * scale + y;
+            for channel in 0..3 {
+                radiance[(y * extent + x) * 3 + channel] *= hr_plane_value(
+                    sample,
+                    layout,
+                    Plane::DiffuseAlbedo,
+                    channel,
+                    global_x,
+                    global_y,
+                ) + config.demodulation_offset;
+            }
+        }
+    }
+    radiance
+}
+
+fn compress_crop(
+    linear: &[f32],
+    sample: &Sample,
+    layout: &Layout,
+    crop: Crop,
+    config: &ModelConfig,
+    demodulate: bool,
+) -> Vec<f32> {
     let tile = crop.tile as usize;
     let scale = config.scale as usize;
     let sub = scale * scale;
@@ -920,7 +1296,7 @@ pub fn compress_linear_crop(
                         let px = x * scale + dx;
                         let py = y * scale + dy;
                         let mut value = linear[(py * extent + px) * 3 + c];
-                        if config.demodulate {
+                        if demodulate {
                             value /= hr_plane_value(
                                 sample,
                                 layout,
@@ -1096,6 +1472,9 @@ pub struct ExtraTaps<'a> {
     pub current: Option<&'a [f32]>,
     /// Un-rejected reprojected history, interleaved, when that tap exists.
     pub unrejected: Option<&'a [f32]>,
+    /// Deterministic high-resolution guide in compressed sub-pixel layout.
+    /// A learned gate blends this with the spatial gather after normalisation.
+    pub guide: Option<&'a [f32]>,
     /// Warped previous reconstruction in compressed sub-pixel layout.
     /// Mixed with the spatial gather after it, not read as extra taps.
     pub previous_output: Option<&'a [f32]>,
@@ -1174,7 +1553,9 @@ pub fn write_taps(
     for c in 0..3 {
         // Without history the sample's own colour plane is the current frame.
         // With it, that plane holds the accumulated estimate and the current
-        // frame arrives separately.
+        // frame arrives separately. The spatial branch always gathers current
+        // RGB; guide mixing supplies the accumulated estimate as its distinct,
+        // lower-variance branch, so changing illumination can reject history.
         let source = &sample.lr[(base + c) * texels..(base + c + 1) * texels];
         for tap in 0..taps {
             let history = tap >= spatial_taps;
@@ -1233,15 +1614,21 @@ pub fn assemble_kernel(
     let spatial_taps = config.taps() as usize;
     let taps = config.gather_taps() as usize;
     let slots = scale * scale;
-    let mix_ch = config.history_mix_channels() as usize;
+    let guide_mix_ch = config.guide_mix_channels() as usize;
+    let history_mix_ch = config.history_mix_channels() as usize;
     assert_eq!(
         extra.previous_output.is_some(),
         extra.previous_validity.is_some(),
         "previous output and its validity must be supplied together"
     );
     assert_eq!(
+        extra.guide.is_some(),
+        config.guide_mix,
+        "a guide-mixing checkpoint must be supplied its deterministic guide"
+    );
+    assert_eq!(
         weights.len(),
-        (slots * taps + mix_ch) * tile * tile,
+        (slots * taps + guide_mix_ch + history_mix_ch) * tile * tile,
         "weight tensor must match the head: spatial gather plus mix gates"
     );
     let base = layout
@@ -1305,8 +1692,15 @@ pub fn assemble_kernel(
                 let (sub_x, sub_y) = config.sub_pixel(slot as u32);
                 let (out_x, out_y) = (x * scale + sub_x as usize, y * scale + sub_y as usize);
                 let destination = (out_y * out_width + out_x) * 3;
-                let gate = if mix_ch != 0 && extra.previous_output.is_some() {
+                let guide_gate = if guide_mix_ch != 0 {
                     let m = weights[((slots * taps + slot) * tile + y) * tile + x];
+                    m / (m + 1.0)
+                } else {
+                    1.0
+                };
+                let history_gate = if history_mix_ch != 0 && extra.previous_output.is_some() {
+                    let channel = slots * taps + guide_mix_ch + slot;
+                    let m = weights[(channel * tile + y) * tile + x];
                     let valid = extra.previous_validity.unwrap()[(slot * tile + y) * tile + x];
                     valid * m / (m + 1.0)
                 } else {
@@ -1314,9 +1708,13 @@ pub fn assemble_kernel(
                 };
                 for c in 0..3 {
                     let mut gathered = sum[c] / total.max(KERNEL_FLOOR);
+                    if let Some(guide) = extra.guide {
+                        let guided = guide[(c * slots + slot) * tile * tile + y * tile + x];
+                        gathered = (1.0 - guide_gate) * guided + guide_gate * gathered;
+                    }
                     if let Some(prev) = extra.previous_output {
-                        gathered = (1.0 - gate) * gathered
-                            + gate * prev[(c * slots + slot) * tile * tile + y * tile + x];
+                        gathered = (1.0 - history_gate) * gathered
+                            + history_gate * prev[(c * slots + slot) * tile * tile + y * tile + x];
                     }
                     let mut value = transform::decompress(gathered);
                     if config.demodulate {
@@ -1469,7 +1867,7 @@ pub fn assemble(
             for c in 0..3 {
                 for dy in 0..scale {
                     for dx in 0..scale {
-                        let base = match reconstruction_base {
+                        let base_linear = match reconstruction_base {
                             ReconstructionBase::Nearest => low[(y * width + x) * 3 + c],
                             ReconstructionBase::Bilinear => sample_bilinear_interleaved(
                                 low,
@@ -1488,10 +1886,16 @@ pub fn assemble(
                                 unreachable!("a kernel checkpoint has no base to correct")
                             }
                         };
-                        let base = transform::compress(base);
+                        let base = transform::compress(base_linear);
                         let channel = c * sub + dy * scale + dx;
                         let delta = residual[(channel * height + y) * width + x] * inverse_gain;
-                        let value = transform::decompress(base + delta);
+                        let mut value = transform::decompress(base + delta);
+                        if config.residual_bound != 0.0 {
+                            value = value.clamp(
+                                (0.5 * base_linear - config.residual_bound).max(0.0),
+                                2.0 * base_linear + config.residual_bound,
+                            );
+                        }
                         let hy = y * scale + dy;
                         let hx = x * scale + dx;
                         out[(hy * out_width + hx) * 3 + c] = value;
@@ -1501,6 +1905,40 @@ pub fn assemble(
         }
     }
     out
+}
+
+/// Fraction of the learned compressed residual bound allowed as an absolute
+/// linear-illumination safety slack. A sweep over 1, 0.25, 0.1, 0.01, and
+/// 0.001 found 0.01 to be the knee; the next tighter value changed no metric.
+const DEMODULATED_SAFETY_SCALE: f32 = 0.01;
+
+/// Assemble a residual in illumination space and restore exact high-resolution
+/// diffuse albedo.
+pub fn assemble_demodulated(
+    low: &[f32],
+    guided_illumination: &[f32],
+    residual: &[f32],
+    sample: &Sample,
+    layout: &Layout,
+    crop: Crop,
+    config: &ModelConfig,
+) -> Vec<f32> {
+    assert!(config.demodulate);
+    // `residual_bound` also supplies the linear-radiance safety slack inside
+    // `assemble`. In illumination space an absolute 0.1 excursion is visible
+    // on a nearly black surface even though the same allowance is harmless in
+    // a bright region. Keep the trained compressed correction range, but use a
+    // tighter final guard before exact albedo is restored.
+    let mut safety = config.clone();
+    safety.residual_bound *= DEMODULATED_SAFETY_SCALE;
+    let illumination = assemble(
+        low,
+        Some(guided_illumination),
+        residual,
+        [crop.tile as usize; 2],
+        &safety,
+    );
+    remodulate_crop(&illumination, sample, layout, crop, config)
 }
 
 /// Measure the gain that brings a dataset's residuals to unit variance.
@@ -1817,6 +2255,73 @@ mod tests {
         }
     }
 
+    #[test]
+    fn demodulated_residual_round_trip_recovers_the_reference() {
+        let mut l = layout(2, 8, 8);
+        l.lr_planes = l.lr_planes.with(Plane::Normal).with(Plane::DiffuseAlbedo);
+        l.hr_planes = l
+            .hr_planes
+            .with(Plane::Depth)
+            .with(Plane::Normal)
+            .with(Plane::DiffuseAlbedo);
+        let s = sample(&l, 11);
+        let crop = Crop {
+            x: 1,
+            y: 1,
+            tile: 6,
+        };
+        let mut config = reconstruction_config(2, ReconstructionBase::HighResolutionGuided);
+        config.demodulate = true;
+        config.demodulation_offset = 0.25;
+        let base = high_resolution_demodulated_base(
+            &s,
+            &l,
+            crop,
+            config.guide,
+            config.demodulation_offset,
+        );
+        let mut residual = vec![0.0; 3 * 4 * 36];
+        write_residual(&s, &l, crop, 0, &config, &mut residual);
+        let low = crop_color(&s, &l, crop);
+        let rebuilt = assemble_demodulated(&low, &base, &residual, &s, &l, crop, &config);
+        let reference = crop_reference(&s, &l, crop);
+        for (actual, expected) in rebuilt.iter().zip(reference) {
+            assert!((actual - expected).abs() < 2e-3);
+        }
+    }
+
+    #[test]
+    fn demodulated_residual_has_a_tight_dark_region_guard() {
+        let mut l = layout(2, 1, 1);
+        l.lr_planes = l.lr_planes.with(Plane::Normal).with(Plane::DiffuseAlbedo);
+        l.hr_planes = l
+            .hr_planes
+            .with(Plane::Depth)
+            .with(Plane::Normal)
+            .with(Plane::DiffuseAlbedo);
+        let s = sample(&l, 13);
+        let crop = Crop {
+            x: 0,
+            y: 0,
+            tile: 1,
+        };
+        let mut config = reconstruction_config(2, ReconstructionBase::HighResolutionGuided);
+        config.demodulate = true;
+        config.demodulation_offset = 0.25;
+        config.residual_bound = 0.1;
+        let base = vec![0.01; 12];
+        let residual = vec![10.0; 12];
+        let rebuilt = assemble_demodulated(&[0.0; 3], &base, &residual, &s, &l, crop, &config);
+        let slack = config.residual_bound * DEMODULATED_SAFETY_SCALE;
+        for (index, value) in rebuilt.into_iter().enumerate() {
+            let pixel = index / 3;
+            let channel = index % 3;
+            let albedo = s.hr_channel(&l, Plane::DiffuseAlbedo, channel).unwrap()[pixel].to_f32()
+                + config.demodulation_offset;
+            assert!(value <= (2.0 * 0.01 + slack) * albedo + 1e-6);
+        }
+    }
+
     fn flat_surface(depth: f32) -> crate::temporal::Surface {
         crate::temporal::Surface {
             depth,
@@ -1998,6 +2503,7 @@ mod tests {
             ExtraTaps {
                 current: Some(&current),
                 unrejected: None,
+                guide: None,
                 previous_output: None,
                 previous_validity: None,
             },
@@ -2033,6 +2539,7 @@ mod tests {
             ExtraTaps {
                 current: Some(&current),
                 unrejected: None,
+                guide: None,
                 previous_output: None,
                 previous_validity: None,
             },
@@ -2194,6 +2701,7 @@ mod tests {
             ExtraTaps {
                 current: Some(&current),
                 unrejected: Some(&unrejected),
+                guide: None,
                 previous_output: None,
                 previous_validity: None,
             },
@@ -2231,6 +2739,7 @@ mod tests {
             ExtraTaps {
                 current: Some(&current),
                 unrejected: Some(&unrejected),
+                guide: None,
                 previous_output: None,
                 previous_validity: None,
             },
@@ -2301,6 +2810,63 @@ mod tests {
         }
     }
 
+    #[test]
+    fn temporal_anti_lag_clamps_only_stale_dark_history() {
+        let planes: PlaneSet = [
+            Plane::Color,
+            Plane::Depth,
+            Plane::Normal,
+            Plane::DiffuseAlbedo,
+        ]
+        .into_iter()
+        .collect();
+        let l = Layout {
+            scale: 1,
+            lr_width: 4,
+            lr_height: 4,
+            lr_source: crate::dataset::InputSource::PathTrace,
+            lr_planes: planes,
+            hr_planes: PlaneSet::new().with(Plane::Color),
+        };
+        let mut s = Sample {
+            lr: vec![f16::ZERO; l.lr_len()],
+            hr: vec![f16::ZERO; l.hr_len()],
+        };
+        let fill = |plane: Plane, component: usize, value: f32, sample: &mut Sample| {
+            let base = planes.channel_offset(plane).unwrap() + component;
+            for texel in 0..l.lr_texels() {
+                sample.lr[base * l.lr_texels() + texel] = f16::from_f32(value);
+            }
+        };
+        for component in 0..3 {
+            fill(Plane::Color, component, 5.0, &mut s);
+            fill(Plane::DiffuseAlbedo, component, 1.0, &mut s);
+        }
+        fill(Plane::Depth, 0, 1.0, &mut s);
+        fill(Plane::Normal, 2, 1.0, &mut s);
+
+        let deviation = vec![0.4; l.lr_texels()];
+        let dark = temporally_clamped_color(
+            &s,
+            &l,
+            GuideConfig::TUNED,
+            0.25,
+            &vec![0.0; l.lr_texels() * 3],
+            &deviation,
+        );
+        assert!(dark.iter().all(|&value| value < 0.03));
+
+        let stable = temporally_clamped_color(
+            &s,
+            &l,
+            GuideConfig::TUNED,
+            0.25,
+            &vec![5.0; l.lr_texels() * 3],
+            &deviation,
+        );
+        assert!(stable.iter().all(|&value| (value - 5.0).abs() < 1e-3));
+    }
+
     fn kernel_config(radius: u32) -> ModelConfig {
         ModelConfig {
             scale: 2,
@@ -2351,6 +2917,45 @@ mod tests {
                 (value - 1.5).abs() < 1e-3,
                 "element {index} came back as {value}"
             );
+        }
+    }
+
+    #[test]
+    fn untrained_guide_gate_keeps_three_quarters_of_the_guide() {
+        let mut config = kernel_config(2);
+        config.guide_mix = true;
+        let l = layout(2, 8, 8);
+        let s = Sample {
+            lr: vec![f16::from_f32(1.0); l.lr_len()],
+            hr: vec![f16::ZERO; l.hr_len()],
+        };
+        let crop = Crop {
+            x: 0,
+            y: 0,
+            tile: 8,
+        };
+        let weights = untrained_weights(&config, 8);
+        let guide = vec![transform::compress(0.2); config.loss_len()];
+        let current = vec![4.0; l.lr_texels() * 3];
+        let out = assemble_kernel(
+            &s,
+            &l,
+            crop,
+            &weights,
+            &config,
+            ExtraTaps {
+                // The spatial branch stays current-frame evidence even though
+                // the guide uses the validated accumulation.
+                current: Some(&current),
+                guide: Some(&guide),
+                ..Default::default()
+            },
+        );
+        let expected = transform::decompress(
+            0.75 * transform::compress(0.2) + 0.25 * transform::compress(4.0),
+        );
+        for value in out {
+            assert!((value - expected).abs() < 1e-3, "{value} vs {expected}");
         }
     }
 

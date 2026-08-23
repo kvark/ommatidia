@@ -266,6 +266,10 @@ impl Pass {
                 Self::PathTrace { .. } => 1,
                 Self::RealTime | Self::Canonical { .. } => 4,
             },
+            // The stored low-resolution G-buffer is a center sample, so its
+            // sparse radiance ray must hit the same primary surface. The
+            // converged reference keeps stochastic subpixel antialiasing.
+            jitter_primary_rays: !matches!(self, Self::PathTrace { .. }),
             // The dummy environment map carries no importance sampling data.
             environment_importance_sampling: false,
             max_bounces: match self {
@@ -433,8 +437,10 @@ mod tests {
         );
         assert_eq!(input.num_brdf_samples, 1);
         assert_eq!(input.max_bounces, INPUT_MAX_BOUNCES);
+        assert!(!input.jitter_primary_rays);
         assert_eq!(reference.num_brdf_samples, 4);
         assert_eq!(reference.max_bounces, REFERENCE_MAX_BOUNCES);
+        assert!(reference.jitter_primary_rays);
         assert!(reference.max_bounces > input.max_bounces);
     }
 }

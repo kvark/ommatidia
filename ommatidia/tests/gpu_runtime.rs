@@ -62,6 +62,9 @@ fn config() -> ModelConfig {
         time_embed_dim: 32,
         // Deliberately not 1, so a runtime that ignored the gain would show up.
         residual_gain: 7.5,
+        relative_loss_weight: 0.0,
+        low_frequency_loss_weight: 0.0,
+        residual_bound: 0.0,
         gn_eps: 1e-5,
         objective: Objective::Direct,
         prediction: ommatidia::model::Prediction::SubpixelResidual,
@@ -69,6 +72,7 @@ fn config() -> ModelConfig {
         guide: ommatidia::model::GuideConfig::TUNED,
         kernel_radius: 2,
         demodulate: false,
+        guide_mix: false,
         demodulation_offset: 0.25,
         head_kernel: 3,
         temporal_weight: 0.0,
@@ -117,6 +121,7 @@ fn demodulating_kernel_config() -> ModelConfig {
 fn temporal_kernel_config() -> ModelConfig {
     ModelConfig {
         temporal_weight: 1.0,
+        guide_mix: true,
         temporal: Some(ommatidia::temporal::Config {
             frames: 4,
             rejection: ommatidia::temporal::RejectionConfig::default(),
@@ -407,7 +412,8 @@ fn temporal_sample(layout: &Layout, values: FrameValues<'_>) -> Sample {
 #[ignore = "requires a GPU"]
 fn pack_matches_the_cpu_path() {
     let Some(context) = context() else { return };
-    let config = config();
+    let mut config = config();
+    config.cond_planes = config.cond_planes.with(Plane::Jitter);
     let dir = std::env::temp_dir().join("ommatidia-gpu-runtime-pack");
     std::fs::create_dir_all(&dir).unwrap();
     let stem = dir.join("model");
@@ -429,7 +435,11 @@ fn pack_matches_the_cpu_path() {
     });
     encoder.start();
     let (texture, view, staging) = color_texture(&context, &mut encoder, &colors, TILE, TILE);
-    upscaler.pack(&mut encoder, &FrameInputs::color_only(view, view));
+    let jitter = [0.25, -1.0 / 6.0];
+    upscaler.pack(
+        &mut encoder,
+        &FrameInputs::color_only(view, view).with_jitter(jitter),
+    );
     let sync_point = context.submit(&mut encoder);
     assert!(context.wait_for(&sync_point, 30_000).unwrap());
 
@@ -439,13 +449,19 @@ fn pack_matches_the_cpu_path() {
         lr_width: TILE,
         lr_height: TILE,
         lr_source: ommatidia::dataset::InputSource::RawRestir,
-        lr_planes: PlaneSet::new().with(Plane::Color),
+        lr_planes: PlaneSet::new().with(Plane::Color).with(Plane::Jitter),
         hr_planes: PlaneSet::new().with(Plane::Color),
     };
     let mut planar = vec![f16::ZERO; layout.lr_len()];
     for i in 0..texels {
         for c in 0..3 {
             planar[c * texels + i] = f16::from_f32(colors[i * 3 + c]);
+        }
+    }
+    let jitter_offset = layout.lr_planes.channel_offset(Plane::Jitter).unwrap();
+    for component in 0..2 {
+        for i in 0..texels {
+            planar[(jitter_offset + component) * texels + i] = f16::from_f32(jitter[component]);
         }
     }
     let sample = Sample {
@@ -812,7 +828,7 @@ fn temporal_runtime_matches_cpu_recurrence_and_reset() {
     let mut upscaler =
         Upscaler::from_checkpoint(Arc::clone(&context), &stem, 1, 100).expect("upscaler");
     assert!(upscaler.is_temporal());
-    assert_eq!(upscaler.temporal_history_bytes(), 67_584);
+    assert_eq!(upscaler.temporal_history_bytes(), 73_728);
 
     let quantize = |value: f32| f16::from_f32(value).to_f32();
     let texels = (TILE * TILE) as usize;
@@ -1072,6 +1088,23 @@ fn temporal_runtime_matches_cpu_recurrence_and_reset() {
         y: 0,
         tile: TILE,
     };
+    let make_guide = |sample: &ommatidia::dataset::Sample, current: &[f32], deviation: &[f32]| {
+        let linear = batch::high_resolution_temporal_guide(
+            sample,
+            &layout,
+            crop,
+            config.guide,
+            config.demodulation_offset,
+            current,
+            deviation,
+        );
+        batch::compress_demodulated_crop(&linear, sample, &layout, crop, &config)
+    };
+    let first_guide = make_guide(
+        &prepared[0].sample,
+        &prepared[0].current_color,
+        &prepared[0].deviation,
+    );
     let first = batch::assemble_kernel(
         &prepared[0].sample,
         &layout,
@@ -1080,6 +1113,7 @@ fn temporal_runtime_matches_cpu_recurrence_and_reset() {
         &config,
         batch::ExtraTaps {
             current: Some(&prepared[0].current_color),
+            guide: Some(&first_guide),
             ..Default::default()
         },
     );
@@ -1109,6 +1143,11 @@ fn temporal_runtime_matches_cpu_recurrence_and_reset() {
         warped.validity.contains(&0.0) && warped.validity.contains(&1.0),
         "the parity case must contain both accepted history and a disocclusion"
     );
+    let recurrent_guide = make_guide(
+        &prepared[1].sample,
+        &prepared[1].current_color,
+        &prepared[1].deviation,
+    );
     let expected = batch::assemble_kernel(
         &prepared[1].sample,
         &layout,
@@ -1117,19 +1156,22 @@ fn temporal_runtime_matches_cpu_recurrence_and_reset() {
         &config,
         batch::ExtraTaps {
             current: Some(&prepared[1].current_color),
+            guide: Some(&recurrent_guide),
             previous_output: Some(&warped.color),
             previous_validity: Some(&warped.validity),
             ..Default::default()
         },
     );
+    let reset_guide = make_guide(&samples[1], &color[1], &vec![0.0; texels]);
     let spatial = batch::assemble_kernel(
-        &prepared[1].sample,
+        &samples[1],
         &layout,
         crop,
         &weights,
         &config,
         batch::ExtraTaps {
             current: Some(&prepared[1].current_color),
+            guide: Some(&reset_guide),
             ..Default::default()
         },
     );

@@ -21,7 +21,7 @@ struct PackParams {
     compose_blade_radiance: u32,
     decode_blade_gbuffer: u32,
     reconstruction_base: u32,
-    _pad1: u32,
+    guide_mix: u32,
     guide_spatial_denominator: f32,
     guide_depth_denominator: f32,
     guide_normal_power: f32,
@@ -32,8 +32,9 @@ struct PackParams {
     rejection_depth_delta: f32,
     rejection_normal_cosine: f32,
     rejection_albedo_delta2: f32,
-    _pad2a: u32,
-    _pad2b: u32,
+    demodulation_offset: f32,
+    _pad2: u32,
+    jitter: vec2<f32>,
 }
 
 // Bits of `ommatidia::dataset::Plane`, in storage order.
@@ -43,6 +44,7 @@ const PLANE_NORMAL: u32 = 4u;
 const PLANE_DIFFUSE_ALBEDO: u32 = 8u;
 const PLANE_SPECULAR_F0: u32 = 16u;
 const PLANE_ROUGHNESS: u32 = 32u;
+const PLANE_JITTER: u32 = 128u;
 
 var<uniform> params: PackParams;
 var t_color: texture_2d<f32>;
@@ -68,6 +70,7 @@ const HISTORY_LUMINANCE_SQUARE: u32 = 5u;
 const HISTORY_DEPTH: u32 = 6u;
 const HISTORY_NORMAL: u32 = 7u;
 const HISTORY_ALBEDO: u32 = 10u;
+const HISTORY_GUIDE: u32 = 13u;
 
 // Matches `qrot` in Blade's quaternion.inc.wgsl and the training-data probe.
 fn qrot(q: vec4<f32>, v: vec3<f32>) -> vec3<f32> {
@@ -78,6 +81,11 @@ fn qrot(q: vec4<f32>, v: vec3<f32>) -> vec3<f32> {
 fn compress(x: f32) -> f32 {
     let v = max(x, 0.0);
     return v / (1.0 + v);
+}
+
+fn decompress(y: f32) -> f32 {
+    let v = clamp(y, 0.0, 1.0 - 1.0 / 4096.0);
+    return v / (1.0 - v);
 }
 
 // View-space distance into (0, 1]. Mirrors `transform::encode_depth`.
@@ -200,6 +208,11 @@ fn write_planes(texel: vec2<i32>, plane_stride: u32, offset: u32, color: vec3<f3
         cond[channel * plane_stride + offset] = specular.w;
         channel += 1u;
     }
+    if (params.planes & PLANE_JITTER) != 0u {
+        cond[(channel + 0u) * plane_stride + offset] = params.jitter.x;
+        cond[(channel + 1u) * plane_stride + offset] = params.jitter.y;
+        channel += 2u;
+    }
     return channel;
 }
 
@@ -228,40 +241,6 @@ fn history_vec3(plane: u32, index: u32, stride: u32) -> vec3<f32> {
     );
 }
 
-fn history_bilinear_scalar(plane: u32, position: vec2<f32>, stride: u32) -> f32 {
-    let lower_f = floor(position);
-    let lower = vec2<i32>(lower_f);
-    let fraction = position - lower_f;
-    let upper = vec2<i32>(i32(params.width) - 1, i32(params.height) - 1);
-    let at = clamp(lower, vec2<i32>(0), upper);
-    let bx = clamp(lower + vec2<i32>(1, 0), vec2<i32>(0), upper);
-    let ay = clamp(lower + vec2<i32>(0, 1), vec2<i32>(0), upper);
-    let by = clamp(lower + vec2<i32>(1, 1), vec2<i32>(0), upper);
-    let index_at = u32(at.y) * params.width + u32(at.x);
-    let index_bx = u32(bx.y) * params.width + u32(bx.x);
-    let index_ay = u32(ay.y) * params.width + u32(ay.x);
-    let index_by = u32(by.y) * params.width + u32(by.x);
-    let top = mix(
-        history_scalar(plane, index_at, stride),
-        history_scalar(plane, index_bx, stride),
-        fraction.x,
-    );
-    let bottom = mix(
-        history_scalar(plane, index_ay, stride),
-        history_scalar(plane, index_by, stride),
-        fraction.x,
-    );
-    return mix(top, bottom, fraction.y);
-}
-
-fn history_bilinear_vec3(plane: u32, position: vec2<f32>, stride: u32) -> vec3<f32> {
-    return vec3<f32>(
-        history_bilinear_scalar(plane + 0u, position, stride),
-        history_bilinear_scalar(plane + 1u, position, stride),
-        history_bilinear_scalar(plane + 2u, position, stride),
-    );
-}
-
 fn surfaces_match(
     current_depth: f32,
     current_normal: vec3<f32>,
@@ -285,6 +264,76 @@ fn surfaces_match(
     let albedo_delta = current_albedo - previous_albedo;
     return cosine > params.rejection_normal_cosine
         && dot(albedo_delta, albedo_delta) < params.rejection_albedo_delta2;
+}
+
+fn guide_geometry_weight(
+    center_depth: f32,
+    center_normal: vec3<f32>,
+    center_normal_len2: f32,
+    texel: vec2<i32>,
+) -> f32 {
+    let depth_delta = load_depth(texel) - center_depth;
+    var weight = exp(-(depth_delta * depth_delta) / params.guide_depth_denominator);
+    let normal = load_normal(texel);
+    let normal_len2 = dot(normal, normal);
+    if center_normal_len2 < 0.25 {
+        return weight * select(0.0, 1.0, normal_len2 < 0.25);
+    }
+    if normal_len2 < 0.25 {
+        return 0.0;
+    }
+    let cosine = max(
+        dot(normal, center_normal) * inverseSqrt(normal_len2 * center_normal_len2),
+        0.0,
+    );
+    return weight * pow(cosine, params.guide_normal_power);
+}
+
+fn anti_lag_channel(value: f32, lower: f32, upper: f32, enabled: bool, expansion: f32) -> f32 {
+    let compressed = compress(value);
+    if enabled && (compressed < lower - 0.3 || compressed > upper + 0.3) {
+        return decompress(clamp(compressed, max(lower - expansion, 0.0), min(upper + expansion, 1.0)));
+    }
+    return value;
+}
+
+fn temporally_clamped_illumination(
+    center: vec2<i32>,
+    accumulated: vec3<f32>,
+    deviation: f32,
+) -> vec3<f32> {
+    let center_depth = load_depth(center);
+    let center_normal = load_normal(center);
+    let center_normal_len2 = dot(center_normal, center_normal);
+    var current_lower = vec3<f32>(1.0);
+    var current_upper = vec3<f32>(0.0);
+    for (var dy = -1; dy <= 1; dy += 1) {
+        for (var dx = -1; dx <= 1; dx += 1) {
+            let texel = clamp_texel(center + vec2<i32>(dx, dy));
+            if guide_geometry_weight(center_depth, center_normal, center_normal_len2, texel) < 0.1 {
+                continue;
+            }
+            let illumination = load_color(texel)
+                / (textureLoad(t_albedo, texel, 0).xyz + params.demodulation_offset);
+            let compressed = vec3<f32>(
+                compress(illumination.x),
+                compress(illumination.y),
+                compress(illumination.z),
+            );
+            current_lower = min(current_lower, compressed);
+            current_upper = max(current_upper, compressed);
+        }
+    }
+    let dark_current = all(current_upper < vec3<f32>(0.1));
+    let enabled = dark_current || deviation > 0.35;
+    let expansion = select(0.1, 0.02, dark_current);
+    let illumination = accumulated
+        / (textureLoad(t_albedo, center, 0).xyz + params.demodulation_offset);
+    return vec3<f32>(
+        anti_lag_channel(illumination.x, current_lower.x, current_upper.x, enabled, expansion),
+        anti_lag_channel(illumination.y, current_lower.y, current_upper.y, enabled, expansion),
+        anti_lag_channel(illumination.z, current_lower.z, current_upper.z, enabled, expansion),
+    );
 }
 
 @compute @workgroup_size(8, 8, 1)
@@ -322,42 +371,66 @@ fn pack_temporal(@builtin(global_invocation_id) id: vec3<u32>) {
         && position.x <= f32(params.width - 1u)
         && position.y <= f32(params.height - 1u);
 
-    // CPU accumulation validates at the nearest surface and then bilinearly
-    // samples history values. `floor(p + 0.5)` matches Rust's positive-coordinate
-    // rounding without relying on the shader language's tie rule.
-    let rounded = clamp(
-        vec2<i32>(floor(position + vec2<f32>(0.5))),
-        vec2<i32>(0),
-        vec2<i32>(i32(params.width) - 1, i32(params.height) - 1),
-    );
-    let previous_index = u32(rounded.y) * params.width + u32(rounded.x);
-    let valid = params.history_ready != 0u
-        && inside
-        && surfaces_match(
-            current_depth,
-            current_normal,
-            current_albedo,
-            history_scalar(HISTORY_DEPTH, previous_index, stride),
-            history_vec3(HISTORY_NORMAL, previous_index, stride),
-            history_vec3(HISTORY_ALBEDO, previous_index, stride),
-        );
-
     var previous_count = 0.0;
     var previous_color = vec3<f32>(0.0);
     var previous_luminance = 0.0;
     var previous_luminance_square = 0.0;
-    if valid {
-        previous_count = min(
-            history_bilinear_scalar(HISTORY_COUNT, position, stride),
-            f32(params.history_frames - 1u),
-        );
-        previous_color = history_bilinear_vec3(0u, position, stride);
-        previous_luminance = history_bilinear_scalar(HISTORY_LUMINANCE, position, stride);
-        previous_luminance_square = history_bilinear_scalar(
-            HISTORY_LUMINANCE_SQUARE,
-            position,
-            stride,
-        );
+    if params.history_ready != 0u && inside {
+        // Validate every bilinear tap before interpolation. History stores a
+        // mean and a count, so means are count-weighted as well; interpolating
+        // the two independently leaks energy across both silhouettes and
+        // partially reset history.
+        let lower_f = floor(position);
+        let lower = vec2<i32>(lower_f);
+        let fraction = position - lower_f;
+        let upper = vec2<i32>(i32(params.width) - 1, i32(params.height) - 1);
+        var valid_weight = 0.0;
+        var weighted_count = 0.0;
+        var color_sum = vec3<f32>(0.0);
+        var luminance_sum = 0.0;
+        var luminance_square_sum = 0.0;
+        for (var dy = 0; dy <= 1; dy += 1) {
+            let wy = select(1.0 - fraction.y, fraction.y, dy != 0);
+            for (var dx = 0; dx <= 1; dx += 1) {
+                let wx = select(1.0 - fraction.x, fraction.x, dx != 0);
+                let bilinear_weight = wx * wy;
+                let sample_texel = clamp(lower + vec2<i32>(dx, dy), vec2<i32>(0), upper);
+                let sample_index = u32(sample_texel.y) * params.width + u32(sample_texel.x);
+                if bilinear_weight > 0.0 && surfaces_match(
+                    current_depth,
+                    current_normal,
+                    current_albedo,
+                    history_scalar(HISTORY_DEPTH, sample_index, stride),
+                    history_vec3(HISTORY_NORMAL, sample_index, stride),
+                    history_vec3(HISTORY_ALBEDO, sample_index, stride),
+                ) {
+                    let sample_count = history_scalar(HISTORY_COUNT, sample_index, stride);
+                    let weight = bilinear_weight * sample_count;
+                    color_sum += weight * history_vec3(0u, sample_index, stride);
+                    luminance_sum += weight * history_scalar(
+                        HISTORY_LUMINANCE,
+                        sample_index,
+                        stride,
+                    );
+                    luminance_square_sum += weight * history_scalar(
+                        HISTORY_LUMINANCE_SQUARE,
+                        sample_index,
+                        stride,
+                    );
+                    valid_weight += bilinear_weight;
+                    weighted_count += weight;
+                }
+            }
+        }
+        if weighted_count > 0.0 {
+            previous_count = min(
+                weighted_count / valid_weight,
+                f32(params.history_frames - 1u),
+            );
+            previous_color = color_sum / weighted_count;
+            previous_luminance = luminance_sum / weighted_count;
+            previous_luminance_square = luminance_square_sum / weighted_count;
+        }
     }
 
     let count = previous_count + 1.0;
@@ -372,6 +445,10 @@ fn pack_temporal(@builtin(global_invocation_id) id: vec3<u32>) {
     let mean_luminance_square = (
         luminance * luminance + previous_count * previous_luminance_square
     ) / count;
+    let deviation = sqrt(max(
+        mean_luminance_square - mean_luminance * mean_luminance,
+        0.0,
+    ));
 
     current_low_history[0u * stride + offset] = accumulated.x;
     current_low_history[1u * stride + offset] = accumulated.y;
@@ -386,6 +463,12 @@ fn pack_temporal(@builtin(global_invocation_id) id: vec3<u32>) {
     current_low_history[(HISTORY_ALBEDO + 0u) * stride + offset] = current_albedo.x;
     current_low_history[(HISTORY_ALBEDO + 1u) * stride + offset] = current_albedo.y;
     current_low_history[(HISTORY_ALBEDO + 2u) * stride + offset] = current_albedo.z;
+    if params.guide_mix != 0u {
+        let clamped = temporally_clamped_illumination(texel, accumulated, deviation);
+        current_low_history[(HISTORY_GUIDE + 0u) * stride + offset] = clamped.x;
+        current_low_history[(HISTORY_GUIDE + 1u) * stride + offset] = clamped.y;
+        current_low_history[(HISTORY_GUIDE + 2u) * stride + offset] = clamped.z;
+    }
 
     var channel = write_planes(texel, stride, offset, accumulated);
     cond[(channel + 0u) * stride + offset] = compressed.x;
@@ -394,10 +477,61 @@ fn pack_temporal(@builtin(global_invocation_id) id: vec3<u32>) {
     cond[(channel + 3u) * stride + offset] = count / f32(params.history_frames);
     channel += 4u;
     if channel < params.channels {
-        cond[channel * stride + offset] = sqrt(max(
-            mean_luminance_square - mean_luminance * mean_luminance,
-            0.0,
-        ));
+        cond[channel * stride + offset] = deviation;
     }
+    // Keep current-frame evidence separate from the accumulated guide. This
+    // lets the learned gate drop stale illumination even when the surface
+    // itself is still a valid temporal match.
     write_base(texel, stride, offset, current_color);
+}
+
+// Low-resolution half of the learned guide branch. This is a second dispatch
+// because `pack_temporal` has to finish writing every accumulated sample before
+// any neighbour can filter it. Diffuse albedo is divided out of the signal and
+// therefore intentionally does not reject another sample on the same surface.
+@compute @workgroup_size(8, 8, 1)
+fn filter_temporal_guide(@builtin(global_invocation_id) id: vec3<u32>) {
+    if id.x >= params.width || id.y >= params.height {
+        return;
+    }
+    let center = vec2<i32>(id.xy);
+    let center_depth = load_depth(center);
+    let center_normal = load_normal(center);
+    let center_normal_len2 = dot(center_normal, center_normal);
+    let stride = params.width * params.height;
+    var sum = vec3<f32>(0.0);
+    var bounded_sum = vec3<f32>(0.0);
+    var weight_sum = 0.0;
+    for (var dy = -6; dy <= 6; dy += 1) {
+        for (var dx = -6; dx <= 6; dx += 1) {
+            let texel = clamp_texel(center + vec2<i32>(dx, dy));
+            let distance2 = f32(dx * dx + dy * dy);
+            var weight = exp(-distance2 / params.guide_spatial_denominator);
+            weight *= guide_geometry_weight(center_depth, center_normal, center_normal_len2, texel);
+            let index = u32(texel.y) * params.width + u32(texel.x);
+            let illumination = vec3<f32>(
+                current_low_history[(HISTORY_GUIDE + 0u) * stride + index],
+                current_low_history[(HISTORY_GUIDE + 1u) * stride + index],
+                current_low_history[(HISTORY_GUIDE + 2u) * stride + index],
+            );
+            sum += weight * illumination;
+            bounded_sum += weight * vec3<f32>(
+                compress(illumination.x),
+                compress(illumination.y),
+                compress(illumination.z),
+            );
+            weight_sum += weight;
+        }
+    }
+    let linear = sum / max(weight_sum, 1.0e-12);
+    let bounded = bounded_sum / max(weight_sum, 1.0e-12);
+    let robust = vec3<f32>(decompress(bounded.x), decompress(bounded.y), decompress(bounded.z));
+    let luma = vec3<f32>(0.2126, 0.7152, 0.0722);
+    let limit = 1.5 * dot(robust, luma) + 0.02;
+    let scale = min(limit / max(dot(linear, luma), 1.0e-12), 1.0);
+    let offset = id.y * params.width + id.x;
+    let guide = linear * scale;
+    base[(3u + 0u) * stride + offset] = guide.x;
+    base[(3u + 1u) * stride + offset] = guide.y;
+    base[(3u + 2u) * stride + offset] = guide.z;
 }

@@ -173,7 +173,7 @@ impl Config {
     /// current-frame RGB, normalized sample count, and the exact guided RGB
     /// over which a low-resolution checkpoint predicts its correction.
     pub fn auxiliary_channels(self) -> u32 {
-        7 + u32::from(self.features == Features::Variance)
+        7 + u32::from(self.features.has_variance())
     }
 
     /// The same, for a checkpoint that gathers the samples itself.
@@ -183,7 +183,12 @@ impl Config {
     /// put the 13x13 filter back into a pipeline built to remove it, to describe
     /// a base that is no longer there.
     pub fn gather_auxiliary_channels(self) -> u32 {
-        4 + u32::from(self.features == Features::Variance)
+        4 + u32::from(self.features.has_variance())
+    }
+
+    /// Raw stratified sample history, space-to-depth colour plus sample count.
+    pub fn phase_channels(self, scale: u32) -> u32 {
+        u32::from(self.features.has_phase()) * 4 * scale * scale
     }
 }
 
@@ -194,6 +199,20 @@ pub enum Features {
     Basic,
     /// Basic inputs plus accepted-history luminance deviation.
     Variance,
+    /// Variance inputs plus raw samples accumulated at their exact output
+    /// subpixel positions. This preserves the information an LR accumulator
+    /// necessarily collapses before a temporal upscaler can see it.
+    Phase,
+}
+
+impl Features {
+    pub fn has_variance(self) -> bool {
+        self != Self::Basic
+    }
+
+    pub fn has_phase(self) -> bool {
+        self == Self::Phase
+    }
 }
 
 /// A sample prepared for the temporal model.
@@ -208,6 +227,10 @@ pub struct PreparedSample {
     pub confidence: Vec<f32>,
     /// Standard deviation of compressed luminance across accepted history.
     pub deviation: Vec<f32>,
+    /// Per input texel, then output subpixel, then RGB; linear radiance.
+    pub phase_color: Vec<f32>,
+    /// Per input texel and output subpixel, normalized to the expected maximum.
+    pub phase_count: Vec<f32>,
 }
 
 #[derive(Clone)]
@@ -217,6 +240,19 @@ struct History {
     luminance: Vec<f32>,
     luminance_square: Vec<f32>,
     unrejected: Vec<f32>,
+    phase_color: Vec<f32>,
+    phase_count: Vec<f32>,
+}
+
+fn phase_slot(sample: &Sample, layout: &Layout) -> Option<usize> {
+    let base = layout.lr_planes.channel_offset(Plane::Jitter)?;
+    let texels = layout.lr_texels();
+    let scale = layout.scale as f32;
+    let x = ((sample.lr[base * texels].to_f32() + 0.5) * scale - 0.5).round();
+    let y = ((sample.lr[(base + 1) * texels].to_f32() + 0.5) * scale - 0.5).round();
+    let scale_i = layout.scale as i32;
+    let (x, y) = (x as i32, y as i32);
+    (x >= 0 && y >= 0 && x < scale_i && y < scale_i).then_some((y * scale_i + x) as usize)
 }
 
 fn compressed_luminance(rgb: [f32; 3]) -> f32 {
@@ -278,13 +314,89 @@ fn initial(sample: &Sample, layout: &Layout) -> History {
     }
     let luminance: Vec<_> = color.iter().copied().map(compressed_luminance).collect();
     let color: Vec<f32> = color.into_iter().flatten().collect();
+    let slots = (layout.scale * layout.scale) as usize;
+    let mut phase_color = vec![0.0; texels * slots * 3];
+    let mut phase_count = vec![0.0; texels * slots];
+    if let Some(slot) = phase_slot(sample, layout) {
+        for index in 0..texels {
+            phase_count[index * slots + slot] = 1.0;
+            phase_color[(index * slots + slot) * 3..(index * slots + slot + 1) * 3]
+                .copy_from_slice(&color[index * 3..index * 3 + 3]);
+        }
+    }
     History {
         unrejected: color.clone(),
         color,
         count: vec![1.0; texels],
         luminance_square: luminance.iter().map(|value| value * value).collect(),
         luminance,
+        phase_color,
+        phase_count,
     }
+}
+
+/// Reproject an accumulated estimate without mixing surfaces or giving a
+/// one-sample texel the same influence as a mature one.
+///
+/// History texels store means, so bilinear interpolation has to weight each
+/// mean by its sample count before combining it. Each of the four taps is also
+/// validated independently: accepting the nearest tap and then interpolating
+/// all four leaks unrelated radiance across silhouettes.
+fn reproject_history(
+    history: &History,
+    previous: &Sample,
+    layout: &Layout,
+    current: Surface,
+    position: [f32; 2],
+    config: Config,
+) -> Option<([f32; 3], f32, f32, f32)> {
+    let width = layout.lr_width as usize;
+    let height = layout.lr_height as usize;
+    let [x, y] = position;
+    if x < 0.0 || y < 0.0 || x > (width - 1) as f32 || y > (height - 1) as f32 {
+        return None;
+    }
+
+    let x0 = x.floor();
+    let y0 = y.floor();
+    let tx = x - x0;
+    let ty = y - y0;
+    let mut color_sum = [0.0; 3];
+    let mut luminance_sum = 0.0;
+    let mut luminance_square_sum = 0.0;
+    let mut weighted_count = 0.0;
+    let mut valid_weight = 0.0;
+    for (dx, wx) in [(0.0, 1.0 - tx), (1.0, tx)] {
+        for (dy, wy) in [(0.0, 1.0 - ty), (1.0, ty)] {
+            let bilinear_weight = wx * wy;
+            if bilinear_weight == 0.0 {
+                continue;
+            }
+            let sx = (x0 + dx).clamp(0.0, (width - 1) as f32) as usize;
+            let sy = (y0 + dy).clamp(0.0, (height - 1) as f32) as usize;
+            let index = sy * width + sx;
+            if !current.matches(surface_at(previous, layout, index), config.rejection) {
+                continue;
+            }
+            let weight = bilinear_weight * history.count[index];
+            for (channel, value) in color_sum.iter_mut().enumerate() {
+                *value += weight * history.color[index * 3 + channel];
+            }
+            luminance_sum += weight * history.luminance[index];
+            luminance_square_sum += weight * history.luminance_square[index];
+            weighted_count += weight;
+            valid_weight += bilinear_weight;
+        }
+    }
+    (weighted_count > 0.0).then(|| {
+        let inverse = weighted_count.recip();
+        (
+            color_sum.map(|value| value * inverse),
+            (weighted_count / valid_weight).min(config.frames.saturating_sub(1) as f32),
+            luminance_sum * inverse,
+            luminance_square_sum * inverse,
+        )
+    })
 }
 
 fn accumulate(
@@ -302,17 +414,17 @@ fn accumulate(
         .chunks_exact(3)
         .map(|rgb| [rgb[0], rgb[1], rgb[2]])
         .collect();
-    let history_count: Vec<[f32; 1]> = history.count.iter().map(|&v| [v]).collect();
-    let history_luminance: Vec<[f32; 1]> = history.luminance.iter().map(|&v| [v]).collect();
-    let history_luminance_square: Vec<[f32; 1]> =
-        history.luminance_square.iter().map(|&v| [v]).collect();
     let mut next = History {
         color: vec![0.0; texels * 3],
         count: vec![1.0; texels],
         luminance: vec![0.0; texels],
         luminance_square: vec![0.0; texels],
         unrejected: vec![0.0; texels * 3],
+        phase_color: history.phase_color.clone(),
+        phase_count: history.phase_count.clone(),
     };
+    let phase = phase_slot(current, layout);
+    let slots = (layout.scale * layout.scale) as usize;
     for y in 0..height {
         for x in 0..width {
             let index = y * width + x;
@@ -325,33 +437,31 @@ fn accumulate(
                 && position[1] >= 0.0
                 && position[0] <= (width - 1) as f32
                 && position[1] <= (height - 1) as f32;
-            let previous_x = position[0].round().clamp(0.0, (width - 1) as f32) as usize;
-            let previous_y = position[1].round().clamp(0.0, (height - 1) as f32) as usize;
-            let valid = inside
-                && surface_at(current, layout, index).matches(
-                    surface_at(previous, layout, previous_y * width + previous_x),
-                    config.rejection,
-                );
-            let count = if valid {
-                bilinear(&history_count, width, height, position)[0]
-                    .min(config.frames.saturating_sub(1) as f32)
-            } else {
-                0.0
-            };
-            let prior = valid.then(|| bilinear(&history_color, width, height, position));
-            let (prior_luminance, prior_luminance_square) = if valid {
-                (
-                    bilinear(&history_luminance, width, height, position)[0],
-                    bilinear(&history_luminance_square, width, height, position)[0],
-                )
-            } else {
-                (0.0, 0.0)
-            };
+            let prior = reproject_history(
+                history,
+                previous,
+                layout,
+                surface_at(current, layout, index),
+                position,
+                config,
+            );
+            let (prior_color, count, prior_luminance, prior_luminance_square) =
+                prior.unwrap_or(([0.0; 3], 0.0, 0.0, 0.0));
             let current_rgb = [
                 plane(current, layout, Plane::Color, 0, index),
                 plane(current, layout, Plane::Color, 1, index),
                 plane(current, layout, Plane::Color, 2, index),
             ];
+            if let Some(slot) = phase {
+                let phase_index = index * slots + slot;
+                let count = next.phase_count[phase_index];
+                for (channel, &current_value) in current_rgb.iter().enumerate() {
+                    let destination = phase_index * 3 + channel;
+                    next.phase_color[destination] =
+                        (next.phase_color[destination] * count + current_value) / (count + 1.0);
+                }
+                next.phase_count[phase_index] = count + 1.0;
+            }
             // The un-rejected tap is the previous estimate wherever motion
             // lands, even when the surface test says no. Out of the frame
             // there is no previous, so the tap is this frame — a no-op
@@ -363,9 +473,8 @@ fn accumulate(
             };
             for channel in 0..3 {
                 let current_value = current_rgb[channel];
-                let prior_value = prior.as_ref().map_or(0.0, |value| value[channel]);
                 next.color[index * 3 + channel] =
-                    (current_value + count * prior_value) / (count + 1.0);
+                    (current_value + count * prior_color[channel]) / (count + 1.0);
                 next.unrejected[index * 3 + channel] = warped[channel];
             }
             let luminance = compressed_luminance(current_rgb);
@@ -482,6 +591,14 @@ fn finish(mut sample: Sample, history: History, layout: &Layout, config: Config)
             .zip(&history.luminance)
             .map(|(&square, &mean)| (square - mean * mean).max(0.0).sqrt())
             .collect(),
+        phase_color: history.phase_color,
+        phase_count: history
+            .phase_count
+            .into_iter()
+            .map(|count| {
+                count / (config.frames as f32 / (layout.scale * layout.scale) as f32).max(1.0)
+            })
+            .collect(),
     }
 }
 
@@ -489,6 +606,64 @@ fn finish(mut sample: Sample, history: History, layout: &Layout, config: Config)
 mod tests {
     use super::*;
     use crate::dataset::{InputSource, PlaneSet, Writer};
+
+    #[test]
+    fn phase_history_keeps_each_output_subpixel_separate() {
+        let layout = Layout {
+            scale: 2,
+            lr_width: 1,
+            lr_height: 1,
+            lr_source: InputSource::PathTrace,
+            lr_planes: PlaneSet::new()
+                .with(Plane::Color)
+                .with(Plane::Depth)
+                .with(Plane::Normal)
+                .with(Plane::DiffuseAlbedo)
+                .with(Plane::Motion)
+                .with(Plane::Jitter),
+            hr_planes: PlaneSet::new().with(Plane::Color),
+        };
+        let path = std::env::temp_dir().join("ommatidia-temporal-phase.omd");
+        let mut writer = Writer::create_sequence(&path, layout, 4).unwrap();
+        for (frame, jitter) in [[-0.25, -0.25], [0.25, -0.25], [-0.25, 0.25], [0.25, 0.25]]
+            .into_iter()
+            .enumerate()
+        {
+            let mut sample = Sample {
+                lr: vec![f16::ZERO; layout.lr_len()],
+                hr: vec![f16::ZERO; layout.hr_len()],
+            };
+            let color = layout.lr_planes.channel_offset(Plane::Color).unwrap();
+            sample.lr[color] = f16::from_f32(frame as f32 + 1.0);
+            let normal = layout.lr_planes.channel_offset(Plane::Normal).unwrap();
+            sample.lr[normal + 2] = f16::ONE;
+            let jitter_base = layout.lr_planes.channel_offset(Plane::Jitter).unwrap();
+            sample.lr[jitter_base] = f16::from_f32(jitter[0]);
+            sample.lr[jitter_base + 1] = f16::from_f32(jitter[1]);
+            writer.write(&sample).unwrap();
+        }
+        writer.finish().unwrap();
+
+        let mut reader = Reader::open(&path).unwrap();
+        let prepared = prepare(
+            &mut reader,
+            3,
+            Config {
+                frames: 4,
+                rejection: RejectionConfig::default(),
+                features: Features::Phase,
+                unrejected_tap: false,
+                previous_output: false,
+            },
+        )
+        .unwrap();
+        let red: Vec<_> = (0..4)
+            .map(|phase| prepared.phase_color[phase * 3])
+            .collect();
+        assert_eq!(red, vec![1.0, 2.0, 3.0, 4.0]);
+        assert_eq!(prepared.phase_count, vec![1.0; 4]);
+        std::fs::remove_file(path).unwrap();
+    }
 
     #[test]
     fn motion_points_from_current_to_previous() {
@@ -673,6 +848,87 @@ mod tests {
         .unwrap();
         // Only the depth-1 column survives; mixing in 100 would be the bug.
         assert!((sampled[0] - 1.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn accumulated_reprojection_rejects_each_bilinear_tap() {
+        let layout = Layout {
+            scale: 2,
+            lr_width: 2,
+            lr_height: 1,
+            lr_source: InputSource::PathTrace,
+            lr_planes: PlaneSet::new()
+                .with(Plane::Color)
+                .with(Plane::Depth)
+                .with(Plane::Normal)
+                .with(Plane::DiffuseAlbedo),
+            hr_planes: PlaneSet::new().with(Plane::Color),
+        };
+        let mut previous = Sample {
+            lr: vec![f16::ZERO; layout.lr_len()],
+            hr: vec![f16::ZERO; layout.hr_len()],
+        };
+        let texels = layout.lr_texels();
+        let depth = layout.lr_planes.channel_offset(Plane::Depth).unwrap();
+        previous.lr[depth * texels] = f16::from_f32(1.0);
+        previous.lr[depth * texels + 1] = f16::from_f32(10.0);
+        let normal = layout.lr_planes.channel_offset(Plane::Normal).unwrap();
+        let albedo = layout
+            .lr_planes
+            .channel_offset(Plane::DiffuseAlbedo)
+            .unwrap();
+        for index in 0..texels {
+            previous.lr[(normal + 2) * texels + index] = f16::ONE;
+            for channel in 0..3 {
+                previous.lr[(albedo + channel) * texels + index] = f16::from_f32(0.5);
+            }
+        }
+        let mut history = History {
+            color: vec![2.0, 0.0, 0.0, 100.0, 0.0, 0.0],
+            count: vec![4.0, 4.0],
+            luminance: vec![0.2, 0.9],
+            luminance_square: vec![0.04, 0.81],
+            unrejected: Vec::new(),
+            phase_color: Vec::new(),
+            phase_count: Vec::new(),
+        };
+        let config = Config {
+            frames: 8,
+            rejection: RejectionConfig::default(),
+            features: Features::Variance,
+            unrejected_tap: false,
+            previous_output: true,
+        };
+        let (color, count, luminance, square) = reproject_history(
+            &history,
+            &previous,
+            &layout,
+            flat_surface(1.0),
+            [0.5, 0.0],
+            config,
+        )
+        .unwrap();
+        assert_eq!(color, [2.0, 0.0, 0.0]);
+        assert_eq!(count, 4.0);
+        assert!((luminance - 0.2).abs() < 1e-6);
+        assert!((square - 0.04).abs() < 1e-6);
+
+        // With both surfaces valid, the mature texel contributes four times
+        // as much as the newly reset one. Interpolating the two means first
+        // would incorrectly return 51 instead of 21.6.
+        previous.lr[depth * texels + 1] = f16::from_f32(1.0);
+        history.count[1] = 1.0;
+        let (color, count, _, _) = reproject_history(
+            &history,
+            &previous,
+            &layout,
+            flat_surface(1.0),
+            [0.5, 0.0],
+            config,
+        )
+        .unwrap();
+        assert!((color[0] - 21.6).abs() < 1e-5);
+        assert!((count - 2.5).abs() < 1e-6);
     }
 
     /// The reason the teacher owns occlusion: on real sequences the
