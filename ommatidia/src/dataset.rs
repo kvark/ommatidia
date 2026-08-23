@@ -89,11 +89,20 @@ pub enum Plane {
     /// place a jittered low-resolution sample at the correct output subpixel;
     /// motion alone only describes the offset *difference* between frames.
     Jitter = 7,
+    /// Diffuse illumination with the primary surface's albedo divided out.
+    DiffuseIllumination = 8,
+    /// Radiance attributed to the primary specular response, including tint.
+    SpecularRadiance = 9,
+    /// Emission visible directly to the camera.
+    EmissiveRadiance = 10,
 }
 
 /// Every plane, in the order they are stored in a record.
-pub const ALL_PLANES: [Plane; 8] = [
+pub const ALL_PLANES: [Plane; 11] = [
     Plane::Color,
+    Plane::DiffuseIllumination,
+    Plane::SpecularRadiance,
+    Plane::EmissiveRadiance,
     Plane::Depth,
     Plane::Normal,
     Plane::DiffuseAlbedo,
@@ -107,7 +116,13 @@ impl Plane {
     /// Number of channels this plane contributes.
     pub const fn channels(self) -> usize {
         match self {
-            Self::Color | Self::Normal | Self::DiffuseAlbedo | Self::SpecularF0 => 3,
+            Self::Color
+            | Self::DiffuseIllumination
+            | Self::SpecularRadiance
+            | Self::EmissiveRadiance
+            | Self::Normal
+            | Self::DiffuseAlbedo
+            | Self::SpecularF0 => 3,
             Self::Depth | Self::Roughness => 1,
             Self::Motion | Self::Jitter => 2,
         }

@@ -74,7 +74,10 @@ fn encode(plane: Plane, value: f16) -> f32 {
     let value = value.to_f32();
     match plane {
         // Radiance is unbounded; the rest already arrive in a sane range.
-        Plane::Color => transform::compress(value),
+        Plane::Color
+        | Plane::DiffuseIllumination
+        | Plane::SpecularRadiance
+        | Plane::EmissiveRadiance => transform::compress(value),
         Plane::Depth => transform::encode_depth(value),
         Plane::Normal
         | Plane::DiffuseAlbedo
