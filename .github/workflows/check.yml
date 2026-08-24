@@ -19,7 +19,7 @@ env:
   # Path dependencies live in sibling checkouts, so pin their exact commits
   # just as Cargo.lock pins registry and Git dependencies.
   BLADE_REV: 95f5004fb02785a792c883a5312ca5ac37872a75
-  MEGANEURA_REV: 8dc8c9d2401cd4910d4478bcd36fb2fbc3a35ca8
+  MEGANEURA_REV: 2ac7beb8724536eeea4e9b9f8e6e00fb1649bef2
 
 jobs:
   platform:
