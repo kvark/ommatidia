@@ -57,6 +57,28 @@ second device. What remains below is specifically the C/external-Vulkan path,
 where blade-graphics cannot yet wrap handles created by another graphics
 stack.
 
+## Resolution contract
+
+Checkpoint weights are independent of spatial size; the training tile is not
+a runtime frame-size restriction. The Rust API's
+`Upscaler::from_checkpoint_for_extent` accepts rectangular input extents. Each
+axis must be divisible by `2^(levels - 1)` and must be at least twice that
+alignment. The current published three-level checkpoint therefore accepts
+input axes divisible by 4 and at least 8 texels long.
+
+Reconstruction scale is checkpoint-defined and integral. The published model
+is 2×, so an input extent `[w, h]` produces `[2w, 2h]`; changing the scale
+requires a different checkpoint. Meganeura prepares a graph for the selected
+extent rather than dynamically resizing one session. An application should
+cache an `Upscaler` per active extent and reset temporal history when switching
+sizes. Low-resolution inputs must all have the selected input extent, while
+the output and any checkpoint-required high-resolution guides must have the
+scaled extent. GPU texture limits and memory are the practical ceiling.
+
+ABI 1.1 already reports `training_tile`, `extent_alignment`, and `scale` so C
+callers can plan resources without opening a GPU. Native C inference is not
+yet exposed.
+
 ## Release shape
 
 A tagged GitHub release should eventually contain one archive per supported

@@ -120,11 +120,16 @@ separate control, not Ommatidium's input. OIDN denoises at input resolution and
 then receives the same texel-centre 2× bilinear reconstruction—it is not being
 presented as an OIDN upscaler.
 
-| scene | Sparse paths (4 spp, 128×128) | Ommatidium 2× | OIDN High + bilinear 2× | ReSTIR+SVGF control + bilinear 2× | Canonical (4,096 spp, 256×256) |
+| scene | Sparse paths + bilinear 2× | Ommatidium 2× | OIDN High + bilinear 2× | ReSTIR+SVGF + bilinear 2× | Canonical 4,096 spp |
 |---|---|---|---|---|---|
-| canopy shadow | ![Sparse canopy-shadow input](docs/comparison-suite/canopy-shadow/input.png) | ![Ommatidium canopy-shadow reconstruction](docs/comparison-suite/canopy-shadow/ommatidium.png) | ![OIDN High canopy-shadow denoise](docs/comparison-suite/canopy-shadow/oidn-input-high.png) | ![ReSTIR plus SVGF canopy-shadow control](docs/comparison-suite/canopy-shadow/restir-svgf.png) | ![Canonical canopy-shadow reference](docs/comparison-suite/canopy-shadow/canonical.png) |
-| local light | ![Sparse local-light input](docs/comparison-suite/local-light/input.png) | ![Ommatidium local-light reconstruction](docs/comparison-suite/local-light/ommatidium.png) | ![OIDN High local-light denoise](docs/comparison-suite/local-light/oidn-input-high.png) | ![ReSTIR plus SVGF local-light control](docs/comparison-suite/local-light/restir-svgf.png) | ![Canonical local-light reference](docs/comparison-suite/local-light/canonical.png) |
-| hard shadow | ![Sparse hard-shadow input](docs/comparison-suite/hard-shadow/input.png) | ![Ommatidium hard-shadow reconstruction](docs/comparison-suite/hard-shadow/ommatidium.png) | ![OIDN High hard-shadow denoise](docs/comparison-suite/hard-shadow/oidn-input-high.png) | ![ReSTIR plus SVGF hard-shadow control](docs/comparison-suite/hard-shadow/restir-svgf.png) | ![Canonical hard-shadow reference](docs/comparison-suite/hard-shadow/canonical.png) |
+| canopy shadow | ![Bilinearly reconstructed sparse canopy-shadow paths](docs/comparison-suite/canopy-shadow/bilinear.png) | ![Ommatidium canopy-shadow reconstruction](docs/comparison-suite/canopy-shadow/ommatidium.png) | ![OIDN High canopy-shadow denoise](docs/comparison-suite/canopy-shadow/oidn-input-high.png) | ![ReSTIR plus SVGF canopy-shadow control](docs/comparison-suite/canopy-shadow/restir-svgf.png) | ![Canonical canopy-shadow reference](docs/comparison-suite/canopy-shadow/canonical.png) |
+| local light | ![Bilinearly reconstructed sparse local-light paths](docs/comparison-suite/local-light/bilinear.png) | ![Ommatidium local-light reconstruction](docs/comparison-suite/local-light/ommatidium.png) | ![OIDN High local-light denoise](docs/comparison-suite/local-light/oidn-input-high.png) | ![ReSTIR plus SVGF local-light control](docs/comparison-suite/local-light/restir-svgf.png) | ![Canonical local-light reference](docs/comparison-suite/local-light/canonical.png) |
+| hard shadow | ![Bilinearly reconstructed sparse hard-shadow paths](docs/comparison-suite/hard-shadow/bilinear.png) | ![Ommatidium hard-shadow reconstruction](docs/comparison-suite/hard-shadow/ommatidium.png) | ![OIDN High hard-shadow denoise](docs/comparison-suite/hard-shadow/oidn-input-high.png) | ![ReSTIR plus SVGF hard-shadow control](docs/comparison-suite/hard-shadow/restir-svgf.png) | ![Canonical hard-shadow reference](docs/comparison-suite/hard-shadow/canonical.png) |
+
+All five cells in each row are generated at the same 256×256 output extent.
+The first column is the actual 128×128 sparse path input reconstructed with the
+suite's texel-centre bilinear 2× baseline; the native 128×128 diagnostic is not
+used in this table.
 
 The six-scene suite confirms both the progress and the shortcoming visible in
 those images. Ommatidium averages 29.26 dB, 1.21 dB above OIDN High, retains 77%
@@ -136,6 +141,9 @@ is real. The complete images, per-scene CSV, speed trace, rejected first fixes,
 and reproduction command are in the
 [`curated OIDN result`](docs/results/curated-oidn-2026-08-22.md) and
 [`benchmark harness`](benchmarks/README.md).
+The ordered work needed to turn the current metric lead into an equally clear
+visual lead is tracked in the
+[`quality roadmap`](docs/quality-roadmap.md).
 
 ### Temporal history removes the broad fluctuation
 
@@ -472,6 +480,24 @@ renderer.post_proc_external(
     &[],
 );
 ```
+
+### Resolution contract
+
+Runtime frames are not limited to the checkpoint's square training tile.
+`from_checkpoint_for_extent` accepts a rectangular input extent and produces
+exactly `scale` times that width and height. Each input axis must be divisible
+by `2^(levels - 1)` and must remain at least two texels after that
+downsampling. For the published three-level, 2× checkpoint this means any
+width and height divisible by 4 and no smaller than 8; 960×540 → 1920×1080
+is one valid example.
+
+The scale is part of the checkpoint, so a 2× checkpoint cannot be requested
+at an arbitrary scale. Meganeura also prepares the graph for one input extent:
+create or cache one `Upscaler` per size, and use a fresh instance or call
+`reset_history` after a resize. All low-resolution inputs must match the
+selected input extent. The output and any required high-resolution G-buffer
+planes must match the scaled extent. Device texture limits, memory, and work
+that grows roughly with input pixel count are the practical upper bounds.
 
 Raw Vulkan/C integration is planned as a user-space C ABI, not a Vulkan
 extension. The ownership, synchronization, and release contract is in
