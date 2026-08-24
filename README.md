@@ -206,8 +206,15 @@ fixed estimator from 31.11 to 32.82 dB, SSIM from 0.9349 to 0.9441, and
 low-frequency PSNR from 35.33 to 38.68 dB while preserving luminance. Reusing
 the preceding frame's reference-derived choices retains most of the gain, so
 the decision is stable enough to try learning. It remains an oracle, not a
-product result; the next implementation step is a small per-lobe mixture head
-proven in the CPU evaluator before its GPU contract grows.
+product result. Two deployable probes failed the offline gate and were removed:
+a pooled CPU selector recovered only 26–29% of the held-out PSNR and
+low-frequency oracle gaps, while a spatial mixture head scored 31.01 dB versus
+31.10 dB for the fixed estimator. The
+[`pooled`](docs/results/learned-lobe-selector-2026-08-24.md) and
+[`spatial`](docs/results/spatial-lobe-mixture-2026-08-24.md) negative results
+leave the oracle as a useful diagnostic, not a committed architecture. The
+next quality step is broader clean scene coverage and direct lobe
+reconstruction rather than another filter-choice classifier.
 
 | fixed split-lobe estimator | 8x8 per-lobe scale oracle | 16,384-spp reference |
 |---|---|---|

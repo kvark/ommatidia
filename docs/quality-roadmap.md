@@ -25,21 +25,26 @@ noise without a larger backbone or new general-purpose Meganeura operations.
 
 ## Ordered experiments
 
-1. **Learn the measured scale-selection opportunity.** Train a small head to
-   produce bounded, convex mixtures of the six already-computed à-trous scales,
-   independently for diffuse and specular radiance. Supervise clean lobes and
-   compare against oracle distillation. Prove the feature set in the CPU
-   evaluator before adding a GPU path. The first gate is recovering at least
-   half of the held-out oracle gap: 31.97 dB PSNR, 0.9395 SSIM, and 37.0 dB
-   low-frequency PSNR on that same audit, with no detail regression and a
-   per-scene luminance ratio between 0.98 and 1.02.
+1. **Close the scale-selection investigation.** A pooled CPU selector recovered
+   only 26–29% of the held-out PSNR and low-frequency oracle gaps. A spatial
+   U-Net trained through the composed image then scored 31.01 dB versus 31.10
+   dB for the fixed estimator; low-frequency supervision and smoother block
+   decisions did not reverse the result. Both implementations were removed.
+   The [`pooled`](results/learned-lobe-selector-2026-08-24.md) and
+   [`spatial`](results/spatial-lobe-mixture-2026-08-24.md) reports rule out
+   investing native runtime complexity in filter-choice prediction with the
+   present data and features.
 
-2. **Broaden the clean corpus.** Add scene-held-out captures spanning hard and
-   soft shadows, small emissives, interiors, indirect fill, HDR highlights,
+2. **Broaden the clean corpus and predict clean lobes directly.** Add
+   scene-held-out captures spanning hard and soft shadows, small emissives,
+   interiors, indirect fill, HDR highlights,
    glossy and rough materials, textured geometry, thin silhouettes, and
    animated occlusion. Keep independent high-sample references and measure
    their own convergence. Procedural variants of the same scene family must
-   not cross the train/validation boundary.
+   not cross the train/validation boundary. Establish the data-scale curve,
+   then train a compact spatial model to reconstruct clean diffuse and
+   specular radiance rather than select among fixed filters. Retain the fixed
+   estimator as a stable input and baseline.
 
 3. **Train reconstruction and history together.** Feed new sparse samples,
    reprojected history, validity/disocclusion information, and the learned
