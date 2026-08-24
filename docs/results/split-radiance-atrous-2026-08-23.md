@@ -154,9 +154,14 @@ window is therefore useful policy, not the architectural fix.
 ## Decision
 
 Keep the renderer lobe contract and multiscale estimator. Do not keep the
-failed transformer branch. The scale oracle clears the quality gate, so the
-next learned target should predict a low-resolution mixture over the existing
-filter scales per lobe before composition. It should be proven in the CPU
-evaluator before adding a GPU contract or Meganeura operation. The current
-native runtime rejects split-lobe checkpoints until those planes and the
+failed transformer branch. The scale oracle clears the quality gate as an
+upper bound, but it did not translate into a useful deployed target. A subsequent
+[`pooled-selector experiment`](learned-lobe-selector-2026-08-24.md) recovered
+only 26–29% of the held-out PSNR and low-frequency gap, and a
+[`spatial mixture`](spatial-lobe-mixture-2026-08-24.md) trained through the
+composed image did not beat the fixed estimator. Both implementations were
+removed. The next experiment should broaden the scene-held-out clean corpus
+and reconstruct clean lobes directly, retaining the fixed estimator as an
+input and baseline. The current native runtime rejects split-lobe checkpoints
+until an experiment clears the offline gate and those planes and the
 multiscale reconstruction have a matching GPU pack/unpack path.
