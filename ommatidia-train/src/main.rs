@@ -54,6 +54,11 @@ impl Split {
     }
 }
 
+fn evenly_spaced_ordinals(total: usize, limit: usize) -> Vec<usize> {
+    let count = total.min(limit);
+    (0..count).map(|index| index * total / count).collect()
+}
+
 /// Samples drawn to measure the residual gain. Enough to average out the
 /// content variation between scenes without reading the whole set.
 const GAIN_PROBE_SAMPLES: usize = 16;
@@ -674,7 +679,12 @@ fn main() {
             1.0 / config.residual_gain
         );
     }
-    if let Err(message) = config.validate() {
+    // Evaluation rebuilds the exact stored configuration below. Validating a
+    // hybrid of checkpoint fields and default training flags rejects valid
+    // temporal checkpoints before that branch can load them.
+    if !args.eval_only
+        && let Err(message) = config.validate()
+    {
         eprintln!("model configuration is invalid: {message}");
         std::process::exit(1);
     }
@@ -1156,14 +1166,30 @@ impl Evaluator {
         let mut mix_crops = 0usize;
         let mut previous_temporal: Vec<Option<TemporalFrame>> =
             (0..crops.len()).map(|_| None).collect();
+        let mut previous_temporal_index = vec![None; crops.len()];
         let mut counted = 0usize;
         let started = std::time::Instant::now();
 
         let uses_previous_output =
             self.config.temporal.is_some_and(|t| t.previous_output) && !args.eval_no_recurrence;
+        // A capped prefix sees only the first held-out scene and its earliest
+        // history frames. Spread non-recurrent scoring over the full
+        // scene/frame/crop product instead; recurrence still needs strict
+        // sequence order and keeps the prefix behavior.
+        let balanced = !uses_previous_output;
+        let balanced_ordinals = balanced.then(|| {
+            let frames = split
+                .validation()
+                .filter(|&index| batcher.has_history(index))
+                .count();
+            evenly_spaced_ordinals(frames * crops.len(), args.eval_crops)
+        });
+        let mut candidate_ordinal = 0usize;
+        let mut selected_ordinal = 0usize;
         'outer: for index in split.validation() {
             if !batcher.has_history(index) && !uses_previous_output {
                 previous_temporal.iter_mut().for_each(|slot| *slot = None);
+                previous_temporal_index.fill(None);
                 continue;
             }
             let input = match batcher.sample(index) {
@@ -1176,8 +1202,27 @@ impl Evaluator {
             let sample = input.sample();
             let seeding = !batcher.has_history(index);
             for (crop_index, &crop) in crops.iter().enumerate() {
-                if !seeding && counted >= args.eval_crops {
+                let selected = if balanced {
+                    let ordinals = balanced_ordinals.as_ref().unwrap();
+                    let selected = ordinals.get(selected_ordinal) == Some(&candidate_ordinal);
+                    candidate_ordinal += 1;
+                    selected_ordinal += usize::from(selected);
+                    selected
+                } else {
+                    !seeding && counted < args.eval_crops
+                };
+                if !balanced && !seeding && !selected {
                     break 'outer;
+                }
+                if !seeding && !selected {
+                    continue;
+                }
+                if balanced
+                    && previous_temporal_index[crop_index]
+                        .is_some_and(|previous| previous + 1 != index)
+                {
+                    previous_temporal[crop_index] = None;
+                    previous_temporal_index[crop_index] = None;
                 }
                 let guided = has_guides
                     .then(|| batch::guided_base(sample, &layout, crop, self.config.guide));
@@ -1435,16 +1480,18 @@ impl Evaluator {
                         reference: reference.clone(),
                         surfaces: current_surfaces,
                     });
+                    previous_temporal_index[crop_index] = Some(index);
                 }
 
-                // A temporal preview has to show mature history. The old
-                // `counted == 0` rule selected frame 2 of 4, immediately after
-                // reset, and visually understated the very mechanism being
-                // evaluated. Keep the first crop, but take it from the last
-                // frame of the first held-out sequence. Spatial datasets keep
-                // their original first-crop behaviour.
+                // A temporal preview has to show mature history. A sequential
+                // recurrent score uses the last frame of its first sequence;
+                // a balanced capped score uses its last selected point, near
+                // the far end of validation. Spatial datasets retain their
+                // original first-crop behaviour.
                 let preview = if sequence_length == 1 {
                     counted == 0
+                } else if balanced {
+                    counted + 1 == balanced_ordinals.as_ref().unwrap().len()
                 } else {
                     index == split.validation().start + sequence_length - 1 && crop_index == 0
                 };
@@ -1619,6 +1666,13 @@ mod cli_tests {
     fn cosine_rate_reaches_both_endpoints() {
         assert!((cosine_learning_rate(2e-4, 2e-5, 0, 4000) - 2e-4).abs() < 1e-10);
         assert!((cosine_learning_rate(2e-4, 2e-5, 3999, 4000) - 2e-5).abs() < 1e-10);
+    }
+
+    #[test]
+    fn capped_evaluation_spans_the_whole_validation_product() {
+        assert_eq!(evenly_spaced_ordinals(10, 4), [0, 2, 5, 7]);
+        assert_eq!(evenly_spaced_ordinals(3, 8), [0, 1, 2]);
+        assert!(evenly_spaced_ordinals(0, 8).is_empty());
     }
 
     /// Every flag the usage text advertises has to actually be accepted.
