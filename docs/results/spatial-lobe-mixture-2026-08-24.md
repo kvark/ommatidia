@@ -61,4 +61,7 @@ The next quality experiment should first broaden the independent clean corpus
 and establish a data-scale curve, then predict clean diffuse and specular
 radiance directly while retaining the fixed multiscale result as an input and
 baseline. The scale oracle remains useful as a diagnostic ceiling, not as the
-next product architecture.
+next product architecture. The subsequent
+[`direct-lobe residual probe`](direct-lobe-residual-2026-08-24.md) improved
+error and detail but failed the untouched SSIM gate, reinforcing that the
+training corpus must broaden before the model grows.

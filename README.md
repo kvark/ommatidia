@@ -122,11 +122,12 @@ presented as an OIDN upscaler.
 
 | scene | Sparse paths + bilinear 2× | Ommatidium 2× | OIDN High + bilinear 2× | ReSTIR+SVGF + bilinear 2× | Canonical 4,096 spp |
 |---|---|---|---|---|---|
-| canopy shadow | ![Bilinearly reconstructed sparse canopy-shadow paths](docs/comparison-suite/canopy-shadow/bilinear.png) | ![Ommatidium canopy-shadow reconstruction](docs/comparison-suite/canopy-shadow/ommatidium.png) | ![OIDN High canopy-shadow denoise](docs/comparison-suite/canopy-shadow/oidn-input-high.png) | ![ReSTIR plus SVGF canopy-shadow control](docs/comparison-suite/canopy-shadow/restir-svgf.png) | ![Canonical canopy-shadow reference](docs/comparison-suite/canopy-shadow/canonical.png) |
-| local light | ![Bilinearly reconstructed sparse local-light paths](docs/comparison-suite/local-light/bilinear.png) | ![Ommatidium local-light reconstruction](docs/comparison-suite/local-light/ommatidium.png) | ![OIDN High local-light denoise](docs/comparison-suite/local-light/oidn-input-high.png) | ![ReSTIR plus SVGF local-light control](docs/comparison-suite/local-light/restir-svgf.png) | ![Canonical local-light reference](docs/comparison-suite/local-light/canonical.png) |
-| hard shadow | ![Bilinearly reconstructed sparse hard-shadow paths](docs/comparison-suite/hard-shadow/bilinear.png) | ![Ommatidium hard-shadow reconstruction](docs/comparison-suite/hard-shadow/ommatidium.png) | ![OIDN High hard-shadow denoise](docs/comparison-suite/hard-shadow/oidn-input-high.png) | ![ReSTIR plus SVGF hard-shadow control](docs/comparison-suite/hard-shadow/restir-svgf.png) | ![Canonical hard-shadow reference](docs/comparison-suite/hard-shadow/canonical.png) |
+| canopy shadow | <img src="docs/comparison-suite/canopy-shadow/bilinear.png" alt="Bilinearly reconstructed sparse canopy-shadow paths" width="256" height="256"> | <img src="docs/comparison-suite/canopy-shadow/ommatidium.png" alt="Ommatidium canopy-shadow reconstruction" width="256" height="256"> | <img src="docs/comparison-suite/canopy-shadow/oidn-input-high.png" alt="OIDN High canopy-shadow denoise" width="256" height="256"> | <img src="docs/comparison-suite/canopy-shadow/restir-svgf.png" alt="ReSTIR plus SVGF canopy-shadow control" width="256" height="256"> | <img src="docs/comparison-suite/canopy-shadow/canonical.png" alt="Canonical canopy-shadow reference" width="256" height="256"> |
+| local light | <img src="docs/comparison-suite/local-light/bilinear.png" alt="Bilinearly reconstructed sparse local-light paths" width="256" height="256"> | <img src="docs/comparison-suite/local-light/ommatidium.png" alt="Ommatidium local-light reconstruction" width="256" height="256"> | <img src="docs/comparison-suite/local-light/oidn-input-high.png" alt="OIDN High local-light denoise" width="256" height="256"> | <img src="docs/comparison-suite/local-light/restir-svgf.png" alt="ReSTIR plus SVGF local-light control" width="256" height="256"> | <img src="docs/comparison-suite/local-light/canonical.png" alt="Canonical local-light reference" width="256" height="256"> |
+| hard shadow | <img src="docs/comparison-suite/hard-shadow/bilinear.png" alt="Bilinearly reconstructed sparse hard-shadow paths" width="256" height="256"> | <img src="docs/comparison-suite/hard-shadow/ommatidium.png" alt="Ommatidium hard-shadow reconstruction" width="256" height="256"> | <img src="docs/comparison-suite/hard-shadow/oidn-input-high.png" alt="OIDN High hard-shadow denoise" width="256" height="256"> | <img src="docs/comparison-suite/hard-shadow/restir-svgf.png" alt="ReSTIR plus SVGF hard-shadow control" width="256" height="256"> | <img src="docs/comparison-suite/hard-shadow/canonical.png" alt="Canonical hard-shadow reference" width="256" height="256"> |
 
-All five cells in each row are generated at the same 256×256 output extent.
+All five cells in each row are generated and explicitly displayed at the same
+256×256 output extent.
 The first column is the actual 128×128 sparse path input reconstructed with the
 suite's texel-centre bilinear 2× baseline; the native 128×128 diagnostic is not
 used in this table.
@@ -190,7 +191,7 @@ the moving-sequence validation above.
 
 | accumulated HR guide, 16 frames | split-lobe à-trous estimate | Ommatidium residual | 16,384-spp reference |
 |---|---|---|---|
-| ![Accumulated high-resolution guide on the held-out glossy scene](docs/temporal-low-frequency/hr-guided.png) | ![Roughness-aware split-radiance multiscale reconstruction](docs/temporal-low-frequency/split-guided.png) | ![Phase-lobe Ommatidium output, with remaining broad wall variation visible](docs/temporal-low-frequency/predicted.png) | ![Independent 16,384-spp reference](docs/temporal-low-frequency/reference.png) |
+| <img src="docs/temporal-low-frequency/hr-guided.png" alt="Accumulated high-resolution guide on the held-out glossy scene" width="256" height="256"> | <img src="docs/temporal-low-frequency/split-guided.png" alt="Roughness-aware split-radiance multiscale reconstruction" width="256" height="256"> | <img src="docs/temporal-low-frequency/predicted.png" alt="Phase-lobe Ommatidium output, with remaining broad wall variation visible" width="256" height="256"> | <img src="docs/temporal-low-frequency/reference.png" alt="Independent 16,384-spp reference" width="256" height="256"> |
 
 The full data recipe, radius gate, metrics, rejected initialization, and 4-spp
 control are in the
@@ -218,7 +219,19 @@ reconstruction rather than another filter-choice classifier.
 
 | fixed split-lobe estimator | 8x8 per-lobe scale oracle | 16,384-spp reference |
 |---|---|---|
-| ![Fixed multiscale split-lobe estimate](docs/lobe-scale-oracle/fixed.png) | ![Per-lobe scale-selection quality ceiling](docs/lobe-scale-oracle/oracle-b8.png) | ![Independent clean reference for the scale-selection audit](docs/lobe-scale-oracle/reference.png) |
+| <img src="docs/lobe-scale-oracle/fixed.png" alt="Fixed multiscale split-lobe estimate" width="256" height="256"> | <img src="docs/lobe-scale-oracle/oracle-b8.png" alt="Per-lobe scale-selection quality ceiling" width="256" height="256"> | <img src="docs/lobe-scale-oracle/reference.png" alt="Independent clean reference for the scale-selection audit" width="256" height="256"> |
+
+The first direct-lobe residual probe is more promising but still not ready.
+On eight fresh 16,384-spp scenes, a 302k-parameter model improves full-frame
+PSNR by 0.14 dB, low-frequency PSNR by 0.16 dB, relative error by 8.5%, and
+temporal error by 0.14 dB, but SSIM falls from 0.9132 to 0.9097 and the visual
+change remains subtle. Its implementation was removed rather than expanding
+the runtime. The [`controlled result`](docs/results/direct-lobe-residual-2026-08-24.md)
+points to broadening the training corpus before spending more capacity.
+
+| fixed split-lobe estimator | offline direct-lobe probe | 16,384-spp reference |
+|---|---|---|
+| <img src="docs/direct-lobe-residual/fixed.png" alt="Fixed split-lobe estimator on the fresh full-frame audit" width="256" height="256"> | <img src="docs/direct-lobe-residual/predicted.png" alt="Direct-lobe residual probe on the same frame and extent" width="256" height="256"> | <img src="docs/direct-lobe-residual/reference.png" alt="Independent clean reference at the same 256 by 256 extent" width="256" height="256"> |
 
 ### Why the ReSTIR control is darker
 
