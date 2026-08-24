@@ -41,10 +41,13 @@ noise without a larger backbone or new general-purpose Meganeura operations.
    glossy and rough materials, textured geometry, thin silhouettes, and
    animated occlusion. Keep independent high-sample references and measure
    their own convergence. Procedural variants of the same scene family must
-   not cross the train/validation boundary. Establish the data-scale curve,
-   then train a compact spatial model to reconstruct clean diffuse and
-   specular radiance rather than select among fixed filters. Retain the fixed
-   estimator as a stable input and baseline.
+   not cross the train/validation boundary. A first 24-scene direct-lobe probe
+   improved error, detail, and temporal metrics on two fresh seed families but
+   lost SSIM on the untouched audit; the
+   [`result`](results/direct-lobe-residual-2026-08-24.md) was removed rather
+   than promoted. The active next step is the data-scale curve: add those
+   families to training before increasing capacity or repeating the target.
+   Retain the fixed estimator as a stable input and baseline.
 
 3. **Train reconstruction and history together.** Feed new sparse samples,
    reprojected history, validity/disocclusion information, and the learned
