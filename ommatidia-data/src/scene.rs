@@ -19,6 +19,7 @@ fn encode_normal(v: [f32; 3]) -> u32 {
 
 /// A UV sphere with normals and tangents, wound counter-clockwise from
 /// outside so the ray tracer's flat normals point away from the surface.
+#[allow(clippy::needless_update)] // Keeps this building across Blade vertex additions.
 fn sphere(center: [f32; 3], radius: f32) -> (Vec<blade_render::Vertex>, Vec<u32>) {
     let mut vertices = Vec::with_capacity((SPHERE_SEGMENTS + 1) * (SPHERE_RINGS + 1));
     for ring in 0..=SPHERE_RINGS {
@@ -41,6 +42,7 @@ fn sphere(center: [f32; 3], radius: f32) -> (Vec<blade_render::Vertex>, Vec<u32>
                 ],
                 normal: encode_normal(normal),
                 tangent: encode_normal([-sin_phi, 0.0, cos_phi]),
+                ..blade_render::Vertex::default()
             });
         }
     }
@@ -70,6 +72,7 @@ fn rect(center: [f32; 3], u: [f32; 3], v: [f32; 3]) -> (Vec<blade_render::Vertex
     tiled_rect(center, u, v, [repeats(u), repeats(v)])
 }
 
+#[allow(clippy::needless_update)] // Keeps this building across Blade vertex additions.
 fn tiled_rect(
     center: [f32; 3],
     u: [f32; 3],
@@ -92,6 +95,7 @@ fn tiled_rect(
             tex_coords: [(su * 0.5 + 0.5) * repeats[0], (sv * 0.5 + 0.5) * repeats[1]],
             normal,
             tangent,
+            ..blade_render::Vertex::default()
         })
         .collect();
     (vertices, vec![0, 1, 2, 0, 2, 3])
@@ -112,6 +116,7 @@ fn ground(half_extent: f32, y: f32) -> (Vec<blade_render::Vertex>, Vec<u32>) {
 /// finds hardest and the spheres never present: a straight silhouette at an
 /// arbitrary angle, which is exactly where a spatial upscaler produces
 /// staircase artifacts, and a hard normal discontinuity at every edge.
+#[allow(clippy::needless_update)] // Keeps this building across Blade vertex additions.
 fn box_shape(center: [f32; 3], half: [f32; 3], yaw: f32) -> (Vec<blade_render::Vertex>, Vec<u32>) {
     let (sin, cos) = yaw.sin_cos();
     let rotate = |v: [f32; 3]| [v[0] * cos - v[2] * sin, v[1], v[0] * sin + v[2] * cos];
@@ -148,6 +153,7 @@ fn box_shape(center: [f32; 3], half: [f32; 3], yaw: f32) -> (Vec<blade_render::V
                 tex_coords: [(u + 1.0) * 0.5, (v + 1.0) * 0.5],
                 normal: encode_normal(rotate(normal)),
                 tangent: encode_normal(rotate(tangent)),
+                ..blade_render::Vertex::default()
             });
         }
         // Counter-clockwise seen from outside, matching the spheres.
