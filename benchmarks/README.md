@@ -13,6 +13,12 @@ texel-center-aligned 2x bilinear reconstruction as the ordinary baseline.
 `oidn-output-high` instead expands the noisy color first and is retained as a
 negative control; it must not be described as native OIDN super-resolution.
 
+The runner keeps `input.png` as a native 128×128 diagnostic. Every primary
+comparison result—`bilinear.png`, `ommatidium.png`, `oidn-input-high.png`,
+`restir-svgf.png`, and `canonical.png`—is generated at 256×256. The repository
+README uses `bilinear.png` for the sparse-path baseline so one row never mixes
+intrinsic image dimensions.
+
 Download OIDN 2.4.1 from its official release, then run:
 
 ```sh
