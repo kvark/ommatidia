@@ -1,10 +1,10 @@
 //! Procedural scenes and camera poses to render them from.
 //!
-//! Building geometry in code rather than loading glTF keeps the generator
-//! self-contained, and more importantly it makes the *variety* of the training
-//! set a parameter. A fixed scene teaches the network that scene; randomised
-//! material, layout, and viewpoint teach it the estimator's failure modes,
-//! which is what actually transfers.
+//! Lighting, canopy, and camera variety still come from code: a fixed scene
+//! teaches the network that scene, while randomised material, layout, and
+//! viewpoint teach the estimator's failure modes. Catalog glTF objects (ABO,
+//! DTC, HSSD interiors) can sit in that room, or replace it, without turning
+//! the generator into a scene-file player.
 
 use crate::texture;
 use ommatidia::rng::Rng;
@@ -421,6 +421,42 @@ pub fn build(config: &SceneConfig, seed: u64) -> Vec<Surface> {
     geometries
 }
 
+/// Large ceiling panels for authored interiors that contain materials but no
+/// renderer lights. They are deliberately broad: Blade's canonical path
+/// tracer currently finds emissive geometry by path sampling, so tiny bulbs
+/// would leave even a high-sample target dominated by rare fireflies.
+pub fn interior_lights(min: [f32; 3], max: [f32; 3], focus: [f32; 3], seed: u64) -> Vec<Surface> {
+    let mut rng = Rng::new(seed);
+    let extent_x = (max[0] - min[0]).abs();
+    let extent_z = (max[2] - min[2]).abs();
+    let center_x = focus[0].clamp(min[0] + 0.15 * extent_x, max[0] - 0.15 * extent_x);
+    let center_z = focus[2].clamp(min[2] + 0.15 * extent_z, max[2] - 0.15 * extent_z);
+    (0..2)
+        .map(|index| {
+            let offset = (index as f32 - 0.5) * extent_x * 0.35;
+            let (vertices, indices) = rect(
+                [center_x + offset, max[1] - 0.02, center_z],
+                [extent_x * 0.10, 0.0, 0.0],
+                [0.0, 0.0, extent_z * 0.08],
+            );
+            let strength = 8.0 + 4.0 * rng.uniform();
+            Surface::from(blade_render::ProceduralGeometry {
+                name: format!("interior-light{index}"),
+                vertices,
+                indices,
+                base_color_factor: [0.0, 0.0, 0.0, 1.0],
+                metalness: 0.0,
+                roughness: 1.0,
+                emissive_factor: [
+                    strength,
+                    strength * (0.85 + 0.1 * rng.uniform()),
+                    strength * (0.70 + 0.1 * rng.uniform()),
+                ],
+            })
+        })
+        .collect()
+}
+
 /// A canopy over one side of the scene, with two walls under it.
 ///
 /// Deliberately partial: the sky stays visible over the rest of the frame, so
@@ -696,11 +732,67 @@ pub fn object_motion(seed: u64, object: usize, frame: usize, step: f32) -> [f32;
     ]
 }
 
+/// A camera inside an axis-aligned interior, looking toward a point in the
+/// same volume.
+///
+/// HSSD-style apartments cannot use the outdoor hemisphere: that views the
+/// building from outside. Inset from the walls and sit at mid height so the
+/// first capture is a room rather than a wall-clip.
+pub fn interior_camera(
+    min: [f32; 3],
+    max: [f32; 3],
+    interests: &[[f32; 3]],
+    rng: &mut Rng,
+) -> blade_render::Camera {
+    let size = [
+        (max[0] - min[0]).max(0.1),
+        (max[1] - min[1]).max(0.1),
+        (max[2] - min[2]).max(0.1),
+    ];
+    let room_center = [
+        0.5 * (min[0] + max[0]),
+        0.5 * (min[1] + max[1]),
+        0.5 * (min[2] + max[2]),
+    ];
+    let mut target = if interests.is_empty() {
+        room_center
+    } else {
+        interests[rng.below(interests.len() as u32) as usize]
+    };
+    target[1] = (target[1] + 0.2 * size[1]).clamp(min[1] + 0.2 * size[1], max[1] - 0.2 * size[1]);
+    let mut toward_center = [room_center[0] - target[0], room_center[2] - target[2]];
+    let distance =
+        (toward_center[0] * toward_center[0] + toward_center[1] * toward_center[1]).sqrt();
+    if distance < 1.0e-3 {
+        let angle = std::f32::consts::TAU * rng.uniform();
+        toward_center = [angle.cos(), angle.sin()];
+    } else {
+        toward_center[0] /= distance;
+        toward_center[1] /= distance;
+    }
+    let view_distance = (0.14 * size[0].hypot(size[2])).clamp(0.8, 2.5);
+    let position = [
+        (target[0] + toward_center[0] * view_distance)
+            .clamp(min[0] + 0.08 * size[0], max[0] - 0.08 * size[0]),
+        (target[1] + 0.12 * size[1]).clamp(min[1] + 0.3 * size[1], max[1] - 0.15 * size[1]),
+        (target[2] + toward_center[1] * view_distance)
+            .clamp(min[2] + 0.08 * size[2], max[2] - 0.08 * size[2]),
+    ];
+    let span = (size[0] * size[0] + size[1] * size[1] + size[2] * size[2]).sqrt();
+    blade_render::Camera {
+        pos: position.into(),
+        rot: look_at(position, target),
+        fov_y: 0.7 + 0.35 * rng.uniform(),
+        depth: (span * 4.0 + 8.0).max(20.0),
+        fov: None,
+    }
+}
+
 /// Rotation taking the camera's -Z axis onto `target - position`, with no roll.
 ///
 /// Blade's convention is right-handed with X right, Y up, and Z towards the
 /// camera, so the view direction is the negative Z axis of the rotation.
-fn look_at(position: [f32; 3], target: [f32; 3]) -> mint::Quaternion<f32> {
+pub(crate) fn look_at(position: [f32; 3], target: [f32; 3]) -> mint::Quaternion<f32> {
     let forward = normalize([
         target[0] - position[0],
         target[1] - position[1],
@@ -781,6 +873,31 @@ fn matrix_to_quaternion(columns: [[f32; 3]; 3]) -> mint::Quaternion<f32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn interior_cameras_stay_inside_the_room() {
+        let min = [-4.0, 0.0, -3.0];
+        let max = [6.0, 3.0, 5.0];
+        let mut rng = Rng::new(3);
+        for _ in 0..200 {
+            let camera = interior_camera(min, max, &[], &mut rng);
+            assert!(
+                camera.pos.x > min[0] && camera.pos.x < max[0],
+                "{:?}",
+                camera.pos
+            );
+            assert!(
+                camera.pos.y > min[1] && camera.pos.y < max[1],
+                "{:?}",
+                camera.pos
+            );
+            assert!(
+                camera.pos.z > min[2] && camera.pos.z < max[2],
+                "{:?}",
+                camera.pos
+            );
+        }
+    }
 
     #[test]
     fn canopy_cameras_stay_on_the_open_side() {

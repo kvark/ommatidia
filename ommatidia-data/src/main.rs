@@ -8,6 +8,7 @@
 //! twice: once through the real-time estimator at low resolution, once through
 //! the canonical path tracer at high resolution.
 
+mod catalog;
 mod gbuffer;
 mod radiance;
 mod render;
@@ -29,6 +30,7 @@ struct Args {
     scale: u32,
     canonical_frames: usize,
     canonical_bounces: u32,
+    reference_sample_offset: usize,
     input_frames: usize,
     sequence_frames: usize,
     camera_motion: f32,
@@ -50,6 +52,13 @@ struct Args {
     reference_from: Option<PathBuf>,
     device_id: Option<u32>,
     shader_dir: Option<PathBuf>,
+    catalog: Option<PathBuf>,
+    catalog_split: Option<catalog::Split>,
+    catalog_kind: Option<catalog::Kind>,
+    catalog_objects: usize,
+    catalog_target_extent: f32,
+    catalog_interior_extent: f32,
+    keep_primitives: bool,
 }
 
 impl Default for Args {
@@ -62,6 +71,7 @@ impl Default for Args {
             scale: 2,
             canonical_frames: 1024,
             canonical_bounces: render::REFERENCE_MAX_BOUNCES,
+            reference_sample_offset: 0,
             input_frames: 1,
             sequence_frames: 1,
             camera_motion: 0.0,
@@ -83,6 +93,13 @@ impl Default for Args {
             reference_from: None,
             device_id: None,
             shader_dir: None,
+            catalog: None,
+            catalog_split: None,
+            catalog_kind: None,
+            catalog_objects: 2,
+            catalog_target_extent: 1.2,
+            catalog_interior_extent: 12.0,
+            keep_primitives: false,
         }
     }
 }
@@ -98,6 +115,9 @@ usage: ommatidia-data [options]
   --scale S                 high resolution is low times this  [2]
   --canonical-frames N      accumulated reference frames, 4 spp each [1024]
   --canonical-bounces N     maximum reference path depth [8]
+  --reference-sample-offset N
+                            discard N canonical frames before each reference,
+                            for an independent finite-sample noise audit [0]
   --input-frames N          sparse path-traced input samples per pixel [1]
   --sequence-frames N       consecutive frames per scene [1]
   --camera-motion F         world-X camera translation per sequence frame [0]
@@ -141,6 +161,21 @@ usage: ommatidia-data [options]
   --reference-from PATH     copy high-resolution records from a matched .omd;
                             moving captures require matching frame sequences
                             instead of rendering them again
+  --catalog PATH            JSON catalog of glTF objects/interiors (ABO, HSSD,
+                            DTC). Writes PATH's sibling .catalog.json sidecar
+                            listing which ids each scene used
+  --catalog-split KIND      train or holdout; omit to use every entry. The same
+                            id never appears in both splits of a well-formed
+                            catalog
+  --catalog-kind KIND       object (procedural room + assets) or interior
+                            (authored scene, indoor camera); omit for both
+  --catalog-objects N       authored objects placed in each object-scene [2]
+  --catalog-target-extent F longest axis of a placed object, world units [1.2]
+  --catalog-interior-extent F
+                            longest axis of a loaded interior, world units [12]
+  --keep-primitives         keep the default sphere/box counts when a catalog
+                            is present; the default thins them so authored
+                            assets are visible
   -h, --help                this message
 ";
 
@@ -176,6 +211,11 @@ fn parse_args() -> Result<Args, String> {
                 args.canonical_bounces = value()?
                     .parse()
                     .map_err(|e| format!("--canonical-bounces: {e}"))?
+            }
+            "--reference-sample-offset" => {
+                args.reference_sample_offset = value()?
+                    .parse()
+                    .map_err(|e| format!("--reference-sample-offset: {e}"))?
             }
             "--input-frames" => {
                 args.input_frames = value()?
@@ -222,6 +262,35 @@ fn parse_args() -> Result<Args, String> {
             "--restir-input" => args.restir_input = true,
             "--checkpoint" => args.checkpoint = Some(PathBuf::from(value()?)),
             "--reference-from" => args.reference_from = Some(PathBuf::from(value()?)),
+            "--catalog" => args.catalog = Some(PathBuf::from(value()?)),
+            "--catalog-split" => args.catalog_split = Some(catalog::Split::parse(&value()?)?),
+            "--catalog-kind" => {
+                args.catalog_kind = Some(match value()?.as_str() {
+                    "object" => catalog::Kind::Object,
+                    "interior" => catalog::Kind::Interior,
+                    other => {
+                        return Err(format!(
+                            "--catalog-kind wants object or interior, got {other:?}"
+                        ));
+                    }
+                })
+            }
+            "--catalog-objects" => {
+                args.catalog_objects = value()?
+                    .parse()
+                    .map_err(|e| format!("--catalog-objects: {e}"))?
+            }
+            "--catalog-target-extent" => {
+                args.catalog_target_extent = value()?
+                    .parse()
+                    .map_err(|e| format!("--catalog-target-extent: {e}"))?
+            }
+            "--catalog-interior-extent" => {
+                args.catalog_interior_extent = value()?
+                    .parse()
+                    .map_err(|e| format!("--catalog-interior-extent: {e}"))?
+            }
+            "--keep-primitives" => args.keep_primitives = true,
             other => return Err(format!("unknown option {other:?}\n\n{USAGE}")),
         }
     }
@@ -275,6 +344,25 @@ fn parse_args() -> Result<Args, String> {
     }
     if args.reference_from.is_some() && !args.gbuffer {
         return Err("--reference-from needs the G-buffer to verify scene alignment".into());
+    }
+    if args.reference_from.is_some() && args.reference_sample_offset != 0 {
+        return Err(
+            "--reference-sample-offset renders references and cannot use --reference-from".into(),
+        );
+    }
+    if args.catalog.is_none()
+        && (args.catalog_split.is_some() || args.catalog_kind.is_some() || args.keep_primitives)
+    {
+        return Err("--catalog-split, --catalog-kind, and --keep-primitives need --catalog".into());
+    }
+    if args.catalog_objects == 0 {
+        return Err("--catalog-objects must be positive".into());
+    }
+    if !args.catalog_target_extent.is_finite() || args.catalog_target_extent <= 0.0 {
+        return Err("--catalog-target-extent must be finite and positive".into());
+    }
+    if !args.catalog_interior_extent.is_finite() || args.catalog_interior_extent <= 0.0 {
+        return Err("--catalog-interior-extent must be finite and positive".into());
     }
     Ok(args)
 }
@@ -856,13 +944,69 @@ fn main() {
         "GPU timed out during setup"
     );
 
-    let scene_config = scene::SceneConfig {
+    let mut scene_config = scene::SceneConfig {
         canopy: args.canopy,
         ground_patches: args.ground_patches,
         textures: args.textures,
         gloss: args.gloss,
         ..scene::SceneConfig::default()
     };
+    if args.catalog.is_some() && !args.keep_primitives {
+        scene_config.sphere_count = 3;
+        scene_config.box_count = 2;
+    }
+    let catalog = args.catalog.as_ref().map(|path| {
+        let mut loaded = catalog::Catalog::load(path).unwrap_or_else(|error| panic!("{error}"));
+        loaded.entries.retain(|entry| {
+            args.catalog_split.is_none_or(|split| entry.split == split)
+                && args.catalog_kind.is_none_or(|kind| entry.kind == kind)
+        });
+        if loaded.entries.is_empty() {
+            panic!("catalog has no entries for the requested split and kind");
+        }
+        catalog::Loaded::bake(loaded, &harness.asset_hub).unwrap_or_else(|error| panic!("{error}"))
+    });
+    let mut object_pool = catalog.as_ref().and_then(|loaded| {
+        loaded
+            .catalog
+            .filtered(args.catalog_split, Some(catalog::Kind::Object))
+            .ok()
+            .filter(|entries| !entries.is_empty())
+            .map(|entries| {
+                catalog::Pool::new(
+                    entries.into_iter().cloned().collect(),
+                    &mut Rng::new(args.seed ^ 0xC0FF_EE00),
+                )
+            })
+    });
+    let mut interior_pool = catalog.as_ref().and_then(|loaded| {
+        loaded
+            .catalog
+            .filtered(args.catalog_split, Some(catalog::Kind::Interior))
+            .ok()
+            .filter(|entries| !entries.is_empty())
+            .map(|entries| {
+                catalog::Pool::new(
+                    entries.into_iter().cloned().collect(),
+                    &mut Rng::new(args.seed ^ 0x11CE_1100),
+                )
+            })
+    });
+    if let Some(kind) = args.catalog_kind {
+        match kind {
+            catalog::Kind::Object if object_pool.is_none() => {
+                panic!("catalog has no object entries for the requested split");
+            }
+            catalog::Kind::Interior if interior_pool.is_none() => {
+                panic!("catalog has no interior entries for the requested split");
+            }
+            _ => {}
+        }
+    }
+    if args.catalog.is_some() && object_pool.is_none() && interior_pool.is_none() {
+        panic!("catalog has no entries for the requested split and kind");
+    }
+    let mut scene_records = Vec::with_capacity(args.samples);
     let mut rng = Rng::new(args.seed);
     let started = std::time::Instant::now();
     // Watched because it is the one number that says whether the capture is
@@ -894,32 +1038,118 @@ fn main() {
         if sequence_frame == 0 {
             // A fresh scene per sequence. Blade advances its stochastic frame
             // index while the optional camera and object trajectories move.
-            let geometries = scene::build(
-                &scene_config,
-                args.seed ^ (scene_index as u64).wrapping_mul(0x9E37_79B9),
-            );
-            let (static_surfaces, moving_surfaces) = if args.object_motion == 0.0 {
-                (geometries, Vec::new())
-            } else {
-                scene::split_moving_geometry(geometries, args.seed ^ scene_index as u64)
+            let use_interior = match args.catalog_kind {
+                Some(catalog::Kind::Interior) => true,
+                Some(catalog::Kind::Object) => false,
+                None => interior_pool.is_some() && (object_pool.is_none() || rng.uniform() < 0.5),
             };
-            let mut objects = Vec::with_capacity(1 + moving_surfaces.len());
-            objects.push(blade_render::Object::from(palette.build_model(
-                &harness,
-                &format!("scene{scene_index}"),
-                static_surfaces,
-            )));
-            let moving_start = objects.len();
-            for (moving_index, surface) in moving_surfaces.into_iter().enumerate() {
+            let mut objects = Vec::new();
+            let mut record = catalog::SceneRecord {
+                index: scene_index,
+                ids: Vec::new(),
+                families: Vec::new(),
+                sources: Vec::new(),
+                kind: catalog::Kind::Object,
+            };
+            let base_camera;
+            let moving_start;
+            if use_interior {
+                let loaded = catalog.as_ref().expect("interior scenes need a catalog");
+                let entry = interior_pool
+                    .as_mut()
+                    .expect("interior pool")
+                    .take(1, &mut rng)
+                    .remove(0);
+                let (min, max) = loaded.aabb(&entry.id);
+                let transform = catalog::interior_transform(min, max, args.catalog_interior_extent);
+                let (world_min, world_max) = catalog::transformed_aabb(min, max, &transform);
+                let mut object = blade_render::Object::from(loaded.handle(&entry.id));
+                object.transform = transform;
+                object.prev_transform = transform;
+                objects.push(object);
+                let mut interests = Vec::new();
+                record.ids.push(entry.id.clone());
+                record.families.push(entry.family.clone());
+                record.sources.push(entry.source);
+                for furnishing in loaded.furnishings(&entry.id) {
+                    let transform = catalog::compose_transform(&transform, &furnishing.transform);
+                    interests.push([transform.x.w, transform.y.w, transform.z.w]);
+                    let mut object = blade_render::Object::from(furnishing.handle);
+                    object.transform = transform;
+                    object.prev_transform = transform;
+                    objects.push(object);
+                    if !record.ids.contains(&furnishing.id) {
+                        record.ids.push(furnishing.id.clone());
+                        record.families.push(furnishing.id.clone());
+                        record.sources.push(catalog::Source::Hssd);
+                    }
+                }
+                base_camera = scene::interior_camera(world_min, world_max, &interests, &mut rng);
+                let focus = [base_camera.pos.x, base_camera.pos.y, base_camera.pos.z];
                 objects.push(blade_render::Object::from(palette.build_model(
                     &harness,
-                    &format!("scene{scene_index}-moving{moving_index}"),
-                    vec![surface],
+                    &format!("interior-lights-{scene_index}"),
+                    scene::interior_lights(
+                        world_min,
+                        world_max,
+                        focus,
+                        args.seed ^ scene_index as u64,
+                    ),
                 )));
+                moving_start = objects.len();
+                record.kind = catalog::Kind::Interior;
+            } else {
+                let geometries = scene::build(
+                    &scene_config,
+                    args.seed ^ (scene_index as u64).wrapping_mul(0x9E37_79B9),
+                );
+                let (static_surfaces, moving_surfaces) = if args.object_motion == 0.0 {
+                    (geometries, Vec::new())
+                } else {
+                    scene::split_moving_geometry(geometries, args.seed ^ scene_index as u64)
+                };
+                objects.push(blade_render::Object::from(palette.build_model(
+                    &harness,
+                    &format!("scene{scene_index}"),
+                    static_surfaces,
+                )));
+                moving_start = objects.len();
+                for (moving_index, surface) in moving_surfaces.into_iter().enumerate() {
+                    objects.push(blade_render::Object::from(palette.build_model(
+                        &harness,
+                        &format!("scene{scene_index}-moving{moving_index}"),
+                        vec![surface],
+                    )));
+                }
+                if let (Some(loaded), Some(pool)) = (catalog.as_ref(), object_pool.as_mut()) {
+                    for entry in pool.take(args.catalog_objects, &mut rng) {
+                        let (min, max) = loaded.aabb(&entry.id);
+                        let angle = std::f32::consts::TAU * rng.uniform();
+                        let distance = scene_config.spread * rng.uniform().sqrt();
+                        let transform = catalog::object_transform(
+                            min,
+                            max,
+                            args.catalog_target_extent,
+                            [distance * angle.cos(), distance * angle.sin()],
+                            std::f32::consts::TAU * rng.uniform(),
+                        );
+                        let mut object = blade_render::Object::from(loaded.handle(&entry.id));
+                        object.transform = transform;
+                        object.prev_transform = transform;
+                        objects.push(object);
+                        record.ids.push(entry.id);
+                        record.families.push(entry.family);
+                        record.sources.push(entry.source);
+                    }
+                }
+                base_camera = scene::camera(&scene_config, &mut rng);
+            }
+            if catalog.is_some() {
+                scene_records.push(record);
             }
             active_sequence = Some(ActiveSequence {
                 objects,
-                base_camera: scene::camera(&scene_config, &mut rng),
+                base_camera,
                 motion_seed: args.seed ^ (scene_index as u64).wrapping_mul(0xD1B5_4A32_D192_ED03),
                 moving_start,
             });
@@ -960,7 +1190,7 @@ fn main() {
             &context,
             &mut encoder,
             &harness.asset_hub,
-            &sequence.objects,
+            &mut sequence.objects,
             &input_camera,
             input_pass,
             args.svgf_input,
@@ -985,7 +1215,7 @@ fn main() {
                     &context,
                     &mut encoder,
                     &harness.asset_hub,
-                    &sequence.objects,
+                    &mut sequence.objects,
                     &camera,
                     render::Pass::PathTrace { frames: 1 },
                     false,
@@ -1034,6 +1264,24 @@ fn main() {
                 Some(sample.lr),
             )
         } else {
+            if args.reference_sample_offset != 0 {
+                drop(render::capture(
+                    hr_renderer.as_mut().expect("reference renderer exists"),
+                    hr_target.as_ref().expect("reference target exists"),
+                    &context,
+                    &mut encoder,
+                    &harness.asset_hub,
+                    &mut sequence.objects,
+                    &camera,
+                    render::Pass::Canonical {
+                        frames: args.reference_sample_offset,
+                        max_bounces: args.canonical_bounces,
+                    },
+                    false,
+                    None,
+                    None,
+                ));
+            }
             (
                 render::capture(
                     hr_renderer.as_mut().expect("reference renderer exists"),
@@ -1041,7 +1289,7 @@ fn main() {
                     &context,
                     &mut encoder,
                     &harness.asset_hub,
-                    &sequence.objects,
+                    &mut sequence.objects,
                     &camera,
                     render::Pass::Canonical {
                         frames: args.canonical_frames,
@@ -1159,6 +1407,18 @@ fn main() {
         args.out.display(),
         started.elapsed().as_secs_f32()
     );
+    if let Some(path) = &args.catalog {
+        let sidecar = catalog::Sidecar {
+            catalog: path.clone(),
+            split: args.catalog_split,
+            scenes: scene_records,
+        };
+        let sidecar_path = catalog::sidecar_path(&args.out);
+        sidecar
+            .write(&sidecar_path)
+            .unwrap_or_else(|error| panic!("{error}"));
+        println!("wrote catalog sidecar {}", sidecar_path.display());
+    }
     if peak <= 1.0 {
         println!(
             "warning: nothing in the reference exceeds 1.0, so the capture may \

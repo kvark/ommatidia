@@ -184,6 +184,10 @@ impl Batcher {
         &self.layout
     }
 
+    pub fn len(&self) -> usize {
+        self.reader.len()
+    }
+
     pub fn sequence_length(&self) -> usize {
         self.reader.sequence_length()
     }

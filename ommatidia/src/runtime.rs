@@ -651,7 +651,8 @@ impl Upscaler {
             .map_err(|e| UpscalerError::Checkpoint(e.to_string()))?;
         if config.prediction == model::Prediction::LowResolutionResidual {
             return Err(UpscalerError::Config(
-                "this experimental checkpoint needs the history-enabled pack/unpack path".into(),
+                "low-resolution residual checkpoints are experimental and not in native unpack yet"
+                    .into(),
             ));
         }
         if config.prediction == model::Prediction::SubpixelResidual && config.demodulate {

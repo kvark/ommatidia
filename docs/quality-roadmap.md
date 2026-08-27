@@ -45,9 +45,23 @@ noise without a larger backbone or new general-purpose Meganeura operations.
    improved error, detail, and temporal metrics on two fresh seed families but
    lost SSIM on the untouched audit; the
    [`result`](results/direct-lobe-residual-2026-08-24.md) was removed rather
-   than promoted. The active next step is the data-scale curve: add those
-   families to training before increasing capacity or repeating the target.
-   Retain the fixed estimator as a stable input and baseline.
+   than promoted.
+   The generator now loads a glTF catalog (ABO objects, HSSD interiors, Aria
+   DTC scans) into the existing procedural room, or as an interior, and records
+   asset ids in a sidecar so a hold-out cannot leak. Fetch, capture, and the
+   `--eval-data` trainer switch are in [`catalog.md`](catalog.md). A B8
+   residual trained on 24 held-out ABO objects
+   ([`catalog-b8-split`](results/catalog-b8-split-2026-08-26.md)) peaked at
+   +0.20 dB / 0.9156 SSIM versus the estimator's 32.91 dB / 0.9507, then
+   overfit. Balanced procedural/ABO training plus an output-detail-preserving
+   low-resolution head now clears every metric on a fresh full-frame audit
+   when calibrated to a conservative 20% correction: +0.31 dB PSNR,
+   +0.0019 SSIM, and +0.46 dB low-frequency PSNR
+   ([`result`](results/balanced-low-resolution-2026-08-27.md)). This is a valid
+   step, not the visual endpoint; it remains offline until the gain is obvious
+   in full frames. The generator now also composes furnished HSSD scenes and
+   rejects cross-split mesh reuse. Retain the fixed estimator as the stable
+   input and baseline.
 
 3. **Train reconstruction and history together.** Feed new sparse samples,
    reprojected history, validity/disocclusion information, and the learned
@@ -77,3 +91,8 @@ Only after an experiment crosses its offline gate should its runtime cost be
 profiled and optimized. Existing filtered intermediates should be reused; new
 shader groups or Meganeura operations need a demonstrated quality or frame-time
 benefit before becoming product code.
+
+Independent 16,384-spp references differ at 48.66 dB pairwise, implying a
+51.67 dB one-reference noise floor; target convergence is not the current
+30–33 dB bottleneck. See the
+[`reference-noise audit`](results/reference-noise-2026-08-27.md).

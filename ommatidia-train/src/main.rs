@@ -52,11 +52,30 @@ impl Split {
     fn validation(&self) -> std::ops::Range<usize> {
         self.train..self.total
     }
+
+    /// Every sample is used for training. Scoring reads a second file.
+    fn training_only(total: usize) -> Self {
+        Self {
+            train: total,
+            total,
+        }
+    }
 }
 
 fn evenly_spaced_ordinals(total: usize, limit: usize) -> Vec<usize> {
     let count = total.min(limit);
     (0..count).map(|index| index * total / count).collect()
+}
+
+fn stepped_stem(stem: &std::path::Path, step: usize) -> PathBuf {
+    let mut name = stem.file_name().unwrap_or_default().to_os_string();
+    name.push(format!("-step-{step}"));
+    stem.with_file_name(name)
+}
+
+fn balanced_source(step: usize, seed: u64, sources: usize) -> usize {
+    assert!(sources != 0);
+    (step + seed as usize) % sources
 }
 
 /// Samples drawn to measure the residual gain. Enough to average out the
@@ -65,6 +84,7 @@ const GAIN_PROBE_SAMPLES: usize = 16;
 
 struct Args {
     data: PathBuf,
+    extra_data: Vec<PathBuf>,
     out: PathBuf,
     resume_from: Option<PathBuf>,
     steps: usize,
@@ -97,12 +117,16 @@ struct Args {
     eval_out: Option<PathBuf>,
     color_only: bool,
     val_fraction: f32,
+    eval_data: Option<PathBuf>,
+    audit_data: Option<PathBuf>,
     eval_crops: usize,
     eval_every: usize,
     checkpoint_every: usize,
     eval_only: bool,
     eval_no_recurrence: bool,
+    eval_tile: Option<u32>,
     history_scale: f32,
+    residual_scale: f32,
     allow_filtered_input: bool,
     device_id: Option<u32>,
     history_frames: u32,
@@ -126,6 +150,7 @@ impl Default for Args {
     fn default() -> Self {
         Self {
             data: PathBuf::from("data/train.omd"),
+            extra_data: Vec::new(),
             out: PathBuf::from("runs/ommatidia"),
             resume_from: None,
             steps: 1000,
@@ -158,12 +183,16 @@ impl Default for Args {
             eval_out: None,
             color_only: false,
             val_fraction: 0.15,
+            eval_data: None,
+            audit_data: None,
             eval_crops: 64,
             eval_every: 0,
             checkpoint_every: 0,
             eval_only: false,
             eval_no_recurrence: false,
+            eval_tile: None,
             history_scale: 1.0,
+            residual_scale: 1.0,
             allow_filtered_input: false,
             device_id: None,
             history_frames: 1,
@@ -180,7 +209,8 @@ train the ommatidia reconstruction network
 
 usage: ommatidia-train [options]
 
-  --data PATH          dataset to train on  [data/train.omd]
+  --data PATH          dataset to train on; repeat to balance multiple corpora
+                       equally by optimizer step  [data/train.omd]
   --out STEM           checkpoint stem, gets .safetensors and .ron  [runs/ommatidia]
   --resume-from STEM   load compatible weights and Adam state from another
                        checkpoint; current flags define the new model contract
@@ -253,6 +283,12 @@ usage: ommatidia-train [options]
   --log-every N        steps between loss lines  [50]
   --eval-out DIR       write comparison PNGs of the first held-out crop
   --val-fraction F     share of the set held out for scoring  [0.15]
+  --eval-data PATH     score this disjoint dataset instead of a tail split.
+                       Use it for a catalog hold-out or a third seed family;
+                       the training file is then used in full and the
+                       tail-split fraction is ignored
+  --audit-data PATH    score this untouched dataset once after training. It is
+                       never used for model selection or periodic evaluation
   --eval-crops N       cap on held-out crops scored  [64]
   --eval-every N       score the held-out set every N steps, 0 for only at
                        the end  [0]
@@ -263,8 +299,12 @@ usage: ommatidia-train [options]
                        different --sampler-steps
   --no-recurrence      eval-only ablation: close the previous-output gate while
                        retaining sparse temporal accumulation
+  --eval-tile N        eval-only crop size override; use the input width for
+                       full-frame comparison images [checkpoint tile]
   --history-scale F    eval-only multiplier for the learned previous-output
                        mixture, before bounding it to [0, 1]  [1]
+  --residual-scale F   eval-only correction share in [0, 1], used to calibrate
+                       a color-residual checkpoint against fixed validation [1]
   --color-only         condition on colour alone, ignoring the dataset's
                        G-buffer planes; the other half of that ablation is
                        simply leaving this off
@@ -282,6 +322,7 @@ fn parse_args() -> Result<Args, String> {
 fn parse_from(argv: impl Iterator<Item = String>) -> Result<Args, String> {
     let mut args = Args::default();
     let mut argv = argv;
+    let mut saw_data = false;
     while let Some(flag) = argv.next() {
         let mut value = || argv.next().ok_or_else(|| format!("{flag} needs a value"));
         match flag.as_str() {
@@ -289,7 +330,15 @@ fn parse_from(argv: impl Iterator<Item = String>) -> Result<Args, String> {
                 print!("{USAGE}");
                 std::process::exit(0);
             }
-            "--data" => args.data = PathBuf::from(value()?),
+            "--data" => {
+                let path = PathBuf::from(value()?);
+                if saw_data {
+                    args.extra_data.push(path);
+                } else {
+                    args.data = path;
+                    saw_data = true;
+                }
+            }
             "--out" => args.out = PathBuf::from(value()?),
             "--resume-from" => args.resume_from = Some(PathBuf::from(value()?)),
             "--steps" => args.steps = value()?.parse().map_err(|e| format!("--steps: {e}"))?,
@@ -421,10 +470,18 @@ fn parse_from(argv: impl Iterator<Item = String>) -> Result<Args, String> {
             "--color-only" => args.color_only = true,
             "--eval-only" => args.eval_only = true,
             "--no-recurrence" => args.eval_no_recurrence = true,
+            "--eval-tile" => {
+                args.eval_tile = Some(value()?.parse().map_err(|e| format!("--eval-tile: {e}"))?)
+            }
             "--history-scale" => {
                 args.history_scale = value()?
                     .parse()
                     .map_err(|e| format!("--history-scale: {e}"))?
+            }
+            "--residual-scale" => {
+                args.residual_scale = value()?
+                    .parse()
+                    .map_err(|e| format!("--residual-scale: {e}"))?
             }
             "--allow-filtered-input" => args.allow_filtered_input = true,
             "--val-fraction" => {
@@ -432,6 +489,8 @@ fn parse_from(argv: impl Iterator<Item = String>) -> Result<Args, String> {
                     .parse()
                     .map_err(|e| format!("--val-fraction: {e}"))?
             }
+            "--eval-data" => args.eval_data = Some(PathBuf::from(value()?)),
+            "--audit-data" => args.audit_data = Some(PathBuf::from(value()?)),
             "--eval-crops" => {
                 args.eval_crops = value()?.parse().map_err(|e| format!("--eval-crops: {e}"))?
             }
@@ -455,6 +514,28 @@ fn parse_from(argv: impl Iterator<Item = String>) -> Result<Args, String> {
             args.val_fraction
         ));
     }
+    if !args.extra_data.is_empty() && args.eval_data.is_none() {
+        return Err("repeated --data needs a disjoint --eval-data".into());
+    }
+    if args.eval_only && !args.extra_data.is_empty() {
+        return Err("repeated --data is not meaningful with --eval-only".into());
+    }
+    let mut paths = vec![&args.data];
+    paths.extend(&args.extra_data);
+    if let Some(path) = &args.eval_data {
+        paths.push(path);
+    }
+    if let Some(path) = &args.audit_data {
+        paths.push(path);
+    }
+    for (index, path) in paths.iter().enumerate() {
+        if paths[..index].contains(path) {
+            return Err(format!(
+                "training, validation, and audit datasets must be distinct; {} was repeated",
+                path.display()
+            ));
+        }
+    }
     if args.eval_crops == 0 {
         return Err("--eval-crops must be positive".into());
     }
@@ -467,16 +548,79 @@ fn parse_from(argv: impl Iterator<Item = String>) -> Result<Args, String> {
     if args.eval_no_recurrence && !args.eval_only {
         return Err("--no-recurrence is an --eval-only ablation".into());
     }
+    if args.eval_tile == Some(0) {
+        return Err("--eval-tile must be positive".into());
+    }
+    if args.eval_tile.is_some() && !args.eval_only {
+        return Err("--eval-tile is an --eval-only override".into());
+    }
     if !args.history_scale.is_finite() || args.history_scale <= 0.0 {
         return Err("--history-scale must be finite and positive".into());
     }
     if args.history_scale != 1.0 && !args.eval_only {
         return Err("--history-scale is an --eval-only ablation".into());
     }
+    if !args.residual_scale.is_finite() || !(0.0..=1.0).contains(&args.residual_scale) {
+        return Err("--residual-scale must be finite and in [0, 1]".into());
+    }
+    if args.residual_scale != 1.0 && !args.eval_only {
+        return Err("--residual-scale is an --eval-only calibration".into());
+    }
     Ok(args)
 }
 
-fn validate_input_source(layout: &ommatidia::dataset::Layout, args: &Args) -> Result<(), String> {
+fn compatible_layout(
+    train: &ommatidia::dataset::Layout,
+    train_sequence_length: usize,
+    other_reader: &ommatidia::dataset::Reader,
+    label: &str,
+) -> Result<(), String> {
+    let other = other_reader.layout();
+    if train.scale != other.scale
+        || train.lr_width != other.lr_width
+        || train.lr_height != other.lr_height
+        || train.lr_source != other.lr_source
+        || train.lr_planes != other.lr_planes
+        || train.hr_planes != other.hr_planes
+    {
+        return Err(format!(
+            "{label} layout {other:?} does not match --data {train:?}"
+        ));
+    }
+    if other_reader.sequence_length() != train_sequence_length {
+        return Err(format!(
+            "{label} sequences are {} frames, --data sequences are {train_sequence_length}",
+            other_reader.sequence_length()
+        ));
+    }
+    Ok(())
+}
+
+fn score_held_out(
+    evaluator: &mut Evaluator,
+    train_batcher: &mut batcher::Batcher,
+    eval_batcher: Option<&mut batcher::Batcher>,
+    split: Split,
+    args: &Args,
+    schedule: &Schedule,
+    dir: Option<&std::path::Path>,
+) {
+    match eval_batcher {
+        Some(eval) => {
+            let len = eval.len();
+            evaluator.score(eval, 0..len, args, schedule, dir);
+        }
+        None => {
+            evaluator.score(train_batcher, split.validation(), args, schedule, dir);
+        }
+    }
+}
+
+fn validate_input_source(
+    layout: &ommatidia::dataset::Layout,
+    path: &std::path::Path,
+    args: &Args,
+) -> Result<(), String> {
     if layout.lr_source != ommatidia::dataset::InputSource::Svgf || args.allow_filtered_input {
         return Ok(());
     }
@@ -484,7 +628,7 @@ fn validate_input_source(layout: &ommatidia::dataset::Layout, args: &Args) -> Re
         "{} contains {:?} low-resolution input; refusing to train a \
          reconstruction model on another denoiser's output. Regenerate it with the \
          current ommatidia-data, or pass --allow-filtered-input for a historical comparison.",
-        args.data.display(),
+        path.display(),
         layout.lr_source,
     ))
 }
@@ -499,37 +643,91 @@ fn main() {
         }
     };
 
-    let mut reader = match Reader::open(&args.data) {
-        Ok(reader) => reader,
-        Err(e) => {
-            eprintln!("cannot open {}: {e}", args.data.display());
+    let open = |path: &std::path::Path| {
+        Reader::open(path).unwrap_or_else(|error| {
+            eprintln!("cannot open {}: {error}", path.display());
+            std::process::exit(1);
+        })
+    };
+    let primary = open(&args.data);
+    let layout = *primary.layout();
+    let sequence_length = primary.sequence_length();
+    let mut training_readers = vec![primary];
+    for path in &args.extra_data {
+        let reader = open(path);
+        if let Err(message) = compatible_layout(&layout, sequence_length, &reader, "--data") {
+            eprintln!("{message}");
             std::process::exit(1);
         }
-    };
-    let layout = *reader.layout();
-    if reader.sequence_length() > 1 && !args.eval_only && args.history_frames < 2 {
+        training_readers.push(reader);
+    }
+    if sequence_length > 1 && !args.eval_only && args.history_frames < 2 {
         eprintln!(
             "{} contains {}-frame sequences; select --history-frames 2 or greater",
             args.data.display(),
-            reader.sequence_length(),
+            sequence_length,
         );
         std::process::exit(1);
     }
-    if reader.sequence_length() == 1 && args.history_frames > 1 {
+    if sequence_length == 1 && args.history_frames > 1 {
         eprintln!("--history-frames needs a sequence dataset");
         std::process::exit(1);
     }
-    if let Err(message) = validate_input_source(&layout, &args) {
-        eprintln!("{message}");
-        std::process::exit(1);
+    for (reader, path) in training_readers
+        .iter()
+        .zip(std::iter::once(&args.data).chain(&args.extra_data))
+    {
+        if let Err(message) = validate_input_source(reader.layout(), path, &args) {
+            eprintln!("{message}");
+            std::process::exit(1);
+        }
+        if reader.is_empty() {
+            eprintln!("{} holds no samples", path.display());
+            std::process::exit(1);
+        }
     }
-    if reader.is_empty() {
-        eprintln!("{} holds no samples", args.data.display());
-        std::process::exit(1);
-    }
-    if reader.len() / reader.sequence_length() < 2 {
+    let eval_reader = args.eval_data.as_ref().map(|path| open(path));
+    if let Some(eval) = &eval_reader {
+        if let Err(message) = compatible_layout(&layout, sequence_length, eval, "--eval-data") {
+            eprintln!("{message}");
+            std::process::exit(1);
+        }
+        if let Err(message) =
+            validate_input_source(eval.layout(), args.eval_data.as_ref().unwrap(), &args)
+        {
+            eprintln!("{message}");
+            std::process::exit(1);
+        }
+        if eval.is_empty() {
+            eprintln!(
+                "{} holds no samples",
+                args.eval_data.as_ref().unwrap().display()
+            );
+            std::process::exit(1);
+        }
+    } else if training_readers[0].len() / sequence_length < 2 {
         eprintln!("training and validation need at least two independent sequences");
         std::process::exit(1);
+    }
+    let audit_reader = args.audit_data.as_ref().map(|path| open(path));
+    if let Some(audit) = &audit_reader {
+        if let Err(message) = compatible_layout(&layout, sequence_length, audit, "--audit-data") {
+            eprintln!("{message}");
+            std::process::exit(1);
+        }
+        if let Err(message) =
+            validate_input_source(audit.layout(), args.audit_data.as_ref().unwrap(), &args)
+        {
+            eprintln!("{message}");
+            std::process::exit(1);
+        }
+        if audit.is_empty() {
+            eprintln!(
+                "{} holds no samples",
+                args.audit_data.as_ref().unwrap().display()
+            );
+            std::process::exit(1);
+        }
     }
     let tile = args.tile.min(layout.lr_width).min(layout.lr_height);
     if tile != args.tile {
@@ -648,30 +846,50 @@ fn main() {
         temporal,
         ..ModelConfig::default()
     };
-    let split = Split::new(reader.len(), reader.sequence_length(), args.val_fraction);
+    let split = if eval_reader.is_some() {
+        Split::training_only(training_readers[0].len())
+    } else {
+        Split::new(
+            training_readers[0].len(),
+            sequence_length,
+            args.val_fraction,
+        )
+    };
     // The residual is small, and how small depends on the content and the
     // scale factor, so it is measured rather than assumed. Without this the
     // diffusion objective trains to a low loss and samples to pure noise.
-    let probe = GAIN_PROBE_SAMPLES.min(reader.len());
     // A kernel checkpoint has no residual, so there is no scale to measure.
     if !args.eval_only && config.prediction != Prediction::SubpixelKernel {
-        let samples: Vec<_> = if let Some(temporal) = config.temporal {
-            let sequence_length = reader.sequence_length();
-            let sequences = split.training().len() / sequence_length;
-            (0..probe.min(sequences))
-                .filter_map(|i| {
-                    let sequence = i * sequences / probe.min(sequences).max(1);
+        let source_count = training_readers.len();
+        let mut samples = Vec::new();
+        for ordinal in 0..GAIN_PROBE_SAMPLES {
+            let source = ordinal % source_count;
+            let local_ordinal = ordinal / source_count;
+            let local_probes = (GAIN_PROBE_SAMPLES + source_count - 1 - source) / source_count;
+            let reader = &mut training_readers[source];
+            let available = if source == 0 {
+                split.training().len()
+            } else {
+                reader.len()
+            };
+            let sample = if let Some(temporal) = config.temporal {
+                let sequences = available / sequence_length;
+                if sequences == 0 {
+                    None
+                } else {
+                    let sequence = local_ordinal * sequences / local_probes;
                     let index = sequence * sequence_length + sequence_length - 1;
-                    ommatidia::temporal::prepare(&mut reader, index, temporal)
+                    ommatidia::temporal::prepare(reader, index, temporal)
                         .ok()
                         .map(|prepared| prepared.sample)
-                })
-                .collect()
-        } else {
-            (0..probe)
-                .filter_map(|i| reader.sample(i * reader.len() / probe.max(1)).ok())
-                .collect()
-        };
+                }
+            } else {
+                let index = local_ordinal * available / local_probes;
+                reader.sample(index).ok()
+            };
+            samples.extend(sample);
+        }
+        let probe = samples.len();
         config.residual_gain = ommatidia::batch::estimate_gain(samples, &layout, &config);
         println!(
             "residual gain {:.2} (standard deviation {:.4}), measured over {probe} samples",
@@ -689,11 +907,21 @@ fn main() {
         std::process::exit(1);
     }
 
-    println!(
-        "{} samples for training, {} held out for scoring",
-        split.training().len(),
-        split.validation().len()
-    );
+    if let Some(path) = &args.eval_data {
+        let training_samples: usize = training_readers.iter().map(Reader::len).sum();
+        println!(
+            "{} samples across {} equally sampled corpora, validating on {}",
+            training_samples,
+            training_readers.len(),
+            path.display()
+        );
+    } else {
+        println!(
+            "{} samples for training, {} held out for scoring",
+            split.training().len(),
+            split.validation().len()
+        );
+    }
 
     let schedule = Schedule::cosine(args.timesteps);
 
@@ -703,13 +931,31 @@ fn main() {
         // they were fitted in. What stays under the caller's control is
         // everything outside that graph — the sampler budget above all, which
         // is the reason to re-score a finished run at all.
-        let (stored, paths) = match checkpoint::load_config(&args.out) {
+        let (mut stored, paths) = match checkpoint::load_config(&args.out) {
             Ok(pair) => pair,
             Err(e) => {
                 eprintln!("cannot read the checkpoint at {}: {e}", args.out.display());
                 std::process::exit(1);
             }
         };
+        if args.residual_scale != 1.0 && stored.prediction == Prediction::SubpixelKernel {
+            eprintln!("--residual-scale needs a color-residual checkpoint");
+            std::process::exit(1);
+        }
+        if let Some(tile) = args.eval_tile {
+            if tile > layout.lr_width || tile > layout.lr_height {
+                eprintln!(
+                    "--eval-tile {tile} exceeds the {}x{} input",
+                    layout.lr_width, layout.lr_height
+                );
+                std::process::exit(1);
+            }
+            stored.tile = tile;
+        }
+        if let Err(message) = stored.validate() {
+            eprintln!("checkpoint configuration is invalid: {message}");
+            std::process::exit(1);
+        }
         let mut evaluator = Evaluator::new(
             &stored,
             ommatidia::gpu::create_context(args.device_id, false),
@@ -718,13 +964,25 @@ fn main() {
             eprintln!("cannot load {}: {e}", paths.weights.display());
             std::process::exit(1);
         }
-        let mut batcher = batcher::Batcher::new(
-            reader,
-            stored,
-            schedule.clone(),
-            split.training(),
-            args.seed,
-        );
+        let primary = training_readers.pop().expect("primary reader");
+        let (mut batcher, range) = if let Some(eval) = eval_reader {
+            let len = eval.len();
+            (
+                batcher::Batcher::new(eval, stored.clone(), schedule.clone(), 0..len, args.seed),
+                0..len,
+            )
+        } else {
+            (
+                batcher::Batcher::new(
+                    primary,
+                    stored.clone(),
+                    schedule.clone(),
+                    split.training(),
+                    args.seed,
+                ),
+                split.validation(),
+            )
+        };
         println!(
             "scoring {} with {} sampler steps",
             paths.weights.display(),
@@ -732,18 +990,35 @@ fn main() {
         );
         evaluator.score(
             &mut batcher,
-            split,
+            range,
             &args,
             &schedule,
             args.eval_out.as_deref(),
         );
+        if let Some(audit) = audit_reader {
+            let len = audit.len();
+            let mut audit_batcher =
+                batcher::Batcher::new(audit, stored, schedule.clone(), 0..len, args.seed ^ 2);
+            let audit_dir = args.eval_out.as_ref().map(|dir| dir.join("audit"));
+            println!(
+                "untouched audit: {}",
+                args.audit_data.as_ref().unwrap().display()
+            );
+            evaluator.score(
+                &mut audit_batcher,
+                0..len,
+                &args,
+                &schedule,
+                audit_dir.as_deref(),
+            );
+        }
         return;
     }
 
     let model = model::build(&config, true).expect("validated above");
     println!(
         "{} samples, {}x{} -> {}x{}, {} conditioning channels, {} output channels",
-        reader.len(),
+        training_readers.iter().map(Reader::len).sum::<usize>(),
         layout.lr_width,
         layout.lr_height,
         layout.hr_width(),
@@ -826,13 +1101,34 @@ fn main() {
         session.set_grad_clip_every(5);
     }
 
-    let mut batcher = batcher::Batcher::new(
-        reader,
-        config.clone(),
-        schedule.clone(),
-        split.training(),
-        args.seed,
-    );
+    let mut train_batchers: Vec<_> = training_readers
+        .into_iter()
+        .enumerate()
+        .map(|(index, reader)| {
+            let range = if index == 0 {
+                split.training()
+            } else {
+                0..reader.len()
+            };
+            batcher::Batcher::new(
+                reader,
+                config.clone(),
+                schedule.clone(),
+                range,
+                args.seed ^ index as u64,
+            )
+        })
+        .collect();
+    let mut eval_batcher = eval_reader.map(|eval| {
+        let len = eval.len();
+        batcher::Batcher::new(
+            eval,
+            config.clone(),
+            schedule.clone(),
+            0..len,
+            args.seed ^ 1,
+        )
+    });
     let diffusing = config.objective == Objective::Diffusion;
 
     // Built up front so scoring mid-run costs a parameter copy rather than a
@@ -859,7 +1155,11 @@ fn main() {
             session.set_adam(rate, ADAM_BETA1, ADAM_BETA2, ADAM_EPSILON);
         }
 
-        let batch = batcher.next().expect("cannot read a batch");
+        // A corpus with many near-duplicate captures must not drown out a
+        // smaller but more diverse one. Each source gets exactly one complete
+        // optimizer batch in turn, independent of its record count.
+        let source = balanced_source(step, args.seed, train_batchers.len());
+        let batch = train_batchers[source].next().expect("cannot read a batch");
         session.set_input("cond", &batch.cond);
         session.set_input("target", &batch.target);
         if !batch.loss_scale.is_empty() {
@@ -993,13 +1293,22 @@ fn main() {
         let last = step + 1 == args.steps;
         if args.eval_every > 0 && (step + 1) % args.eval_every == 0 && !last {
             evaluator.sync(&session);
-            evaluator.score(&mut batcher, split, &args, &schedule, None);
+            score_held_out(
+                &mut evaluator,
+                &mut train_batchers[0],
+                eval_batcher.as_mut(),
+                split,
+                &args,
+                &schedule,
+                None,
+            );
         }
         if args.checkpoint_every > 0 && (step + 1) % args.checkpoint_every == 0 && !last {
             // A long run should not lose everything to a crash, and an
             // intermediate checkpoint is also what makes an overtrained run
             // recoverable.
-            if let Err(e) = checkpoint::save(&mut session, &config, &args.out) {
+            let stem = stepped_stem(&args.out, step + 1);
+            if let Err(e) = checkpoint::save(&mut session, &config, &stem) {
                 eprintln!("cannot save the checkpoint: {e}");
             }
         }
@@ -1028,13 +1337,32 @@ fn main() {
     // after correctly saving the trained checkpoint.
     evaluator.sync(&session);
     drop(session);
-    evaluator.score(
-        &mut batcher,
+    score_held_out(
+        &mut evaluator,
+        &mut train_batchers[0],
+        eval_batcher.as_mut(),
         split,
         &args,
         &schedule,
         args.eval_out.as_deref(),
     );
+    if let Some(audit) = audit_reader {
+        let len = audit.len();
+        let mut audit_batcher =
+            batcher::Batcher::new(audit, config, schedule.clone(), 0..len, args.seed ^ 2);
+        let audit_dir = args.eval_out.as_ref().map(|dir| dir.join("audit"));
+        println!(
+            "untouched audit (not used during training): {}",
+            args.audit_data.as_ref().unwrap().display()
+        );
+        evaluator.score(
+            &mut audit_batcher,
+            0..len,
+            &args,
+            &schedule,
+            audit_dir.as_deref(),
+        );
+    }
 }
 
 /// Holds an inference session alongside the training one, so the held-out set
@@ -1104,7 +1432,7 @@ impl Evaluator {
     fn score(
         &mut self,
         batcher: &mut batcher::Batcher,
-        split: Split,
+        validation: std::ops::Range<usize>,
         args: &Args,
         schedule: &Schedule,
         dir: Option<&std::path::Path>,
@@ -1178,15 +1506,15 @@ impl Evaluator {
         // sequence order and keeps the prefix behavior.
         let balanced = !uses_previous_output;
         let balanced_ordinals = balanced.then(|| {
-            let frames = split
-                .validation()
+            let frames = validation
+                .clone()
                 .filter(|&index| batcher.has_history(index))
                 .count();
             evenly_spaced_ordinals(frames * crops.len(), args.eval_crops)
         });
         let mut candidate_ordinal = 0usize;
         let mut selected_ordinal = 0usize;
-        'outer: for index in split.validation() {
+        'outer: for index in validation.clone() {
             if !batcher.has_history(index) && !uses_previous_output {
                 previous_temporal.iter_mut().for_each(|slot| *slot = None);
                 previous_temporal_index.fill(None);
@@ -1274,6 +1602,7 @@ impl Evaluator {
                     // lucky or unlucky draw repeated.
                     args.seed.wrapping_add(counted as u64),
                     args.history_scale,
+                    args.residual_scale,
                     warped_history
                         .as_ref()
                         .map(|history| history.color.as_slice()),
@@ -1493,7 +1822,7 @@ impl Evaluator {
                 } else if balanced {
                     counted + 1 == balanced_ordinals.as_ref().unwrap().len()
                 } else {
-                    index == split.validation().start + sequence_length - 1 && crop_index == 0
+                    index == validation.start + sequence_length - 1 && crop_index == 0
                 };
                 if preview && let Some(dir) = dir {
                     let hr_extent = crop.tile * self.config.scale;
@@ -1675,6 +2004,12 @@ mod cli_tests {
         assert!(evenly_spaced_ordinals(0, 8).is_empty());
     }
 
+    #[test]
+    fn source_schedule_is_exactly_balanced() {
+        let draws: Vec<_> = (0..12).map(|step| balanced_source(step, 1, 3)).collect();
+        assert_eq!(draws, [1, 2, 0, 1, 2, 0, 1, 2, 0, 1, 2, 0]);
+    }
+
     /// Every flag the usage text advertises has to actually be accepted.
     ///
     /// Adding the field, the default, and the usage line while forgetting the
@@ -1748,8 +2083,12 @@ mod cli_tests {
                 "--temporal-features" => vec![vec!["--temporal-features", "variance"]],
                 "--val-fraction" => vec![vec!["--val-fraction", "0.1"]],
                 "--no-recurrence" => vec![vec!["--eval-only", "--no-recurrence"]],
+                "--eval-tile" => vec![vec!["--eval-only", "--eval-tile", "1"]],
                 "--history-scale" => {
                     vec![vec!["--eval-only", "--history-scale", "2"]]
+                }
+                "--residual-scale" => {
+                    vec![vec!["--eval-only", "--residual-scale", "0.5"]]
                 }
                 _ => vec![vec![&flag, VALUE], vec![&flag]],
             };
@@ -1771,6 +2110,10 @@ mod cli_tests {
         let plain = parse(&[]).unwrap();
         assert_eq!(plain.eval_every, 0);
         assert_eq!(plain.checkpoint_every, 0);
+        assert_eq!(
+            stepped_stem(std::path::Path::new("runs/model"), 500),
+            PathBuf::from("runs/model-step-500")
+        );
     }
 
     #[test]
@@ -1796,6 +2139,59 @@ mod cli_tests {
     }
 
     #[test]
+    fn eval_data_uses_the_whole_training_file() {
+        let split = Split::training_only(40);
+        assert_eq!(split.training(), 0..40);
+        assert!(split.validation().is_empty());
+        let args = parse(&[
+            "--data",
+            "data/train.omd",
+            "--eval-data",
+            "data/holdout.omd",
+        ])
+        .unwrap();
+        assert_eq!(
+            args.eval_data.as_deref(),
+            Some(std::path::Path::new("data/holdout.omd"))
+        );
+        assert!(
+            parse(&["--eval-data", "data/train.omd"]).is_err(),
+            "eval-data must not alias --data"
+        );
+    }
+
+    #[test]
+    fn repeated_training_data_is_balanced_and_requires_validation() {
+        assert!(parse(&["--data", "a.omd", "--data", "b.omd"]).is_err());
+        let args = parse(&[
+            "--data",
+            "a.omd",
+            "--data",
+            "b.omd",
+            "--eval-data",
+            "validation.omd",
+            "--audit-data",
+            "audit.omd",
+        ])
+        .unwrap();
+        assert_eq!(args.data, PathBuf::from("a.omd"));
+        assert_eq!(args.extra_data, [PathBuf::from("b.omd")]);
+        assert_eq!(args.audit_data, Some(PathBuf::from("audit.omd")));
+        assert!(
+            parse(&[
+                "--data",
+                "a.omd",
+                "--eval-data",
+                "validation.omd",
+                "--audit-data",
+                "validation.omd",
+            ])
+            .is_err(),
+            "the audit set must not alias validation"
+        );
+    }
+
+    #[test]
     fn filtered_training_data_requires_an_explicit_override() {
         let mut layout = ommatidia::dataset::Layout {
             scale: 2,
@@ -1806,13 +2202,15 @@ mod cli_tests {
             hr_planes: ommatidia::PlaneSet::new().with(ommatidia::Plane::Color),
         };
         let plain = parse(&[]).unwrap();
-        assert!(validate_input_source(&layout, &plain).is_err());
+        assert!(validate_input_source(&layout, std::path::Path::new("set.omd"), &plain).is_err());
 
         let overridden = parse(&["--allow-filtered-input"]).unwrap();
-        assert!(validate_input_source(&layout, &overridden).is_ok());
+        assert!(
+            validate_input_source(&layout, std::path::Path::new("set.omd"), &overridden).is_ok()
+        );
 
         layout.lr_source = ommatidia::dataset::InputSource::RawRestir;
-        assert!(validate_input_source(&layout, &plain).is_ok());
+        assert!(validate_input_source(&layout, std::path::Path::new("set.omd"), &plain).is_ok());
     }
 
     #[test]
