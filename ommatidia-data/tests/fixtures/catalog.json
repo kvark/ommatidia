@@ -1,0 +1,22 @@
+{
+  "entries": [
+    {
+      "id": "fixture/plane",
+      "source": "fixture",
+      "license": "MIT",
+      "kind": "object",
+      "family": "fixture-plane",
+      "split": "train",
+      "path": "../../../../blade/examples/scene/data/plane.glb"
+    },
+    {
+      "id": "fixture/sphere",
+      "source": "fixture",
+      "license": "MIT",
+      "kind": "object",
+      "family": "fixture-sphere",
+      "split": "holdout",
+      "path": "../../../../blade/examples/move/data/sphere.glb"
+    }
+  ]
+}

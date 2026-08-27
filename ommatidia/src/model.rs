@@ -660,9 +660,14 @@ impl ModelConfig {
             }
         }
         if self.prediction == Prediction::LowResolutionResidual
-            && self.reconstruction_base != ReconstructionBase::HighResolutionGuided
+            && !matches!(
+                self.reconstruction_base,
+                ReconstructionBase::HighResolutionGuided | ReconstructionBase::SplitRadianceGuided
+            )
         {
-            return Err("low-resolution prediction needs HR-guided reconstruction".into());
+            return Err(
+                "low-resolution prediction needs HR-guided or split-radiance reconstruction".into(),
+            );
         }
         if (self.prediction == Prediction::SubpixelKernel)
             != (self.reconstruction_base == ReconstructionBase::Sample)
@@ -1775,6 +1780,11 @@ mod tests {
             .with(Plane::SpecularRadiance)
             .with(Plane::EmissiveRadiance);
         assert!(c.validate().is_ok());
+        c.prediction = Prediction::LowResolutionResidual;
+        assert!(
+            c.validate().is_ok(),
+            "a low-resolution correction is valid on a split-lobe base"
+        );
         c.cond_planes = c.cond_planes.without(Plane::SpecularRadiance);
         assert!(c.validate().unwrap_err().contains("SpecularRadiance"));
     }

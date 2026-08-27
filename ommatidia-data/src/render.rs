@@ -315,7 +315,7 @@ pub fn capture(
     context: &gpu::Context,
     encoder: &mut gpu::CommandEncoder,
     asset_hub: &blade_render::AssetHub,
-    objects: &[blade_render::Object],
+    objects: &mut [blade_render::Object],
     camera: &blade_render::Camera,
     pass: Pass,
     svgf_input: bool,

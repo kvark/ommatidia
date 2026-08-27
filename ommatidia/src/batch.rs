@@ -2127,6 +2127,8 @@ pub fn write_low_resolution_residual_from_base(
     let hr_texels = layout.hr_texels();
     let hr_base = layout.hr_planes.channel_offset(Plane::Color).unwrap();
     let hr_width = layout.hr_width() as usize;
+    let split_base = (config.reconstruction_base == ReconstructionBase::SplitRadianceGuided)
+        .then(|| high_resolution_split_base(sample, layout, crop, config.guide));
     for channel in 0..3 {
         let high = &sample.hr[(hr_base + channel) * hr_texels..(hr_base + channel + 1) * hr_texels];
         for y in 0..tile {
@@ -2134,14 +2136,25 @@ pub fn write_low_resolution_residual_from_base(
             for x in 0..tile {
                 let source_x = crop.x as usize + x;
                 let mut reference = 0.0;
+                let mut base_average = 0.0;
                 for dy in 0..scale {
                     for dx in 0..scale {
-                        reference += high
-                            [(source_y * scale + dy) * hr_width + source_x * scale + dx]
-                            .to_f32();
+                        let high_index = (source_y * scale + dy) * hr_width + source_x * scale + dx;
+                        let value = high[high_index].to_f32();
+                        if let Some(base) = &split_base {
+                            let local =
+                                ((y * scale + dy) * tile * scale + x * scale + dx) * 3 + channel;
+                            reference += transform::compress(value);
+                            base_average += transform::compress(base[local]);
+                        } else {
+                            reference += value;
+                        }
                     }
                 }
                 reference /= (scale * scale) as f32;
+                if split_base.is_some() {
+                    base_average /= (scale * scale) as f32;
+                }
                 let base = guided.map_or_else(
                     || {
                         guided_texel(
@@ -2154,9 +2167,12 @@ pub fn write_low_resolution_residual_from_base(
                     },
                     |guided| guided[(y * tile + x) * 3 + channel],
                 );
-                out[slot * per_slot + (channel * tile + y) * tile + x] =
+                out[slot * per_slot + (channel * tile + y) * tile + x] = if split_base.is_some() {
+                    (reference - base_average) * config.residual_gain
+                } else {
                     (transform::compress(reference) - transform::compress(base))
-                        * config.residual_gain;
+                        * config.residual_gain
+                };
             }
         }
     }
@@ -2182,6 +2198,43 @@ pub fn assemble_low_resolution(
                 out[(y * width + x) * 3 + channel] = transform::decompress(
                     transform::compress(low[(y * width + x) * 3 + channel]) + delta,
                 );
+            }
+        }
+    }
+    out
+}
+
+/// Add one bilinearly reconstructed low-resolution correction to an
+/// output-resolution base.
+///
+/// It can correct lobe-filter bias without being able to redraw the exact
+/// output-resolution geometry and material detail already present in `base`.
+pub fn assemble_low_resolution_on_base(
+    base: &[f32],
+    residual: &[f32],
+    extent: [usize; 2],
+    scale: usize,
+    gain: f32,
+) -> Vec<f32> {
+    let [width, height] = extent;
+    assert_eq!(residual.len(), width * height * 3);
+    assert_eq!(base.len(), width * scale * height * scale * 3);
+    let out_width = width * scale;
+    let inverse_gain = gain.recip();
+    let mut out = vec![0.0; base.len()];
+    for y in 0..height * scale {
+        let (y0, y1, ty) = bilinear_axis(y, height, scale);
+        for x in 0..width * scale {
+            let (x0, x1, tx) = bilinear_axis(x, width, scale);
+            for channel in 0..3 {
+                let plane = &residual[channel * width * height..(channel + 1) * width * height];
+                let top =
+                    plane[y0 * width + x0] + tx * (plane[y0 * width + x1] - plane[y0 * width + x0]);
+                let bottom =
+                    plane[y1 * width + x0] + tx * (plane[y1 * width + x1] - plane[y1 * width + x0]);
+                let delta = (top + ty * (bottom - top)) * inverse_gain;
+                let index = (y * out_width + x) * 3 + channel;
+                out[index] = transform::decompress(transform::compress(base[index]) + delta);
             }
         }
     }
@@ -3524,6 +3577,26 @@ mod tests {
         let actual = high_resolution_guided_from_color(&s, &l, crop, config.guide, &corrected);
         for (actual, expected) in actual.into_iter().zip(expected) {
             assert!((actual - expected).abs() < 1e-4, "{actual} vs {expected}");
+        }
+    }
+
+    #[test]
+    fn zero_low_resolution_correction_preserves_output_detail() {
+        let width = 4;
+        let height = 3;
+        let scale = 2;
+        let base: Vec<_> = (0..width * scale * height * scale * 3)
+            .map(|index| 0.05 + (index % 17) as f32 * 0.1)
+            .collect();
+        let actual = assemble_low_resolution_on_base(
+            &base,
+            &vec![0.0; width * height * 3],
+            [width, height],
+            scale,
+            1.0,
+        );
+        for (actual, expected) in actual.into_iter().zip(base) {
+            assert!((actual - expected).abs() < 1e-5, "{actual} vs {expected}");
         }
     }
 

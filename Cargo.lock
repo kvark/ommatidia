@@ -1560,12 +1560,15 @@ dependencies = [
  "bytemuck",
  "choir",
  "env_logger",
+ "gltf",
  "half",
  "log",
  "mint",
  "naga",
  "ommatidia",
  "png",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

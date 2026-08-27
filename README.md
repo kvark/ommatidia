@@ -145,6 +145,10 @@ and reproduction command are in the
 The ordered work needed to turn the current metric lead into an equally clear
 visual lead is tracked in the
 [`quality roadmap`](docs/quality-roadmap.md).
+The latest balanced-corpus probe is the first learned correction to improve
+PSNR, SSIM, low-frequency error, detail, and temporal stability together on a
+fresh full-frame audit, but the calibrated gain remains deliberately small;
+see the [`result`](docs/results/balanced-low-resolution-2026-08-27.md).
 
 ### Temporal history removes the broad fluctuation
 
@@ -404,18 +408,22 @@ the `Context` a host renderer owns is not the type meganeura's session accepts.
 ## Try it
 
 ```sh
-# Render a training set. Pick the adapter explicitly if there are several.
+# Render a training set. Add `--device-id ID` only if there are several adapters.
 cargo run --release -p ommatidia-data -- \
-    --device-id 0x744c --out data/train.omd \
+    --out data/train.omd \
     --samples 2400 --lr 128x128 --scale 2 \
     --input-frames 4 --canonical-frames 1024 --hr-gbuffer
 
 # Train, then reconstruct a crop and write input/nearest/predicted/reference PNGs.
 cargo run --release -p ommatidia-train -- \
-    --device-id 0x744c --data data/train.omd --steps 8000 \
+    --data data/train.omd --steps 8000 \
     --lr 3e-4 --lr-final 1e-5 --eval-every 1000 --checkpoint-every 1000 \
     --out runs/first --eval-out runs/first-eval
 ```
+
+External glTF catalogs (ABO objects, HSSD interiors, Aria digital twins) expand
+the clean corpus without putting the same mesh on both sides of a split. See
+[`docs/catalog.md`](docs/catalog.md).
 
 Direct regression in one forward pass is the default and the main line;
 `--objective diffusion` shares the same backbone and is kept for comparison,

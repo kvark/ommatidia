@@ -28,6 +28,14 @@ an estimate of the noise floor; model improvements smaller than that floor are
 not evidence. Bright specular pixels also need an HDR-aware view in addition to
 the project's bounded `x/(1+x)` PSNR and SSIM.
 
+That independent audit now exists. Two non-overlapping 16,384-spp captures of
+the same seed-72000 scenes measure 48.66 dB pairwise, which implies a 51.67 dB
+one-reference MSE floor, 0.992037 SSIM, 73.14 dB low-frequency PSNR, and only
+0.002% mean-energy drift. See the
+[`full protocol`](results/reference-noise-2026-08-27.md). This rules target
+grain out as the source of the current 30–33 dB reconstruction ceiling; the
+external matched-renderer correctness comparison remains separate work.
+
 As a noise-floor calibration rather than a matched correctness test,
 `scripts/mitsuba_convergence.py` renders Mitsuba 3.9.1's Cornell scene with its
 eight-depth path integrator. At 128×128, seed 7, a 4,096-spp render is 58.65 dB

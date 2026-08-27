@@ -91,6 +91,7 @@ pub fn reconstruct(
     sampler_steps: usize,
     seed: u64,
     history_scale: f32,
+    residual_scale: f32,
     previous_output: Option<&[f32]>,
     previous_validity: Option<&[f32]>,
 ) -> Reconstruction {
@@ -168,6 +169,12 @@ pub fn reconstruct(
             *value *= history_scale;
         }
     }
+    if residual_scale != 1.0 {
+        debug_assert_ne!(config.prediction, Prediction::SubpixelKernel);
+        residual
+            .iter_mut()
+            .for_each(|value| *value *= residual_scale);
+    }
 
     let mix = mix_stats(&residual, config, previous_validity);
     let low = batch::crop_color(sample, layout, crop);
@@ -195,6 +202,22 @@ pub fn reconstruct(
             batch::assemble(&low, guided, &residual, [crop.tile as usize; 2], config)
         }
         Prediction::LowResolutionResidual => {
+            if config.reconstruction_base
+                == ommatidia::model::ReconstructionBase::SplitRadianceGuided
+            {
+                let base = batch::high_resolution_split_base(sample, layout, crop, config.guide);
+                return Reconstruction {
+                    image: batch::assemble_low_resolution_on_base(
+                        &base,
+                        &residual,
+                        [crop.tile as usize; 2],
+                        config.scale as usize,
+                        config.residual_gain,
+                    ),
+                    temporal_guide: guide.map(|(_, radiance)| radiance),
+                    mix,
+                };
+            }
             let low = batch::guided_color(sample, layout, crop, config.guide);
             let corrected = batch::assemble_low_resolution(
                 &low,
