@@ -47,12 +47,22 @@ compact G-buffer representation. A static four-frame GPU smoke test produced
 different radiance with byte-identical geometry/targets and zero motion; the
 moving-camera test produced nonzero motion after the sequence boundary.
 
-Legacy files read as length one. The trainer now splits only at sequence
-boundaries, draws frames 2–N for temporal batches, and skips reset frames when
-scoring. Spatial checkpoints still reject sequence files unless temporal
-history is selected. The first frame of each sequence is an explicit history
-reset. Curved camera motion and independent object motion are now present;
-exposure changes, animation, and reactive masks remain future data work.
+For any multi-iteration capture, the harness snapshots the primary-surface
+G-buffer after the first iteration and then continues accumulating radiance or
+settling ReSTIR reservoirs. Reading it only at the end is incorrect: repeatedly
+preparing the current camera consumes Blade's two camera-history slots and
+collapses camera motion to zero. LavaPipe covers both a two-sample canonical
+path and a moving ReSTIR input, at input and output resolutions.
+
+Legacy files read as length one. The trainer splits only at sequence
+boundaries. Objectives that require a previous target draw frames 2–N;
+previous-output models additionally draw the first frame at its natural 1/N
+frequency, because reset/cut behavior is part of their deployment contract.
+Evaluation reports reset frames separately instead of hiding them in the
+non-reset aggregate. Spatial checkpoints still reject sequence files unless
+temporal history is selected. Curved camera motion, independent object motion,
+and projection jitter are present; exposure changes, animation, and reactive
+masks remain future data work.
 
 The first moving-camera oracle uses 32 four-frame sequences, one independent
 path per input pixel, 256 accumulated canonical frames per target, and a 0.05
@@ -162,7 +172,10 @@ published default.
 The Rust runtime implements the corresponding contract:
 
 1. `FrameInputs::with_motion` takes current-to-previous motion in input-pixel
-   units; `with_blade_motion` decodes Blade's compact convention;
+   units; `with_blade_motion` decodes Blade's compact convention. An optional
+   `with_high_resolution_motion` supplies exact vectors in output-pixel units
+   for previous-output reprojection; otherwise each low-resolution vector is
+   expanded over its reconstruction footprint for backward compatibility;
 2. `Upscaler::reset_history` invalidates recurrence for cuts or any break in
    frame continuity;
 3. the upscaler owns ping-ponged low-resolution accumulation, reconstructed
@@ -174,24 +187,29 @@ The first live Blade check ran the trained b16/r3 checkpoint on static and
 moving four-frame sequences. On the static sequence, display-space 16x16-block
 temporal MSE was 0.000045 for native Ommatidium versus 0.000934 for bilinear
 1-spp input and 0.000010 for the finite-sample canonical target. At 960x540 →
-1920x1080 on an RX 7900 XT, the temporal checkpoint measures 19.82 ms median
-end to end: 0.25 ms pack, 17.63 ms model, and 2.33 ms unpack. Recurrent state
-occupies 130.5 MiB. A minimally perturbative trace assigns 79.1% of model GPU
-time to convolution, 14.2% to pointwise work, 5.0% to normalization, and 1.7%
-to data movement. Reprojection is therefore not the primary speed limit;
-network width and the 49-tap head are.
+1920x1080 on an RX 7900 XT, the corrected temporal checkpoint measures 15.77
+ms median and 16.05 ms p90 end to end. Isolated waits measure 1.73 ms pack,
+11.70 ms model, and 2.82 ms unpack; recurrent state occupies 142.4 MiB. A
+minimally perturbative trace adds 1.3% wall time, covers 93.8% of it with GPU
+timestamps, and assigns 65.6% of model GPU time to convolution, 23.4% to
+pointwise work, 8.3% to normalization, and 2.7% to data movement. Reprojection
+is therefore not the primary speed limit; network width and the 49-tap head
+are.
 
-Camera jitter/exposure metadata, a reactive mask, and an optional observable
-confidence/debug target remain API work. The C ABI still cannot run inference
+Exposure metadata, a reactive mask, and an optional observable confidence/debug
+target remain API work. Projection jitter is explicit, and moving jittered
+captures now carry output-resolution motion so foreground and background
+sub-pixels do not share a vector at silhouettes. The C ABI still cannot run inference
 on externally borrowed Vulkan handles; that separate integration boundary is
 tracked in [`integration.md`](integration.md).
 
 Training now uses short sequences with object and camera motion, disocclusions,
-independent sparse paths, individual-frame radiometry, and a reprojected
-temporal loss. Evaluation reports compressed-space PSNR, SSIM, relative error,
-detail, low-frequency PSNR, motion-compensated temporal error, a block-averaged
-low-frequency temporal error, and sequence age. Exposure changes, animation,
-sub-pixel jitter, and visual regression clips remain before a release gate.
+independent sparse paths, individual-frame radiometry, exact sub-pixel jitter,
+and an optional reprojected temporal loss. Evaluation reports compressed-space
+PSNR, SSIM, relative error, linear-energy bias, detail, low-frequency PSNR,
+motion-compensated temporal error, a block-averaged low-frequency temporal
+error, reset/cut quality, and sequence age. Exposure changes, animation, and
+visual regression clips remain before a release gate.
 
 NVIDIA's public material does not disclose a single DLSS training or acceptance
 metric to copy. Its [DLSS 2.0 overview](https://developer.nvidia.com/blog/dlss-2-0-ai-rendering)

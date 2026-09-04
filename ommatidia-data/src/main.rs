@@ -326,10 +326,9 @@ fn parse_args() -> Result<Args, String> {
     if args.projection_jitter && args.sequence_frames == 1 {
         return Err("--projection-jitter needs --sequence-frames above one".into());
     }
-    if args.projection_jitter && has_motion {
+    if args.projection_jitter && has_motion && !args.hr_gbuffer {
         return Err(
-            "--projection-jitter cannot yet be combined with scene motion; precise \
-             output-resolution history reprojection is required first"
+            "combining --projection-jitter with scene motion needs --hr-gbuffer for exact motion"
                 .into(),
         );
     }
@@ -790,6 +789,8 @@ fn main() {
         height: args.lr_height * args.scale,
         depth: 1,
     };
+    let has_motion =
+        args.camera_motion != 0.0 || args.random_camera_motion != 0.0 || args.object_motion != 0.0;
 
     // High-resolution geometry is opt-in: it costs a cheap full-resolution
     // primary-surface pass in an application, but may recover silhouettes that
@@ -809,7 +810,7 @@ fn main() {
             .with(Plane::EmissiveRadiance);
     }
     let mut hr_planes = if args.hr_gbuffer {
-        gbuffer::plane_set(false).with(Plane::Color)
+        gbuffer::plane_set(has_motion).with(Plane::Color)
     } else {
         PlaneSet::new().with(Plane::Color)
     };
@@ -932,7 +933,7 @@ fn main() {
         .then(|| gbuffer::Probe::new(&context, lr_size, args.sequence_frames > 1));
     let hr_probe = args
         .hr_gbuffer
-        .then(|| gbuffer::Probe::new(&context, hr_size, false));
+        .then(|| gbuffer::Probe::new(&context, hr_size, has_motion));
     let lr_radiance_probe = args
         .split_radiance
         .then(|| radiance::Probe::new(&context, lr_size));
@@ -1012,6 +1013,8 @@ fn main() {
     // Watched because it is the one number that says whether the capture is
     // really high dynamic range: a peak pinned at 1.0 means something clamped.
     let mut peak = 0.0f32;
+    let mut lr_motion_peak = 0.0f32;
+    let mut hr_motion_peak = 0.0f32;
 
     let record_count = args
         .samples
@@ -1197,6 +1200,21 @@ fn main() {
             lr_probe.as_ref(),
             lr_radiance_probe.as_ref(),
         );
+        if has_motion && sequence_frame != 0 {
+            let planes = lr
+                .gbuffer
+                .as_ref()
+                .expect("a moving input capture has no G-buffer planes");
+            let motion_start =
+                (gbuffer::channels(true) - Plane::Motion.channels()) * layout.lr_texels();
+            lr_motion_peak = lr_motion_peak.max(
+                planes[motion_start..]
+                    .iter()
+                    .copied()
+                    .map(f32::abs)
+                    .fold(0.0, f32::max),
+            );
+        }
         let (hr, reference_lr) = if let Some(reader) = &mut reference_reader {
             let source_layout = *reader.layout();
             let source_index = if reader.sequence_length() == 1 {
@@ -1208,7 +1226,9 @@ fn main() {
                 .sample(source_index)
                 .unwrap_or_else(|e| panic!("cannot read reference sample {source_index}: {e}"));
             let color_len = Plane::Color.channels() * source_layout.hr_texels();
-            let gbuffer = if args.hr_gbuffer && args.checkpoint.is_some() {
+            let gbuffer = if args.hr_gbuffer
+                && (args.checkpoint.is_some() || !reference_has_hr_gbuffer)
+            {
                 render::capture(
                     hr_renderer.as_mut().expect("HR G-buffer renderer exists"),
                     hr_target.as_ref().expect("HR G-buffer target exists"),
@@ -1225,8 +1245,8 @@ fn main() {
                 .gbuffer
             } else if reference_has_hr_gbuffer {
                 let mut out =
-                    Vec::with_capacity(gbuffer::channels(false) * source_layout.hr_texels());
-                for plane in gbuffer::PLANES {
+                    Vec::with_capacity(gbuffer::channels(has_motion) * source_layout.hr_texels());
+                for plane in gbuffer::plane_set(has_motion).iter() {
                     for component in 0..plane.channels() {
                         out.extend(
                             sample
@@ -1264,24 +1284,6 @@ fn main() {
                 Some(sample.lr),
             )
         } else {
-            if args.reference_sample_offset != 0 {
-                drop(render::capture(
-                    hr_renderer.as_mut().expect("reference renderer exists"),
-                    hr_target.as_ref().expect("reference target exists"),
-                    &context,
-                    &mut encoder,
-                    &harness.asset_hub,
-                    &mut sequence.objects,
-                    &camera,
-                    render::Pass::Canonical {
-                        frames: args.reference_sample_offset,
-                        max_bounces: args.canonical_bounces,
-                    },
-                    false,
-                    None,
-                    None,
-                ));
-            }
             (
                 render::capture(
                     hr_renderer.as_mut().expect("reference renderer exists"),
@@ -1294,6 +1296,7 @@ fn main() {
                     render::Pass::Canonical {
                         frames: args.canonical_frames,
                         max_bounces: args.canonical_bounces,
+                        sample_offset: args.reference_sample_offset,
                     },
                     false,
                     hr_probe.as_ref(),
@@ -1306,6 +1309,22 @@ fn main() {
         if args.split_radiance && index == 0 {
             report_lobe_reconstruction("input", &lr, layout.lr_texels());
             report_lobe_reconstruction("reference", &hr, layout.hr_texels());
+        }
+
+        if args.hr_gbuffer && has_motion && sequence_frame != 0 {
+            let planes = hr
+                .gbuffer
+                .as_ref()
+                .expect("an HR G-buffer capture has no planes");
+            let motion_start =
+                (gbuffer::channels(true) - Plane::Motion.channels()) * layout.hr_texels();
+            hr_motion_peak = hr_motion_peak.max(
+                planes[motion_start..]
+                    .iter()
+                    .copied()
+                    .map(f32::abs)
+                    .fold(0.0, f32::max),
+            );
         }
 
         let predicted = match (&mut upscaler, &neural_target) {
@@ -1407,6 +1426,20 @@ fn main() {
         args.out.display(),
         started.elapsed().as_secs_f32()
     );
+    if args.hr_gbuffer && (args.camera_motion != 0.0 || args.random_camera_motion != 0.0) {
+        assert!(
+            hr_motion_peak > 1.0e-3,
+            "output-resolution camera motion is identically zero; the G-buffer was likely read after path accumulation overwrote Blade's previous camera"
+        );
+        println!("peak output-resolution motion {hr_motion_peak:.3} pixels");
+    }
+    if args.camera_motion != 0.0 || args.random_camera_motion != 0.0 {
+        assert!(
+            lr_motion_peak > 1.0e-3,
+            "input-resolution camera motion is identically zero; the G-buffer was likely read after repeated rendering overwrote Blade's previous camera"
+        );
+        println!("peak input-resolution motion {lr_motion_peak:.3} pixels");
+    }
     if let Some(path) = &args.catalog {
         let sidecar = catalog::Sidecar {
             catalog: path.clone(),

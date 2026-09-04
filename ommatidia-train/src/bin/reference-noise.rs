@@ -13,8 +13,9 @@ struct Args {
 fn usage() -> &'static str {
     "measure canonical reference noise\n\n\
 usage: reference-noise --a PATH --b PATH [--limit N]\n\n\
-The files must describe the same scenes. Generate the second one with the same\n\
-seed and an offset at least as large as --canonical-frames, so its paths do not\n\
+The files must describe the same scenes in the same order. A shorter file may\n\
+check a shared prefix. Generate it with the same seed and an offset at least as\n\
+large as --canonical-frames, so its paths do not\n\
 overlap the first reference."
 }
 
@@ -75,14 +76,13 @@ fn main() {
     let mut b = Reader::open(&args.b)
         .unwrap_or_else(|error| panic!("cannot open {}: {error}", args.b.display()));
     assert_eq!(a.layout(), b.layout(), "reference layouts differ");
-    assert_eq!(a.len(), b.len(), "reference record counts differ");
     assert_eq!(
         a.sequence_length(),
         b.sequence_length(),
         "reference sequence lengths differ"
     );
     let layout = *a.layout();
-    let count = a.len().min(args.limit);
+    let count = a.len().min(b.len()).min(args.limit);
     assert!(count != 0, "no records to compare");
 
     let mut mse = 0.0f64;

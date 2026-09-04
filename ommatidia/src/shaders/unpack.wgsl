@@ -31,11 +31,13 @@ struct UnpackParams {
     history_ready: u32,
     guide_mix: u32,
     motion_scale: f32,
+    has_hr_motion: u32,
+    hr_motion_scale: f32,
     rejection_depth_delta: f32,
     rejection_normal_cosine: f32,
     rejection_albedo_delta2: f32,
-    _pad2a: u32,
-    _pad2b: u32,
+    linear_kernel: u32,
+    _pad: u32,
 }
 
 var<uniform> params: UnpackParams;
@@ -49,6 +51,7 @@ var t_hr_depth: texture_2d<f32>;
 var t_hr_normal: texture_2d<f32>;
 var t_hr_albedo: texture_2d<f32>;
 var t_motion: texture_2d<f32>;
+var t_hr_motion: texture_2d<f32>;
 var t_history_output: texture_2d<f32>;
 var t_history_surface0: texture_2d<f32>;
 var t_history_surface1: texture_2d<f32>;
@@ -256,12 +259,24 @@ fn gather_kernel(source: vec2<i32>, slot: u32, plane_stride: u32, offset: u32) -
             if params.demodulate != 0u {
                 color /= textureLoad(t_albedo, texel, 0).xyz + params.demodulation_offset;
             }
-            sum += weight * vec3<f32>(compress(color.x), compress(color.y), compress(color.z));
+            if params.linear_kernel != 0u {
+                sum += weight * color;
+            } else {
+                sum += weight * vec3<f32>(compress(color.x), compress(color.y), compress(color.z));
+            }
             total += weight;
             tap += 1u;
         }
     }
-    return sum / max(total, KERNEL_FLOOR);
+    let gathered = sum / max(total, KERNEL_FLOOR);
+    if params.linear_kernel != 0u {
+        return vec3<f32>(
+            compress(gathered.x),
+            compress(gathered.y),
+            compress(gathered.z),
+        );
+    }
+    return gathered;
 }
 
 fn reconstruction_base(destination: vec2<u32>, source: vec2<i32>) -> vec3<f32> {
@@ -334,8 +349,13 @@ fn reproject_history(destination: vec2<u32>, source: vec2<i32>) -> vec4<f32> {
     if params.history_ready == 0u {
         return vec4<f32>(0.0);
     }
-    let motion = textureLoad(t_motion, source, 0).xy * params.motion_scale;
-    let position = vec2<f32>(destination) + motion * f32(params.scale);
+    var motion = textureLoad(t_motion, source, 0).xy
+        * params.motion_scale * f32(params.scale);
+    if params.has_hr_motion != 0u {
+        motion = textureLoad(t_hr_motion, vec2<i32>(destination), 0).xy
+            * params.hr_motion_scale;
+    }
+    let position = vec2<f32>(destination) + motion;
     let output_extent = vec2<u32>(params.width, params.height) * params.scale;
     if position.x < 0.0
         || position.y < 0.0

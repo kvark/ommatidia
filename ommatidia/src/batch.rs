@@ -111,10 +111,22 @@ pub fn write_conditioning(
 
     let mut channel = 0;
     for plane in planes.iter() {
-        let base = layout
-            .lr_planes
-            .channel_offset(plane)
-            .unwrap_or_else(|| panic!("dataset has no {plane:?} plane"));
+        let Some(base) = layout.lr_planes.channel_offset(plane) else {
+            // A pre-jitter dataset is exactly a zero-jitter capture. Allowing
+            // that one optional metadata plane to be synthesized lets newer
+            // temporal checkpoints retain the larger centered corpus without
+            // rewriting its records or weakening the typed checks for image
+            // and G-buffer evidence.
+            if plane == Plane::Jitter {
+                for _ in 0..plane.channels() {
+                    let destination = slot * per_slot + channel * tile * tile;
+                    out[destination..destination + tile * tile].fill(0.0);
+                    channel += 1;
+                }
+                continue;
+            }
+            panic!("dataset has no {plane:?} plane");
+        };
         for component in 0..plane.channels() {
             let source = &sample.lr[(base + component) * texels..(base + component + 1) * texels];
             let destination = slot * per_slot + channel * tile * tile;
@@ -1425,11 +1437,8 @@ fn reproject(
     let mut valid = vec![false; extent * extent];
     for y in 0..extent {
         for x in 0..extent {
-            let texel = (y / scale) * tile + x / scale;
-            let position = [
-                x as f32 + warp.motion[texel * 2] * scale as f32,
-                y as f32 + warp.motion[texel * 2 + 1] * scale as f32,
-            ];
+            let motion = warp.output_motion(x, y, [tile, tile], scale);
+            let position = [x as f32 + motion[0], y as f32 + motion[1]];
             let Some(rgb) = crate::temporal::sample_reprojected(
                 &linear,
                 warp.previous,
@@ -1472,8 +1481,9 @@ pub fn reference_change(
 /// build the target the temporal loss compares against.
 ///
 /// Everything is in the compressed sub-pixel layout the gather produces.
-/// `motion` is current-to-previous in input pixels. Occlusion is decided by
-/// the high-resolution surfaces, exactly as
+/// `motion` is current-to-previous at input resolution in input pixels or at
+/// output resolution in output pixels. Occlusion is decided by the
+/// high-resolution surfaces, exactly as
 /// [`crate::metrics::temporal_error`] decides it — the sample-history mask
 /// is not consulted.
 ///
@@ -1494,7 +1504,10 @@ pub fn temporal_target(
 ) -> (Vec<f32>, Vec<f32>) {
     assert_eq!(previous.len(), 3 * scale * scale * tile * tile);
     assert_eq!(previous.len(), reference_change.len());
-    assert_eq!(warp.motion.len(), tile * tile * 2);
+    assert!(
+        warp.motion.len() == tile * tile * 2
+            || warp.motion.len() == tile * scale * tile * scale * 2
+    );
 
     let (reprojected_image, pixel_valid) =
         reproject(&spread(previous, tile, scale), warp, tile, scale);
@@ -1521,8 +1534,11 @@ pub fn temporal_target(
                 // unstable. The mask multiplies both sides, so it enters the
                 // squared error squared; the square root keeps `motion_bias` a
                 // weight rather than the root of one.
-                let speed =
-                    (warp.motion[texel * 2].powi(2) + warp.motion[texel * 2 + 1].powi(2)).sqrt();
+                let motion =
+                    warp.output_motion(x * scale + dx, y * scale + dy, [tile, tile], scale);
+                // Preserve the flag's input-pixel units regardless of which
+                // motion layout the dataset provides.
+                let speed = (motion[0].powi(2) + motion[1].powi(2)).sqrt() / scale as f32;
                 let index = channel * tile * tile + texel;
                 let weight = (1.0 + motion_bias * speed).sqrt();
                 target[index] = (reprojected[index] + reference_change[index]) * weight;
@@ -1941,8 +1957,12 @@ pub fn write_taps(
                     if let Some(albedo) = &albedo {
                         value /= albedo[c][offset].to_f32() + config.demodulation_offset;
                     }
-                    out[slot * per_slot + (channel * tile + y) * tile + x] =
-                        transform::compress(value);
+                    out[slot * per_slot + (channel * tile + y) * tile + x] = if config.linear_kernel
+                    {
+                        value
+                    } else {
+                        transform::compress(value)
+                    };
                 }
             }
         }
@@ -2042,7 +2062,12 @@ pub fn assemble_kernel(
                         if let Some(albedo) = &albedo {
                             value /= albedo[c][offset].to_f32() + config.demodulation_offset;
                         }
-                        sum[c] += weight * transform::compress(value);
+                        sum[c] += weight
+                            * if config.linear_kernel {
+                                value
+                            } else {
+                                transform::compress(value)
+                            };
                     }
                     total += weight;
                 }
@@ -2065,6 +2090,9 @@ pub fn assemble_kernel(
                 };
                 for c in 0..3 {
                     let mut gathered = sum[c] / total.max(KERNEL_FLOOR);
+                    if config.linear_kernel {
+                        gathered = transform::compress(gathered);
+                    }
                     if let Some(guide) = extra.guide {
                         let guided = guide[(c * slots + slot) * tile * tile + y * tile + x];
                         gathered = (1.0 - guide_gate) * guided + guide_gate * gathered;
@@ -3406,6 +3434,51 @@ mod tests {
     }
 
     #[test]
+    fn linear_kernel_preserves_the_mean_of_sparse_radiance() {
+        let mut config = kernel_config(1);
+        let l = layout(2, 8, 8);
+        let texels = l.lr_texels();
+        let mut s = Sample {
+            lr: vec![f16::ZERO; l.lr_len()],
+            hr: vec![f16::ZERO; l.hr_len()],
+        };
+        for component in 0..3 {
+            for y in 0..8 {
+                for x in 0..8 {
+                    s.lr[component * texels + y * 8 + x] =
+                        f16::from_f32(if x.is_multiple_of(2) { 0.0 } else { 4.0 });
+                }
+            }
+        }
+        let crop = Crop {
+            x: 0,
+            y: 0,
+            tile: 8,
+        };
+        let taps = config.taps() as usize;
+        let slots = (config.scale * config.scale) as usize;
+        let mut weights = vec![0.0; slots * taps * texels];
+        let center = (0..taps)
+            .find(|&tap| config.tap_offset(tap as u32) == (0, 0))
+            .unwrap();
+        let right = (0..taps)
+            .find(|&tap| config.tap_offset(tap as u32) == (1, 0))
+            .unwrap();
+        for slot in 0..slots {
+            weights[(slot * taps + center) * texels..(slot * taps + center + 1) * texels].fill(1.0);
+            weights[(slot * taps + right) * texels..(slot * taps + right + 1) * texels].fill(1.0);
+        }
+
+        config.linear_kernel = true;
+        let linear = assemble_kernel(&s, &l, crop, &weights, &config, ExtraTaps::default());
+        config.linear_kernel = false;
+        let legacy = assemble_kernel(&s, &l, crop, &weights, &config, ExtraTaps::default());
+        let pixel = (2 * 16 + 2) * 3;
+        assert!((linear[pixel] - 2.0).abs() < 1e-6);
+        assert!((legacy[pixel] - 2.0 / 3.0).abs() < 1e-6);
+    }
+
+    #[test]
     fn untrained_guide_gate_keeps_three_quarters_of_the_guide() {
         let mut config = kernel_config(2);
         config.guide_mix = true;
@@ -3691,6 +3764,30 @@ mod tests {
         let depth_base = planes.channel_offset(Plane::Depth).unwrap();
         let expected_depth = transform::encode_depth(s.lr[depth_base * texels + 6 + 1].to_f32());
         assert!((out[per_slot + 3 * 16] - expected_depth).abs() < 1e-6);
+    }
+
+    #[test]
+    fn centered_captures_supply_zero_jitter_to_newer_models() {
+        let mut l = layout(2, 4, 4);
+        l.lr_planes = PlaneSet::new().with(Plane::Color);
+        let s = sample(&l, 7);
+        let planes = l.lr_planes.with(Plane::Jitter);
+        let mut out = vec![f32::NAN; planes.channels() * 16];
+        write_conditioning(
+            &s,
+            &l,
+            planes,
+            Crop {
+                x: 0,
+                y: 0,
+                tile: 4,
+            },
+            0,
+            &mut out,
+        );
+
+        assert!(out[..3 * 16].iter().all(|value| value.is_finite()));
+        assert!(out[3 * 16..].iter().all(|&value| value == 0.0));
     }
 
     #[test]

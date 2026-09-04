@@ -373,8 +373,10 @@ fn end_to_end_1080p_runtime_cost() {
     }
     if temporal {
         // The zero-filled profile texture is sufficient for timing. Native
-        // motion is current-to-previous in input-pixel units.
-        inputs = inputs.with_motion(input_view);
+        // motion is current-to-previous in the matching pixel units.
+        inputs = inputs
+            .with_motion(input_view)
+            .with_high_resolution_motion(hr_input_view);
         println!(
             "temporal history: {:.1} MiB",
             upscaler.temporal_history_bytes() as f64 / (1024.0 * 1024.0)

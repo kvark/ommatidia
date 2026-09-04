@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1120" height="540" viewBox="0 0 1120 540" role="img" aria-labelledby="title desc">
   <title id="title">Ommatidium spatial and temporal reconstruction architecture</title>
-  <desc id="desc">Sparse path samples and a low-resolution G-buffer feed a convolutional reconstructor. Its sub-pixel weights gather current radiance samples, restore exact output-resolution albedo, and produce a two-times output. The temporal GPU path reprojects the previous reconstruction using current-to-previous motion, rejects mismatched output-resolution surfaces, and gates valid history after the spatial gather.</desc>
+  <desc id="desc">Sparse path samples and a low-resolution G-buffer feed a convolutional reconstructor. Its sub-pixel weights gather linear radiance, mix it with a deterministic output-resolution guide, and restore exact albedo. The temporal GPU path reprojects the previous reconstruction using exact output-resolution motion, rejects mismatched surfaces, and gates valid history after the current-frame reconstruction.</desc>
   <defs>
     <marker id="arrow" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto"><path d="M0,0 L9,3 L0,6 Z" fill="#59636e"/></marker>
     <style>
@@ -26,15 +26,15 @@
   <rect x="446" y="40" width="226" height="136" class="core"/>
   <text x="559" y="76" text-anchor="middle" class="h">Convolutional U-Net</text>
   <text x="559" y="104" text-anchor="middle" class="p">multi-scale · one pass</text>
-  <text x="559" y="128" text-anchor="middle" class="p">one convex kernel per</text>
-  <text x="559" y="150" text-anchor="middle" class="p">output sub-pixel</text>
+  <text x="559" y="128" text-anchor="middle" class="p">sample + guide + history</text>
+  <text x="559" y="150" text-anchor="middle" class="p">gates per output sub-pixel</text>
 
   <path d="M672 108 H715" class="line"/>
   <rect x="715" y="40" width="215" height="136" class="core"/>
-  <text x="823" y="76" text-anchor="middle" class="h">Current-sample gather</text>
-  <text x="823" y="104" text-anchor="middle" class="p">25 or 49 measured taps</text>
-  <text x="823" y="128" text-anchor="middle" class="p">exact HR albedo restore</text>
-  <text x="823" y="150" text-anchor="middle" class="p">no filtered image between</text>
+  <text x="823" y="76" text-anchor="middle" class="h">Current reconstruction</text>
+  <text x="823" y="104" text-anchor="middle" class="p">49-tap linear gather</text>
+  <text x="823" y="128" text-anchor="middle" class="p">learned deterministic-guide mix</text>
+  <text x="823" y="150" text-anchor="middle" class="p">exact HR albedo restore</text>
 
   <path d="M930 108 H973" class="line"/>
   <rect x="973" y="65" width="112" height="86" class="box"/>
@@ -43,7 +43,7 @@
 
   <rect x="700" y="203" width="245" height="68" class="box"/>
   <text x="823" y="231" text-anchor="middle" class="h">HR primary surfaces</text>
-  <text x="823" y="255" text-anchor="middle" class="p">depth · normal · albedo</text>
+  <text x="823" y="255" text-anchor="middle" class="p">depth · normal · albedo · motion</text>
   <path d="M823 203 V176" class="line"/>
 
   <text x="35" y="321" class="tag">IMPLEMENTED TEMPORAL GPU PATH · EXPERIMENTAL CHECKPOINT</text>
@@ -55,7 +55,7 @@
   <path d="M225 406 H275" class="line"/>
   <rect x="275" y="342" width="235" height="128" class="core"/>
   <text x="393" y="375" text-anchor="middle" class="h">Warp + surface reject</text>
-  <text x="393" y="403" text-anchor="middle" class="p">current → previous motion</text>
+  <text x="393" y="403" text-anchor="middle" class="p">exact current → previous motion</text>
   <text x="393" y="427" text-anchor="middle" class="p">depth · normal · albedo</text>
   <text x="393" y="451" text-anchor="middle" class="p">color + explicit validity</text>
 
@@ -64,7 +64,7 @@
   <text x="690" y="375" text-anchor="middle" class="h">Post-gather history mix</text>
   <text x="690" y="403" text-anchor="middle" class="p">one learned gate per sub-pixel</text>
   <text x="690" y="427" text-anchor="middle" class="p">invalid history hard-closes gate</text>
-  <text x="690" y="451" text-anchor="middle" class="p">current gather remains fallback</text>
+  <text x="690" y="451" text-anchor="middle" class="p">current reconstruction is fallback</text>
 
   <path d="M810 406 H1029 V151" class="line"/>
   <path d="M1029 151 V300 H130 V354" class="line"/>

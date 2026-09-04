@@ -302,6 +302,16 @@ pub struct ModelConfig {
     /// exactly as many weight channels as training wrote.
     #[serde(default = "legacy_kernel_radius")]
     pub kernel_radius: u32,
+    /// Average kernel taps in linear radiance before applying the bounded
+    /// training transform.
+    ///
+    /// Historical checkpoints averaged `compress(radiance)`, which is not the
+    /// convex radiance estimator their architecture promised: Jensen's
+    /// inequality makes a wider filter systematically dark. Missing sidecar
+    /// fields stay `false` so those weights retain their exact inference
+    /// contract; newly trained kernel checkpoints opt in explicitly.
+    #[serde(default)]
+    pub linear_kernel: bool,
     /// Reprojected sparse samples consumed by this checkpoint. `None` keeps
     /// all existing single-frame sidecars and runtimes unchanged.
     #[serde(default)]
@@ -340,6 +350,7 @@ impl Default for ModelConfig {
             reconstruction_base: ReconstructionBase::GuidedBilinear,
             guide: GuideConfig::TUNED,
             kernel_radius: legacy_kernel_radius(),
+            linear_kernel: false,
             demodulate: false,
             guide_mix: false,
             demodulation_offset: legacy_demodulation_offset(),
@@ -817,6 +828,9 @@ impl ModelConfig {
         {
             return Err("low-frequency loss currently targets subpixel residuals".into());
         }
+        if self.linear_kernel && self.prediction != Prediction::SubpixelKernel {
+            return Err("linear kernel space needs kernel prediction".into());
+        }
         for (name, value) in [
             ("spatial_sigma", self.guide.spatial_sigma),
             ("depth_sigma", self.guide.depth_sigma),
@@ -1208,8 +1222,10 @@ fn gather(
     };
 
     let per_slot = peel(graph, weights, slots, taps);
-    // The sparse samples themselves, one shifted copy per tap, in compressed
-    // space. `batch::write_taps` fills this.
+    // The sparse samples themselves, one shifted copy per tap. New kernel
+    // checkpoints carry linear demodulated radiance here and apply the bounded
+    // transform after averaging; legacy checkpoints retain compressed taps.
+    // `batch::write_taps` fills the matching representation.
     let samples = graph.input("taps", &[(batch * 3 * taps * spatial) as usize]);
     let per_channel = peel(graph, samples, 3, taps);
 
@@ -1237,6 +1253,17 @@ fn gather(
         }
     }
     let mut image = image.expect("a kernel checkpoint reconstructs at least one channel");
+    if config.linear_kernel {
+        // Runtime `compress` clamps the physical estimator to non-negative
+        // radiance first. Mirror that here so tiny negative renderer values or
+        // round-off cannot cross the rational transform's pole during
+        // training.
+        image = graph.relu(image);
+        let len = (batch * 3 * slots * spatial) as usize;
+        let ones = graph.constant(vec![1.0; len], &[len]);
+        let denominator = graph.add(image, ones);
+        image = graph.div(image, denominator);
+    }
     if let Some(gates) = guide_gates {
         let guide = graph.input("guide", &[(batch * 3 * slots * spatial) as usize]);
         image = blend_subpixel(graph, guide, image, gates, None, [batch, slots, spatial]);

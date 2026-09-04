@@ -18,8 +18,8 @@ env:
   RUST_BACKTRACE: 1
   # Path dependencies live in sibling checkouts, so pin their exact commits
   # just as Cargo.lock pins registry and Git dependencies.
-  BLADE_REV: 95f5004fb02785a792c883a5312ca5ac37872a75
-  MEGANEURA_REV: bf4fe6c95d0998ca8c2143695dd5e2115d5158f1
+  BLADE_REV: 3d7a3977a047fa4f728ab62b6df1663f5a4f9627
+  MEGANEURA_REV: bf72c42c8639ae8b326361754fc43a478ff837d4
 
 jobs:
   platform:
@@ -131,17 +131,24 @@ jobs:
           VK_ICD_FILENAMES: /usr/share/vulkan/icd.d/lvp_icd.json
           OMMATIDIA_REQUIRE_GPU: 1
         run: cargo +1.92.0 test -p ommatidia --test gpu_runtime --locked -- --ignored --nocapture --test-threads=1
-      - name: Load a catalog mesh and capture one pair
+      - name: Capture a moving, jittered catalog sequence
         working-directory: ommatidia
         env:
           VK_ICD_FILENAMES: /usr/share/vulkan/icd.d/lvp_icd.json
         run: |
           cargo +1.92.0 run -p ommatidia-data --locked -- \
             --out target/catalog-smoke.omd --samples 1 --lr 16x16 \
-            --canonical-frames 1 --catalog ommatidia-data/tests/fixtures/catalog.json \
-            --catalog-kind object --catalog-split train --catalog-objects 1
+            --canonical-frames 2 --catalog ommatidia-data/tests/fixtures/catalog.json \
+            --catalog-kind object --catalog-split train --catalog-objects 1 \
+            --sequence-frames 2 --random-camera-motion 0.05 \
+            --projection-jitter --hr-gbuffer
           test -s target/catalog-smoke.omd
           test "$(jq -r '.scenes[0].families[0]' target/catalog-smoke.catalog.json)" = fixture-plane
+          cargo +1.92.0 run -p ommatidia-data --locked -- \
+            --out target/restir-motion-smoke.omd --samples 1 --lr 16x16 \
+            --canonical-frames 1 --sequence-frames 2 \
+            --random-camera-motion 0.05 --restir-input --hr-gbuffer
+          test -s target/restir-motion-smoke.omd
       - name: Upload changed image
         if: failure()
         uses: actions/upload-artifact@v4

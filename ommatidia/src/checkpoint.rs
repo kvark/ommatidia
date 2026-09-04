@@ -305,4 +305,19 @@ mod tests {
         assert_eq!(old.history_taps(), 1);
         assert_eq!(old.history_mix_channels(), 0);
     }
+
+    #[test]
+    fn old_kernel_sidecars_keep_their_compressed_gather() {
+        let config = ModelConfig {
+            prediction: crate::model::Prediction::SubpixelKernel,
+            reconstruction_base: ReconstructionBase::Sample,
+            linear_kernel: true,
+            ..ModelConfig::default()
+        };
+        let text = ron::ser::to_string(&config).unwrap();
+        let old_text = text.replace(",linear_kernel:true", "");
+        assert_ne!(old_text, text);
+        let old: ModelConfig = ron::from_str(&old_text).unwrap();
+        assert!(!old.linear_kernel);
+    }
 }

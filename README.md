@@ -39,11 +39,15 @@ the v0.3.1 trace measured 8.83 ms median and 8.90 ms p90, including pack,
 model, unpack, and submissions. Its isolated split was 0.79 ms pack, 7.22 ms
 network, and 0.88 ms unpack. Ray tracing, the optional output-resolution
 primary-surface pass, and display post-processing are excluded. The
-experimental temporal b16/r3 checkpoint measures 19.82 ms median end to end on
-the same GPU: 0.25 ms pack, 17.63 ms network, and 2.33 ms unpack, with 130.5
-MiB of recurrent history. The range is reported because amdgpu's load
-counter became intermittently unavailable during the final trace; the harness
-now reports that condition rather than silently calling the device idle.
+latest experimental temporal b16/r3 checkpoint measures 15.77 ms median and
+16.05 ms p90 end to end on the same GPU: 1.73 ms pack, 11.70 ms network, and
+2.82 ms unpack when each stage is waited independently, with 142.4 MiB of
+recurrent history. Timestamp instrumentation adds 1.3% to ordinary wall time
+and covers 93.8% of it; the uninstrumented model median is 11.66 ms.
+It is not a release replacement yet: a fresh eight-family real-mesh audit is
+0.53 dB behind its own deterministic guide. The exact controls and rejected
+capacity/data fixes are in the
+[`DLSS 4/5 follow-up`](docs/results/dlss-4-5-probes-2026-09-04.md).
 
 Upscaling is real today, but narrowly scoped: the published checkpoint and the
 current training recipe are **2×**. Runtime frames may be rectangular (the
@@ -266,9 +270,13 @@ The tuned global filter width is the right one for 14.7% of texels.
 
 `Prediction::SubpixelKernel` therefore has the network emit gather weights over
 the input samples, one set per output sub-pixel, with nothing filtered
-beforehand and no base to correct. The output is a convex combination of
-measured radiance, so it cannot overshoot, invent energy, or emit the black
-pixels a rejected bilateral gather produces. Measured on the same held-out set:
+beforehand and no base to correct. The intended output is a convex combination
+of measured radiance. A later audit found that the checkpoints in the table
+below actually averaged the bounded `compress(radiance)` representation; this
+still prevents an unbounded learned residual, but concavity biases broad
+filters dark. New kernel sidecars opt into linear-radiance averaging and
+compress only the result, while old weights keep their exact historical path.
+Measured on the same held-out set:
 
 | reconstruction | PSNR | SSIM | relMSE | detail |
 |---|---:|---:|---:|---:|
@@ -315,9 +323,11 @@ reports the same model as a 1.60 dB win, because the failure is in the dark
 third of the frame where PSNR has almost no weight.
 
 The kernel model's worst crop is 0.47 — better than the deterministic base's
-own worst case. That is the formulation rather than the training: the output is
-a convex combination of radiance the renderer measured, so there is no
-arithmetic by which it invents any.
+own worst case. That is still the bounded-gather formulation rather than an
+unconstrained residual, but its historical compressed-space average did not
+preserve physical energy. The corrected linear path and its controlled
+firefly/guide-mix experiment are recorded in the
+[`DLSS 4/5 follow-up`](docs/results/dlss-4-5-probes-2026-09-04.md).
 
 Demodulating the albedo — dividing it out before the gather and multiplying the
 exact output-resolution one back after — is level on PSNR and better on
@@ -447,11 +457,12 @@ seed cannot silently pair unrelated input and ground truth.
 
 Each sample stores the colour alongside the renderer's own depth, normals,
 albedo, specular reflectance, and roughness. With `--hr-gbuffer`, it also stores
-output-resolution depth, normal, albedo, specular reflectance, and roughness. That is the structural advantage a
-renderer has over photographic super-resolution—it can provide exact
-silhouettes rather than ask the upscaler to infer them. Input-resolution planes
-come from sparse shading; output-resolution planes may require a separate
-primary-surface pass in a pure path tracer.
+those surfaces at output resolution and, for moving sequences, exact
+output-resolution motion. That is the structural advantage a renderer has over
+photographic super-resolution—it can provide exact silhouettes rather than ask
+the upscaler to infer them. Input-resolution planes come from sparse shading;
+output-resolution planes may require a separate primary-surface pass in a pure
+path tracer.
 The sparse radiance and low-resolution G-buffer must describe the same primary
 ray. If the path tracer jitters a ray inside the pixel while the G-buffer stays
 at its centre, silhouette pixels carry one surface's light beside another

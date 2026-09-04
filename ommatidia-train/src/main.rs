@@ -125,6 +125,7 @@ struct Args {
     eval_only: bool,
     eval_no_recurrence: bool,
     eval_tile: Option<u32>,
+    guide_scale: f32,
     history_scale: f32,
     residual_scale: f32,
     allow_filtered_input: bool,
@@ -191,6 +192,7 @@ impl Default for Args {
             eval_only: false,
             eval_no_recurrence: false,
             eval_tile: None,
+            guide_scale: 1.0,
             history_scale: 1.0,
             residual_scale: 1.0,
             allow_filtered_input: false,
@@ -301,6 +303,8 @@ usage: ommatidia-train [options]
                        retaining sparse temporal accumulation
   --eval-tile N        eval-only crop size override; use the input width for
                        full-frame comparison images [checkpoint tile]
+  --guide-scale F      eval-only multiplier for learned physical-gather odds,
+                       before mapping them to a guide mixture in [0, 1]  [1]
   --history-scale F    eval-only multiplier for the learned previous-output
                        mixture, before bounding it to [0, 1]  [1]
   --residual-scale F   eval-only correction share in [0, 1], used to calibrate
@@ -473,6 +477,11 @@ fn parse_from(argv: impl Iterator<Item = String>) -> Result<Args, String> {
             "--eval-tile" => {
                 args.eval_tile = Some(value()?.parse().map_err(|e| format!("--eval-tile: {e}"))?)
             }
+            "--guide-scale" => {
+                args.guide_scale = value()?
+                    .parse()
+                    .map_err(|e| format!("--guide-scale: {e}"))?
+            }
             "--history-scale" => {
                 args.history_scale = value()?
                     .parse()
@@ -554,6 +563,12 @@ fn parse_from(argv: impl Iterator<Item = String>) -> Result<Args, String> {
     if args.eval_tile.is_some() && !args.eval_only {
         return Err("--eval-tile is an --eval-only override".into());
     }
+    if !args.guide_scale.is_finite() || args.guide_scale <= 0.0 {
+        return Err("--guide-scale must be finite and positive".into());
+    }
+    if args.guide_scale != 1.0 && !args.eval_only {
+        return Err("--guide-scale is an --eval-only calibration".into());
+    }
     if !args.history_scale.is_finite() || args.history_scale <= 0.0 {
         return Err("--history-scale must be finite and positive".into());
     }
@@ -569,6 +584,26 @@ fn parse_from(argv: impl Iterator<Item = String>) -> Result<Args, String> {
     Ok(args)
 }
 
+fn same_model_layout(
+    train: &ommatidia::dataset::Layout,
+    other: &ommatidia::dataset::Layout,
+) -> bool {
+    // Output-resolution motion is temporal supervision/runtime evidence, not a
+    // network conditioning channel. New exact-motion captures can therefore
+    // be mixed with otherwise identical older captures: each Batcher chooses
+    // the precise vector when present and falls back to expanded LR motion.
+    let train_hr_without_motion = train.hr_planes.without(ommatidia::Plane::Motion);
+    let other_hr_without_motion = other.hr_planes.without(ommatidia::Plane::Motion);
+    let train_lr_without_jitter = train.lr_planes.without(ommatidia::Plane::Jitter);
+    let other_lr_without_jitter = other.lr_planes.without(ommatidia::Plane::Jitter);
+    train.scale == other.scale
+        && train.lr_width == other.lr_width
+        && train.lr_height == other.lr_height
+        && train.lr_source == other.lr_source
+        && train_lr_without_jitter == other_lr_without_jitter
+        && train_hr_without_motion == other_hr_without_motion
+}
+
 fn compatible_layout(
     train: &ommatidia::dataset::Layout,
     train_sequence_length: usize,
@@ -576,13 +611,7 @@ fn compatible_layout(
     label: &str,
 ) -> Result<(), String> {
     let other = other_reader.layout();
-    if train.scale != other.scale
-        || train.lr_width != other.lr_width
-        || train.lr_height != other.lr_height
-        || train.lr_source != other.lr_source
-        || train.lr_planes != other.lr_planes
-        || train.hr_planes != other.hr_planes
-    {
+    if !same_model_layout(train, other) {
         return Err(format!(
             "{label} layout {other:?} does not match --data {train:?}"
         ));
@@ -843,6 +872,7 @@ fn main() {
         temporal_weight: args.temporal_weight,
         temporal_motion_bias: args.temporal_motion_bias,
         reconstruction_base,
+        linear_kernel: prediction == Prediction::SubpixelKernel,
         temporal,
         ..ModelConfig::default()
     };
@@ -1200,10 +1230,10 @@ fn main() {
             let mut warped_slots = Vec::new();
             for slot in 0..config.batch as usize {
                 let span = slot * per_slot..(slot + 1) * per_slot;
-                let texels = slot * tile * tile..(slot + 1) * tile * tile;
+                let motion_per_slot = temporal.motion.len() / config.batch as usize;
                 let surf = slot * pixels..(slot + 1) * pixels;
                 let warp = ommatidia::temporal::Reprojection {
-                    motion: &temporal.motion[texels.start * 2..texels.end * 2],
+                    motion: &temporal.motion[slot * motion_per_slot..(slot + 1) * motion_per_slot],
                     current: &temporal.current_surfaces[surf.clone()],
                     previous: &temporal.previous_surfaces[surf],
                     rejection,
@@ -1452,6 +1482,12 @@ impl Evaluator {
         let mut hr_guided_scores = eval::Scores::default();
         let mut split_guided_scores = eval::Scores::default();
         let mut temporal_guide_scores = eval::Scores::default();
+        // A recurrent model must also survive a missing history frame. This is
+        // the camera-cut/reset path applications use for the first frame and
+        // whenever temporal continuity is lost.
+        let mut reset_scores = eval::Scores::default();
+        let mut reset_base_scores = eval::Scores::default();
+        let mut reset_reference_detail = 0.0f64;
         // Detail is only meaningful against the canonical frame's own.
         let mut reference_detail = 0.0f64;
         let sequence_length = batcher.sequence_length();
@@ -1601,6 +1637,7 @@ impl Evaluator {
                     // Vary the sampler noise per crop, so the score is not one
                     // lucky or unlucky draw repeated.
                     args.seed.wrapping_add(counted as u64),
+                    args.guide_scale,
                     args.history_scale,
                     args.residual_scale,
                     warped_history
@@ -1616,6 +1653,7 @@ impl Evaluator {
                 if seeding {
                     let current_surfaces = batch::crop_hr_surfaces(sample, &layout, crop);
                     let reference = batch::crop_reference(sample, &layout, crop);
+                    let extent = (crop.tile * self.config.scale) as usize;
                     let low = batch::crop_color(sample, &layout, crop);
                     let bilinear = eval::bilinear(
                         &low,
@@ -1628,6 +1666,10 @@ impl Evaluator {
                         .or(hr_guided.clone())
                         .or(guided.clone())
                         .unwrap_or(bilinear);
+                    reset_scores.add(&predicted, &reference, extent);
+                    reset_base_scores.add(&seed_base, &reference, extent);
+                    reset_reference_detail +=
+                        ommatidia::metrics::detail(&reference, extent, extent);
                     previous_temporal[crop_index] = Some(TemporalFrame {
                         compressed: batch::compress_linear_crop(
                             &predicted,
@@ -1922,17 +1964,33 @@ impl Evaluator {
             "  {} ({gain:+.2} dB versus {base_name})",
             network_scores.line("network", reference_detail)
         );
+        if !reset_scores.is_empty() {
+            println!(
+                "  reset/cut: {}",
+                reset_base_scores.line(base_name, reset_reference_detail)
+            );
+            println!(
+                "             {}",
+                reset_scores.line("network", reset_reference_detail)
+            );
+        }
         if mix_crops != 0 {
             let count = mix_crops as f64;
-            println!(
-                "  learned mixtures: gather {:.1}% (guide {:.1}%), history {:.1}% requested / \
-                 {:.1}% valid over {:.1}% valid pixels",
-                100.0 * mix_total.gather / count,
-                100.0 * (1.0 - mix_total.gather / count),
-                100.0 * mix_total.history / count,
-                100.0 * mix_total.valid_history / count,
-                100.0 * mix_total.valid_fraction / count,
-            );
+            if self.config.guide_mix {
+                println!(
+                    "  learned guide mixture: gather {:.1}% / guide {:.1}%",
+                    100.0 * mix_total.gather / count,
+                    100.0 * (1.0 - mix_total.gather / count),
+                );
+            }
+            if self.config.history_mix_channels() != 0 {
+                println!(
+                    "  learned history: {:.1}% requested / {:.1}% valid over {:.1}% valid pixels",
+                    100.0 * mix_total.history / count,
+                    100.0 * mix_total.valid_history / count,
+                    100.0 * mix_total.valid_fraction / count,
+                );
+            }
         }
         if self.config.temporal.is_some() {
             for frame in 0..sequence_length {
@@ -2084,6 +2142,9 @@ mod cli_tests {
                 "--val-fraction" => vec![vec!["--val-fraction", "0.1"]],
                 "--no-recurrence" => vec![vec!["--eval-only", "--no-recurrence"]],
                 "--eval-tile" => vec![vec!["--eval-only", "--eval-tile", "1"]],
+                "--guide-scale" => {
+                    vec![vec!["--eval-only", "--guide-scale", "0.25"]]
+                }
                 "--history-scale" => {
                     vec![vec!["--eval-only", "--history-scale", "2"]]
                 }
@@ -2211,6 +2272,39 @@ mod cli_tests {
 
         layout.lr_source = ommatidia::dataset::InputSource::RawRestir;
         assert!(validate_input_source(&layout, std::path::Path::new("set.omd"), &plain).is_ok());
+    }
+
+    #[test]
+    fn exact_hr_motion_does_not_split_compatible_corpora() {
+        let old = ommatidia::dataset::Layout {
+            scale: 2,
+            lr_width: 8,
+            lr_height: 8,
+            lr_source: ommatidia::dataset::InputSource::PathTrace,
+            lr_planes: ommatidia::PlaneSet::new()
+                .with(ommatidia::Plane::Color)
+                .with(ommatidia::Plane::Motion),
+            hr_planes: ommatidia::PlaneSet::new()
+                .with(ommatidia::Plane::Color)
+                .with(ommatidia::Plane::Depth),
+        };
+        let exact = ommatidia::dataset::Layout {
+            hr_planes: old.hr_planes.with(ommatidia::Plane::Motion),
+            ..old
+        };
+        assert!(same_model_layout(&old, &exact));
+
+        let with_jitter = ommatidia::dataset::Layout {
+            lr_planes: exact.lr_planes.with(ommatidia::Plane::Jitter),
+            ..exact
+        };
+        assert!(same_model_layout(&old, &with_jitter));
+
+        let changed_conditioning = ommatidia::dataset::Layout {
+            lr_planes: with_jitter.lr_planes.with(ommatidia::Plane::Normal),
+            ..with_jitter
+        };
+        assert!(!same_model_layout(&old, &changed_conditioning));
     }
 
     #[test]
