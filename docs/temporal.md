@@ -211,6 +211,19 @@ motion-compensated temporal error, a block-averaged low-frequency temporal
 error, reset/cut quality, and sequence age. Exposure changes, animation, and
 visual regression clips remain before a release gate.
 
+`ommatidia-train --rollout-training` closes the train/deployment mismatch for
+previous-output checkpoints. One optimizer step selects a scene and crop per
+batch slot, starts every slot with invalid history, and visits the complete
+sequence in order. A detached teacher's reconstructed frame is reprojected and
+fed into the next frame, rather than reconstructing every sampled predecessor
+from a spatial reset. Meganeura's gradient accumulator averages all sequence
+frames before one Adam update, so this does not flatten time into the batch or
+multiply the optimizer step count. The mode is deliberately limited to direct
+kernel checkpoints with `--previous-output`; it adds no inference input,
+Meganeura operation, or shader.
+The equal-frame-exposure control and rejected temporal-loss probe are recorded
+in [`results/causal-rollout-2026-09-04.md`](results/causal-rollout-2026-09-04.md).
+
 NVIDIA's public material does not disclose a single DLSS training or acceptance
 metric to copy. Its [DLSS 2.0 overview](https://developer.nvidia.com/blog/dlss-2-0-ai-rendering)
 does emphasize temporal feedback and frame-to-frame stability, while NVIDIA's
