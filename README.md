@@ -48,6 +48,10 @@ It is not a release replacement yet: a fresh eight-family real-mesh audit is
 0.53 dB behind its own deterministic guide. The exact controls and rejected
 capacity/data fixes are in the
 [`DLSS 4/5 follow-up`](docs/results/dlss-4-5-probes-2026-09-04.md).
+A subsequent equal-frame-exposure control found that causal rollout alone
+reduces useful history and regresses both procedural and real-mesh quality; it
+is retained as training infrastructure, not promoted as a checkpoint. See the
+[`rollout result`](docs/results/causal-rollout-2026-09-04.md).
 
 Upscaling is real today, but narrowly scoped: the published checkpoint and the
 current training recipe are **2×**. Runtime frames may be rectangular (the

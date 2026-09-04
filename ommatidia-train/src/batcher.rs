@@ -295,6 +295,9 @@ impl Batcher {
             crop,
         ));
 
+        if config.temporal_weight == 0.0 {
+            return;
+        }
         let per_slot = (config.image_channels() * crop.tile * crop.tile) as usize;
         let mut now = vec![0.0; per_slot];
         let mut then = vec![0.0; per_slot];
@@ -349,8 +352,15 @@ impl Batcher {
         batch::compress_demodulated_crop(&linear, sample, layout, crop, config)
     }
 
-    /// Build one batch.
-    pub fn next(&mut self) -> Result<Batch, ommatidia::dataset::Error> {
+    /// Build one batch, optionally from caller-selected records and crops.
+    ///
+    /// Fixed selections let rollout training keep the same independent
+    /// sequences and crop footprints across every frame. The ordinary path
+    /// still draws inside the per-slot loop, preserving its RNG order.
+    fn build_batch(
+        &mut self,
+        selected: Option<&[(usize, Crop)]>,
+    ) -> Result<Batch, ommatidia::dataset::Error> {
         // Cloned up front: the crop draw needs `&mut self`, and the config
         // is small and immutable through the loop.
         let config = self.config.clone();
@@ -390,16 +400,24 @@ impl Batcher {
                     } else {
                         Vec::new()
                     },
-                    history: vec![
-                        0.0;
-                        (config.batch * config.image_channels() * config.tile * config.tile)
-                            as usize
-                    ],
-                    history_validity: vec![
-                        0.0;
-                        (config.batch * config.scale * config.scale * config.tile * config.tile)
-                            as usize
-                    ],
+                    history: if config.history_mix_channels() != 0 {
+                        vec![
+                            0.0;
+                            (config.batch * config.image_channels() * config.tile * config.tile)
+                                as usize
+                        ]
+                    } else {
+                        Vec::new()
+                    },
+                    history_validity: if config.history_mix_channels() != 0 {
+                        vec![
+                            0.0;
+                            (config.batch * config.scale * config.scale * config.tile * config.tile)
+                                as usize
+                        ]
+                    } else {
+                        Vec::new()
+                    },
                     motion: vec![
                         0.0;
                         if self.layout.hr_planes.contains(ommatidia::Plane::Motion) {
@@ -410,7 +428,11 @@ impl Batcher {
                     ],
                     current_surfaces: vec![blank; pixels],
                     previous_surfaces: vec![blank; pixels],
-                    reference_change: vec![0.0; config.loss_len()],
+                    reference_change: if config.temporal_weight != 0.0 {
+                        vec![0.0; config.loss_len()]
+                    } else {
+                        Vec::new()
+                    },
                 }
             }),
         };
@@ -426,24 +448,32 @@ impl Batcher {
         let mut guide_jobs = Vec::new();
         let mut low_resolution_target_jobs = Vec::new();
 
+        if let Some(selected) = selected {
+            assert_eq!(selected.len(), batch_size);
+        }
         for slot in 0..batch_size {
-            let index = if config.temporal.is_some() {
-                let sequence_length = self.reader.sequence_length();
-                let sequences = self.train.len() / sequence_length;
-                let sequence = self.rng.below(sequences as u32) as usize;
-                // A temporal model is deployed on reset/cut frames too.
-                // Training only frames with valid history lets its spatial
-                // gather sacrifice the current image for temporal stability;
-                // evaluation then starts from an out-of-distribution first
-                // frame and feeds that error back. Give reset frames their
-                // natural 1/N share. Other temporal objectives still require
-                // a pair and retain the historical non-reset sampling.
-                let first_frame = first_training_frame(&config);
-                let frame =
-                    first_frame + self.rng.below((sequence_length - first_frame) as u32) as usize;
-                self.train.start + sequence * sequence_length + frame
+            let (index, crop) = if let Some(selected) = selected {
+                selected[slot]
             } else {
-                self.train.start + self.rng.below(self.train.len() as u32) as usize
+                let index = if config.temporal.is_some() {
+                    let sequence_length = self.reader.sequence_length();
+                    let sequences = self.train.len() / sequence_length;
+                    let sequence = self.rng.below(sequences as u32) as usize;
+                    // A temporal model is deployed on reset/cut frames too.
+                    // Training only frames with valid history lets its spatial
+                    // gather sacrifice the current image for temporal stability;
+                    // evaluation then starts from an out-of-distribution first
+                    // frame and feeds that error back. Give reset frames their
+                    // natural 1/N share. Other temporal objectives still require
+                    // a pair and retain the historical non-reset sampling.
+                    let first_frame = first_training_frame(&config);
+                    let frame = first_frame
+                        + self.rng.below((sequence_length - first_frame) as u32) as usize;
+                    self.train.start + sequence * sequence_length + frame
+                } else {
+                    self.train.start + self.rng.below(self.train.len() as u32) as usize
+                };
+                (index, self.random_crop())
             };
             let reset =
                 config.temporal.is_some() && index.is_multiple_of(self.reader.sequence_length());
@@ -460,8 +490,6 @@ impl Batcher {
             } else {
                 (None, self.sample(index)?)
             };
-            let crop = self.random_crop();
-
             let guided =
                 sample.write_conditioning(&self.layout, &config, crop, slot, &mut out.cond);
             if config.prediction != ommatidia::model::Prediction::LowResolutionResidual {
@@ -660,6 +688,48 @@ impl Batcher {
         }
 
         Ok(out)
+    }
+
+    /// Build one ordinary randomly sampled batch.
+    pub fn next(&mut self) -> Result<Batch, ommatidia::dataset::Error> {
+        self.build_batch(None)
+    }
+
+    /// Build one batch for every frame of the same randomly selected
+    /// sequences, retaining each slot's crop across the rollout.
+    ///
+    /// This is the deployment distribution of a recurrent reconstructor: the
+    /// first batch is a reset, and each later batch consumes the preceding
+    /// output. Returning frames rather than flattening them into the batch lets
+    /// the trainer run the detached teacher causally while Meganeura averages
+    /// the per-frame gradients into one optimizer update.
+    pub fn next_rollout(&mut self) -> Result<Vec<Batch>, ommatidia::dataset::Error> {
+        assert!(
+            self.config
+                .temporal
+                .is_some_and(|temporal| temporal.previous_output),
+            "rollout training needs previous-output recurrence"
+        );
+        let sequence_length = self.reader.sequence_length();
+        let sequences = self.train.len() / sequence_length;
+        let mut starts_and_crops = Vec::with_capacity(self.config.batch as usize);
+        for _ in 0..self.config.batch {
+            let sequence = self.rng.below(sequences as u32) as usize;
+            starts_and_crops.push((
+                self.train.start + sequence * sequence_length,
+                self.random_crop(),
+            ));
+        }
+
+        let mut rollout = Vec::with_capacity(sequence_length);
+        for frame in 0..sequence_length {
+            let selected: Vec<_> = starts_and_crops
+                .iter()
+                .map(|&(start, crop)| (start + frame, crop))
+                .collect();
+            rollout.push(self.build_batch(Some(&selected))?);
+        }
+        Ok(rollout)
     }
 }
 
@@ -903,5 +973,124 @@ mod tests {
         assert_eq!(first_training_frame(&config), 1);
         config.temporal.as_mut().unwrap().previous_output = true;
         assert_eq!(first_training_frame(&config), 0);
+    }
+
+    #[test]
+    fn rollout_keeps_each_slot_on_one_sequence_and_starts_at_reset() {
+        const FRAMES: u32 = 3;
+        let dir =
+            std::env::temp_dir().join(format!("ommatidia-batcher-rollout-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("set.omd");
+        let layout = Layout {
+            scale: 2,
+            lr_width: 8,
+            lr_height: 8,
+            lr_source: ommatidia::dataset::InputSource::PathTrace,
+            lr_planes: PlaneSet::new()
+                .with(Plane::Color)
+                .with(Plane::Depth)
+                .with(Plane::Normal)
+                .with(Plane::DiffuseAlbedo)
+                .with(Plane::Motion),
+            hr_planes: PlaneSet::new()
+                .with(Plane::Color)
+                .with(Plane::Depth)
+                .with(Plane::Normal)
+                .with(Plane::DiffuseAlbedo),
+        };
+        let mut writer = Writer::create_sequence(&path, layout, FRAMES).unwrap();
+        for sequence in 0..2 {
+            for frame in 0..FRAMES as usize {
+                let color = (sequence * 10 + frame + 1) as f32;
+                let mut sample = Sample {
+                    // Ones make every required surface/motion channel valid;
+                    // only colour needs to identify sequence and frame.
+                    lr: vec![f16::ONE; layout.lr_len()],
+                    hr: vec![f16::ONE; layout.hr_len()],
+                };
+                for component in 0..3 {
+                    let lr_channel =
+                        layout.lr_planes.channel_offset(Plane::Color).unwrap() + component;
+                    sample.lr
+                        [lr_channel * layout.lr_texels()..(lr_channel + 1) * layout.lr_texels()]
+                        .fill(f16::from_f32(color));
+                    let hr_channel =
+                        layout.hr_planes.channel_offset(Plane::Color).unwrap() + component;
+                    sample.hr
+                        [hr_channel * layout.hr_texels()..(hr_channel + 1) * layout.hr_texels()]
+                        .fill(f16::from_f32(color));
+                }
+                writer.write(&sample).unwrap();
+            }
+        }
+        writer.finish().unwrap();
+
+        let mut config = config(Objective::Direct);
+        config.batch = 2;
+        config.tile = layout.lr_width;
+        config.cond_planes = PlaneSet::new()
+            .with(Plane::Color)
+            .with(Plane::Depth)
+            .with(Plane::Normal)
+            .with(Plane::DiffuseAlbedo);
+        config.prediction = ommatidia::model::Prediction::SubpixelKernel;
+        config.reconstruction_base = ommatidia::model::ReconstructionBase::Sample;
+        config.kernel_radius = 1;
+        config.temporal = Some(ommatidia::temporal::Config {
+            frames: FRAMES,
+            rejection: ommatidia::temporal::RejectionConfig::default(),
+            features: ommatidia::temporal::Features::Variance,
+            unrejected_tap: false,
+            previous_output: true,
+        });
+        config.validate().unwrap();
+        let mut batcher = Batcher::new(
+            Reader::open(&path).unwrap(),
+            config.clone(),
+            Schedule::cosine(100),
+            0..2 * FRAMES as usize,
+            19,
+        );
+        let rollout = batcher.next_rollout().unwrap();
+        assert_eq!(rollout.len(), FRAMES as usize);
+
+        let texels = (config.tile * config.tile) as usize;
+        let per_slot = config.cond_channels() as usize * texels;
+        let current_color_channel = config.cond_planes.channels() * texels;
+        for slot in 0..config.batch as usize {
+            let first = rollout[0].cond[slot * per_slot + current_color_channel];
+            let sequence_start = if (first - ommatidia::transform::compress(1.0)).abs() < 1e-6 {
+                1.0
+            } else {
+                assert!((first - ommatidia::transform::compress(11.0)).abs() < 1e-6);
+                11.0
+            };
+            for (frame, batch) in rollout.iter().enumerate() {
+                let got = batch.cond[slot * per_slot + current_color_channel];
+                let want = ommatidia::transform::compress(sequence_start + frame as f32);
+                assert!((got - want).abs() < 1e-6, "slot {slot}, frame {frame}");
+            }
+        }
+        assert!(
+            rollout[0]
+                .temporal
+                .as_ref()
+                .unwrap()
+                .current_surfaces
+                .iter()
+                .all(|surface| surface.depth == 0.0)
+        );
+        assert!(
+            rollout[1]
+                .temporal
+                .as_ref()
+                .unwrap()
+                .current_surfaces
+                .iter()
+                .all(|surface| surface.depth == 1.0)
+        );
+
+        std::fs::remove_file(&path).unwrap();
     }
 }

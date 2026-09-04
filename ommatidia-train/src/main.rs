@@ -112,6 +112,7 @@ struct Args {
     low_frequency_loss_weight: f32,
     residual_bound: f32,
     teacher_every: usize,
+    rollout_training: bool,
     seed: u64,
     log_every: usize,
     eval_out: Option<PathBuf>,
@@ -147,6 +148,129 @@ fn cosine_learning_rate(initial: f32, final_rate: f32, step: usize, steps: usize
     final_rate + (initial - final_rate) * cosine
 }
 
+struct RecurrentInputs {
+    temporal_target: Vec<f32>,
+    temporal_mask: Vec<f32>,
+    history: Vec<f32>,
+    history_validity: Vec<f32>,
+}
+
+/// Reproject one detached previous reconstruction into the current batch.
+///
+/// Passing `None` is an explicit reset: every temporal-loss and history mask
+/// remains zero. Rollout training calls this once per sequence frame, carrying
+/// the teacher output forward; ordinary training supplies the independently
+/// reconstructed predecessor it historically used.
+fn recurrent_inputs(
+    config: &ModelConfig,
+    temporal: &batcher::TemporalBatch,
+    previous: Option<&[f32]>,
+) -> RecurrentInputs {
+    let tile = config.tile as usize;
+    let scale = config.scale as usize;
+    let per_slot = (config.image_channels() * config.tile * config.tile) as usize;
+    let pixels = tile * scale * tile * scale;
+    let mut out = RecurrentInputs {
+        temporal_target: if config.temporal_weight != 0.0 {
+            vec![0.0; config.loss_len()]
+        } else {
+            Vec::new()
+        },
+        temporal_mask: if config.temporal_weight != 0.0 {
+            vec![0.0; config.loss_len()]
+        } else {
+            Vec::new()
+        },
+        history: if config.history_mix_channels() != 0 {
+            vec![0.0; config.batch as usize * per_slot]
+        } else {
+            Vec::new()
+        },
+        history_validity: if config.history_mix_channels() != 0 {
+            vec![
+                0.0;
+                (config.batch * config.scale * config.scale * config.tile * config.tile) as usize
+            ]
+        } else {
+            Vec::new()
+        },
+    };
+    let Some(previous) = previous else {
+        return out;
+    };
+    assert_eq!(previous.len(), config.loss_len());
+    let rejection = config.temporal.expect("temporal recurrence").rejection;
+    for slot in 0..config.batch as usize {
+        let span = slot * per_slot..(slot + 1) * per_slot;
+        let motion_per_slot = temporal.motion.len() / config.batch as usize;
+        let surf = slot * pixels..(slot + 1) * pixels;
+        let warp = ommatidia::temporal::Reprojection {
+            motion: &temporal.motion[slot * motion_per_slot..(slot + 1) * motion_per_slot],
+            current: &temporal.current_surfaces[surf.clone()],
+            previous: &temporal.previous_surfaces[surf],
+            rejection,
+        };
+        if config.history_mix_channels() != 0 {
+            let warped = batch::warp_previous_output(&previous[span.clone()], warp, tile, scale);
+            batch::fill_history_slot(
+                &mut out.history,
+                &mut out.history_validity,
+                &warped,
+                slot,
+                tile,
+                scale,
+            );
+        }
+        if config.temporal_weight != 0.0 {
+            let (target, mask) = batch::temporal_target(
+                &previous[span.clone()],
+                &temporal.reference_change[span.clone()],
+                warp,
+                tile,
+                scale,
+                config.temporal_motion_bias,
+            );
+            out.temporal_target[span.clone()].copy_from_slice(&target);
+            out.temporal_mask[span].copy_from_slice(&mask);
+        }
+    }
+    out
+}
+
+fn run_teacher(
+    teacher: &mut meganeura::Session,
+    config: &ModelConfig,
+    cond: &[f32],
+    taps: &[f32],
+    guide: &[f32],
+    recurrent: &RecurrentInputs,
+) -> Vec<f32> {
+    teacher.set_input("cond", cond);
+    teacher.set_input("taps", taps);
+    if !guide.is_empty() {
+        teacher.set_input("guide", guide);
+    }
+    if config.history_mix_channels() != 0 {
+        teacher.set_input("history", &recurrent.history);
+        teacher.set_input("history_validity", &recurrent.history_validity);
+    }
+    teacher.step();
+    teacher.wait();
+    teacher.read_output(config.loss_len())
+}
+
+/// Copy all model parameters in one staged readback.
+///
+/// The training and inference graphs have identical parameter names and
+/// shapes. Keeping synchronization in memory avoids a temporary checkpoint
+/// file (and the process-global environment lookup needed to locate it).
+fn copy_parameters(from: &meganeura::Session, to: &mut meganeura::Session, names: &[String]) {
+    let borrowed: Vec<_> = names.iter().map(String::as_str).collect();
+    for (name, values) in names.iter().zip(from.read_params(&borrowed)) {
+        to.upload_param(name, &values);
+    }
+}
+
 impl Default for Args {
     fn default() -> Self {
         Self {
@@ -179,6 +303,7 @@ impl Default for Args {
             low_frequency_loss_weight: 0.0,
             residual_bound: 0.0,
             teacher_every: 250,
+            rollout_training: false,
             seed: 0,
             log_every: 50,
             eval_out: None,
@@ -260,7 +385,9 @@ usage: ommatidia-train [options]
   --residual-bound F   cap a subpixel correction to +/-F in compressed
                        radiance using tanh; 0 retains the unbounded head [0]
   --teacher-every N    steps between resynchronising the detached copy of the
-                       network that the temporal target is built from  [250]
+                       network used for temporal targets and state  [250]
+  --rollout-training   train every frame from reset and feed the detached
+                       teacher's own output forward through the whole sequence
   --head-kernel N      kernel size of the output convolution. A kernel head is
                        wide, so at 3 it is a quarter of the arithmetic; the
                        features it reads already have a wide receptive field  [3]
@@ -442,6 +569,7 @@ fn parse_from(argv: impl Iterator<Item = String>) -> Result<Args, String> {
                     .parse()
                     .map_err(|e| format!("--teacher-every: {e}"))?
             }
+            "--rollout-training" => args.rollout_training = true,
             "--demodulate" => args.demodulate = true,
             "--demodulation-offset" => {
                 args.demodulation_offset = value()?
@@ -550,6 +678,17 @@ fn parse_from(argv: impl Iterator<Item = String>) -> Result<Args, String> {
     }
     if args.history_frames == 0 {
         return Err("--history-frames must be positive".into());
+    }
+    if args.rollout_training
+        && (args.history_frames < 2
+            || !args.previous_output
+            || args.objective != Objective::Direct
+            || args.prediction != Prediction::SubpixelKernel)
+    {
+        return Err(
+            "--rollout-training needs direct kernel prediction, --history-frames above one, and --previous-output"
+                .into(),
+        );
     }
     if args.eval_only && args.resume_from.is_some() {
         return Err("--resume-from cannot be combined with --eval-only".into());
@@ -1104,12 +1243,12 @@ fn main() {
         println!("resumed weights and Adam state from {}", weights.display());
     }
 
-    // The temporal loss compares this frame against the network's own answer
-    // for the previous one. That answer has to come from somewhere the gradient
-    // does not flow through, and a reprojection is not something the graph can
-    // express, so it comes from a detached copy run on the host side and
-    // resynchronised every `--teacher-every` steps. At step zero the copy is
-    // initialised identically, so the target is self-consistent from the start
+    // The temporal loss and previous-output recurrence need the network's own
+    // answer for another frame. That answer has to come from somewhere the
+    // gradient does not flow through, and a reprojection is not something the
+    // graph can express, so it comes from a detached copy run on the host side
+    // and resynchronised every `--teacher-every` steps. At step zero the copy is
+    // initialised identically, so the state is self-consistent from the start
     // rather than arbitrary.
     let mut teacher = (config.temporal_weight != 0.0
         || config.temporal.is_some_and(|t| t.previous_output))
@@ -1120,7 +1259,11 @@ fn main() {
         inference.initialize(&mut session, args.seed);
         session
     });
-    let teacher_checkpoint = std::env::temp_dir().join("ommatidia-teacher.safetensors");
+    let teacher_names: Vec<_> = model
+        .params
+        .iter()
+        .map(|param| param.name.clone())
+        .collect();
     // On by default. A run measured in hours has many more chances to meet the
     // one batch that blows the gradient up, and the cost of that is the whole
     // run rather than one step. Clipping every fifth step amortises the extra
@@ -1172,137 +1315,124 @@ fn main() {
     let mut first_average = f32::NAN;
     let mut last_average = f32::NAN;
     let training_started = std::time::Instant::now();
+    if args.rollout_training {
+        session.set_grad_accumulate(sequence_length as u32);
+        println!("rollout training over {sequence_length} frames per optimizer step");
+    }
 
     for step in 0..args.steps {
-        if let Some(final_rate) = args.learning_rate_final {
-            // Cosine from the initial rate down to the final one. Nothing
-            // exotic; the point is only that the last hour of a long run
-            // settles rather than keeps bouncing at the rate that suited the
-            // first one.
-            let rate = cosine_learning_rate(args.learning_rate, final_rate, step, args.steps);
-            // `set_learning_rate` configures SGD in Meganeura. Reconfigure
-            // Adam itself so the schedule preserves its moment estimates.
-            session.set_adam(rate, ADAM_BETA1, ADAM_BETA2, ADAM_EPSILON);
+        // Cosine from the initial rate down to the final one. Nothing exotic;
+        // the point is only that the last hour of a long run settles rather
+        // than keeps bouncing at the rate that suited the first one.
+        let learning_rate = args
+            .learning_rate_final
+            .map_or(args.learning_rate, |final_rate| {
+                cosine_learning_rate(args.learning_rate, final_rate, step, args.steps)
+            });
+
+        if let Some(teacher) = teacher.as_mut()
+            && step.is_multiple_of(args.teacher_every)
+        {
+            copy_parameters(&session, teacher, &teacher_names);
         }
 
         // A corpus with many near-duplicate captures must not drown out a
         // smaller but more diverse one. Each source gets exactly one complete
         // optimizer batch in turn, independent of its record count.
         let source = balanced_source(step, args.seed, train_batchers.len());
-        let batch = train_batchers[source].next().expect("cannot read a batch");
-        session.set_input("cond", &batch.cond);
-        session.set_input("target", &batch.target);
-        if !batch.loss_scale.is_empty() {
-            session.set_input("loss_scale", &batch.loss_scale);
+        let batches = if args.rollout_training {
+            train_batchers[source]
+                .next_rollout()
+                .expect("cannot read a rollout batch")
+        } else {
+            vec![train_batchers[source].next().expect("cannot read a batch")]
+        };
+        if args.rollout_training {
+            session.zero_grad();
         }
-        if let (Some(teacher), Some(temporal)) = (teacher.as_mut(), batch.temporal.as_ref()) {
-            if step.is_multiple_of(args.teacher_every)
-                && let Err(e) = session
-                    .save_checkpoint(&teacher_checkpoint)
-                    .and_then(|()| teacher.load_checkpoint(&teacher_checkpoint))
-            {
-                eprintln!("cannot resynchronise the temporal teacher: {e}");
-                std::process::exit(1);
+        let micro_batches = batches.len();
+        let mut rolled_previous = None;
+        let mut step_loss = 0.0;
+        for (micro, batch) in batches.into_iter().enumerate() {
+            session.set_input("cond", &batch.cond);
+            session.set_input("target", &batch.target);
+            if !batch.loss_scale.is_empty() {
+                session.set_input("loss_scale", &batch.loss_scale);
             }
-            teacher.set_input("cond", &temporal.cond);
-            teacher.set_input("taps", &temporal.taps);
-            if !temporal.guide.is_empty() {
-                teacher.set_input("guide", &temporal.guide);
+            if !batch.taps.is_empty() {
+                session.set_input("taps", &batch.taps);
             }
-            if config.history_mix_channels() != 0 {
-                teacher.set_input("history", &temporal.history);
-                teacher.set_input("history_validity", &temporal.history_validity);
+            if !batch.guide.is_empty() {
+                session.set_input("guide", &batch.guide);
             }
-            teacher.step();
-            teacher.wait();
-            let previous = teacher.read_output(config.loss_len());
+            if diffusing {
+                session.set_input("x_t", &batch.x_t);
+                session.set_input("t_emb", &batch.t_emb);
+            }
 
-            let tile = config.tile as usize;
-            let scale = config.scale as usize;
-            let per_slot = (config.image_channels() * config.tile * config.tile) as usize;
-            let pixels = tile * scale * tile * scale;
-            let rejection = config
-                .temporal
-                .expect("a temporal loss needs history")
-                .rejection;
-            let mut target = vec![0.0; config.loss_len()];
-            let mut mask = vec![0.0; config.loss_len()];
-            let mut warped_slots = Vec::new();
-            for slot in 0..config.batch as usize {
-                let span = slot * per_slot..(slot + 1) * per_slot;
-                let motion_per_slot = temporal.motion.len() / config.batch as usize;
-                let surf = slot * pixels..(slot + 1) * pixels;
-                let warp = ommatidia::temporal::Reprojection {
-                    motion: &temporal.motion[slot * motion_per_slot..(slot + 1) * motion_per_slot],
-                    current: &temporal.current_surfaces[surf.clone()],
-                    previous: &temporal.previous_surfaces[surf],
-                    rejection,
+            if let (Some(teacher), Some(temporal)) = (teacher.as_mut(), batch.temporal.as_ref()) {
+                let recurrent = if args.rollout_training {
+                    recurrent_inputs(&config, temporal, rolled_previous.as_deref())
+                } else {
+                    // Preserve the ordinary one-pair training path: reconstruct
+                    // the sampled predecessor from a spatial reset, then warp
+                    // that detached answer into the current frame.
+                    let reset = RecurrentInputs {
+                        temporal_target: Vec::new(),
+                        temporal_mask: Vec::new(),
+                        history: temporal.history.clone(),
+                        history_validity: temporal.history_validity.clone(),
+                    };
+                    let previous = run_teacher(
+                        teacher,
+                        &config,
+                        &temporal.cond,
+                        &temporal.taps,
+                        &temporal.guide,
+                        &reset,
+                    );
+                    recurrent_inputs(&config, temporal, Some(&previous))
                 };
-                if config.temporal.is_some_and(|t| t.previous_output) {
-                    warped_slots.push(batch::warp_previous_output(
-                        &previous[span.clone()],
-                        warp,
-                        tile,
-                        scale,
+                if config.temporal_weight != 0.0 {
+                    session.set_input("temporal_target", &recurrent.temporal_target);
+                    session.set_input("temporal_mask", &recurrent.temporal_mask);
+                }
+                if config.history_mix_channels() != 0 {
+                    session.set_input("history", &recurrent.history);
+                    session.set_input("history_validity", &recurrent.history_validity);
+                }
+
+                // The teacher is frozen for this optimizer step. Its current
+                // prediction becomes the next frame's detached recurrent state.
+                if args.rollout_training {
+                    rolled_previous = Some(run_teacher(
+                        teacher,
+                        &config,
+                        &batch.cond,
+                        &batch.taps,
+                        &batch.guide,
+                        &recurrent,
                     ));
                 }
-                if config.temporal_weight != 0.0 {
-                    let (slot_target, slot_mask) = batch::temporal_target(
-                        &previous[span.clone()],
-                        &temporal.reference_change[span.clone()],
-                        warp,
-                        tile,
-                        scale,
-                        config.temporal_motion_bias,
-                    );
-                    target[span.clone()].copy_from_slice(&slot_target);
-                    mask[span].copy_from_slice(&slot_mask);
-                }
             }
-            if config.temporal_weight != 0.0 {
-                session.set_input("temporal_target", &target);
-                session.set_input("temporal_mask", &mask);
-            }
-            if config.history_mix_channels() != 0 {
-                let mut history = vec![0.0; config.batch as usize * per_slot];
-                let mut history_validity = vec![
-                    0.0;
-                    (config.batch * config.scale * config.scale * config.tile * config.tile)
-                        as usize
-                ];
-                for (slot, warped) in warped_slots.iter().enumerate() {
-                    batch::fill_history_slot(
-                        &mut history,
-                        &mut history_validity,
-                        warped,
-                        slot,
-                        tile,
-                        scale,
-                    );
-                }
-                session.set_input("history", &history);
-                session.set_input("history_validity", &history_validity);
-            }
-        }
-        if !batch.taps.is_empty() {
-            session.set_input("taps", &batch.taps);
-        }
-        if !batch.guide.is_empty() {
-            session.set_input("guide", &batch.guide);
-        }
-        if diffusing {
-            session.set_input("x_t", &batch.x_t);
-            session.set_input("t_emb", &batch.t_emb);
-        }
 
-        session.step();
-        session.wait();
-        let loss = session.read_loss();
-        if !loss.is_finite() {
-            eprintln!("loss went non-finite at step {step}, stopping");
-            std::process::exit(1);
+            if args.rollout_training && micro + 1 != micro_batches {
+                session.clear_optimizer();
+            } else {
+                // `set_learning_rate` would switch to SGD. Reconfigure Adam
+                // itself so scheduling preserves its moment estimates.
+                session.set_adam(learning_rate, ADAM_BETA1, ADAM_BETA2, ADAM_EPSILON);
+            }
+            session.step();
+            session.wait();
+            let loss = session.read_loss();
+            if !loss.is_finite() {
+                eprintln!("loss went non-finite at step {step}, frame {micro}, stopping");
+                std::process::exit(1);
+            }
+            step_loss += loss;
         }
-        recent.push(loss);
+        recent.push(step_loss / micro_batches as f32);
 
         if (step + 1) % args.log_every == 0 || step + 1 == args.steps {
             let average = recent.iter().sum::<f32>() / recent.len() as f32;
@@ -1405,7 +1535,6 @@ struct Evaluator {
     session: meganeura::Session,
     config: ModelConfig,
     names: Vec<String>,
-    scratch: Vec<f32>,
 }
 
 struct TemporalFrame {
@@ -1432,25 +1561,16 @@ impl Evaluator {
             model::build(&eval_config, false).expect("the caller validated this config");
         let session = ommatidia::gpu::inference_session(&eval_model.graph, context);
         let names = eval_model.params.iter().map(|p| p.name.clone()).collect();
-        let widest = eval_model.params.iter().map(|p| p.len).max().unwrap_or(0);
         Self {
             session,
             config: eval_config,
             names,
-            scratch: vec![0.0; widest],
         }
     }
 
     /// Copy every parameter from the training session into the inference one.
     fn sync(&mut self, from: &meganeura::Session) {
-        for name in &self.names {
-            let Some(len) = from.param_size(name) else {
-                continue;
-            };
-            let slice = &mut self.scratch[..len];
-            from.read_param(name, slice);
-            self.session.upload_param(name, slice);
-        }
+        copy_parameters(from, &mut self.session, &self.names);
     }
 
     /// Reconstruct the held-out samples and report against deterministic bases.
@@ -2097,6 +2217,16 @@ mod cli_tests {
                 ],
                 "--head-kernel" => vec![vec!["--head-kernel", "1"]],
                 "--teacher-every" => vec![vec!["--teacher-every", "100"]],
+                "--rollout-training" => vec![vec![
+                    "--rollout-training",
+                    "--history-frames",
+                    "2",
+                    "--previous-output",
+                    "--prediction",
+                    "kernel",
+                    "--reconstruction-base",
+                    "sample",
+                ]],
                 "--temporal-motion-bias" => vec![vec![
                     "--temporal-motion-bias",
                     "8",

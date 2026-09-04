@@ -56,6 +56,18 @@ The reasoning and rejected controls are in
 [`dlss-4-5-lessons.md`](dlss-4-5-lessons.md) and the
 [`controlled result`](results/dlss-4-5-probes-2026-09-04.md).
 
+The first half of gate 2 is now measured rather than assumed. At equal frame
+exposure, feeding the detached teacher causally through complete four-frame
+sequences is worse than one-pair training on every spatial and temporal metric,
+and a 0.1 temporal term makes it worse again. Both checkpoints are rejected;
+the reusable rollout path remains for the reactive/confidence objective that
+the result shows is missing. See the
+[`causal rollout control`](results/causal-rollout-2026-09-04.md).
+Training on procedural and real meshes together from initialization improves
+SSIM and fine temporal error, but still trades away procedural low-frequency
+fidelity and energy even after history calibration. It is another useful
+Pareto point, not the clear visual win required for promotion.
+
 ## Ordered experiments
 
 1. **Close the scale-selection investigation.** A pooled CPU selector recovered
