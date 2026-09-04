@@ -57,6 +57,20 @@ second device. What remains below is specifically the C/external-Vulkan path,
 where blade-graphics cannot yet wrap handles created by another graphics
 stack.
 
+Motion may be supplied at input resolution in input-pixel units. Hosts that
+already render an output-resolution primary-surface pass should additionally
+provide output-resolution motion in output-pixel units; Ommatidium then uses it
+for previous-output reprojection so a 2×2 reconstruction footprint does not
+share one foreground or background vector. The Blade helper carries this exact
+motion automatically.
+
+These vectors track primary geometry, not necessarily radiance. Reflections,
+shadows, particles, and animated material response may not follow the primary
+surface even when its vector is exact. The present runtime rejects depth,
+normal, and albedo discontinuities and exposes history reset; an explicit
+reactive/disocclusion texture remains part of the native API work rather than
+something the model should infer from a misleading vector alone.
+
 ## Resolution contract
 
 Checkpoint weights are independent of spatial size; the training tile is not

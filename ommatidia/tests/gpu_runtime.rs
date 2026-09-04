@@ -71,6 +71,7 @@ fn config() -> ModelConfig {
         reconstruction_base: ReconstructionBase::Bilinear,
         guide: ommatidia::model::GuideConfig::TUNED,
         kernel_radius: 2,
+        linear_kernel: false,
         demodulate: false,
         guide_mix: false,
         demodulation_offset: 0.25,
@@ -107,6 +108,7 @@ fn kernel_config() -> ModelConfig {
         prediction: ommatidia::model::Prediction::SubpixelKernel,
         reconstruction_base: ReconstructionBase::Sample,
         kernel_radius: 2,
+        linear_kernel: true,
         ..guided_config()
     }
 }
@@ -363,6 +365,7 @@ struct FrameValues<'a> {
     hr_depth: &'a [f32],
     hr_normal: &'a [f32],
     hr_albedo: &'a [f32],
+    hr_motion: &'a [f32],
 }
 
 fn temporal_sample(layout: &Layout, values: FrameValues<'_>) -> Sample {
@@ -395,6 +398,7 @@ fn temporal_sample(layout: &Layout, values: FrameValues<'_>) -> Sample {
         (Plane::Depth, 1, values.hr_depth),
         (Plane::Normal, 3, values.hr_normal),
         (Plane::DiffuseAlbedo, 3, values.hr_albedo),
+        (Plane::Motion, 2, values.hr_motion),
     ] {
         let base = layout.hr_planes.channel_offset(plane).unwrap();
         for component in 0..channels {
@@ -886,6 +890,7 @@ fn temporal_runtime_matches_cpu_recurrence_and_reset() {
     let mut hr_depth = [vec![0.0; hr_texels * 3], vec![0.0; hr_texels * 3]];
     let mut hr_normal = [vec![0.0; hr_texels * 3], vec![0.0; hr_texels * 3]];
     let mut hr_albedo = [vec![0.0; hr_texels * 3], vec![0.0; hr_texels * 3]];
+    let mut hr_motion = [vec![0.0; hr_texels * 3], vec![0.0; hr_texels * 3]];
     for frame in 0..2 {
         for y in 0..hr_width as usize {
             for x in 0..hr_width as usize {
@@ -896,6 +901,14 @@ fn temporal_runtime_matches_cpu_recurrence_and_reset() {
                     .copy_from_slice(&normal[frame][low * 3..low * 3 + 3]);
                 hr_albedo[frame][high * 3..high * 3 + 3]
                     .copy_from_slice(&albedo[frame][low * 3..low * 3 + 3]);
+                if frame == 1 {
+                    // Deliberately differs across the two output sub-pixels.
+                    // Falling back to the low-resolution vector therefore
+                    // cannot accidentally pass the GPU/CPU parity check.
+                    hr_motion[frame][high * 3] =
+                        quantize(if x.is_multiple_of(2) { 0.5 } else { 0.25 });
+                    hr_motion[frame][high * 3 + 1] = quantize(-0.25);
+                }
             }
         }
     }
@@ -909,7 +922,8 @@ fn temporal_runtime_matches_cpu_recurrence_and_reset() {
         hr_planes: PlaneSet::new()
             .with(Plane::Depth)
             .with(Plane::Normal)
-            .with(Plane::DiffuseAlbedo),
+            .with(Plane::DiffuseAlbedo)
+            .with(Plane::Motion),
     };
     let samples: Vec<_> = (0..2)
         .map(|frame| {
@@ -925,6 +939,7 @@ fn temporal_runtime_matches_cpu_recurrence_and_reset() {
                     hr_depth: &hr_depth[frame],
                     hr_normal: &hr_normal[frame],
                     hr_albedo: &hr_albedo[frame],
+                    hr_motion: &hr_motion[frame],
                 },
             )
         })
@@ -981,6 +996,10 @@ fn temporal_runtime_matches_cpu_recurrence_and_reset() {
         TestTexture::upload(&context, &mut encoder, &hr_albedo[0], hr_width, hr_width),
         TestTexture::upload(&context, &mut encoder, &hr_albedo[1], hr_width, hr_width),
     ];
+    let hr_motion_texture = [
+        TestTexture::upload(&context, &mut encoder, &hr_motion[0], hr_width, hr_width),
+        TestTexture::upload(&context, &mut encoder, &hr_motion[1], hr_width, hr_width),
+    ];
     let inputs = [0, 1].map(|frame| {
         FrameInputs::from_textures(
             color_texture[frame].view,
@@ -994,6 +1013,7 @@ fn temporal_runtime_matches_cpu_recurrence_and_reset() {
             hr_normal_texture[frame].view,
             hr_albedo_texture[frame].view,
         )
+        .with_high_resolution_motion(hr_motion_texture[frame].view)
         .with_motion(motion_texture[frame].view)
     });
 
@@ -1124,7 +1144,7 @@ fn temporal_runtime_matches_cpu_recurrence_and_reset() {
         .for_each(|value| *value = f16::from_f32(*value).to_f32());
     let current_surfaces = batch::crop_hr_surfaces(&prepared[1].sample, &layout, crop);
     let previous_surfaces = batch::crop_hr_surfaces(&prepared[0].sample, &layout, crop);
-    let motion_interleaved: Vec<_> = motion[1]
+    let motion_interleaved: Vec<_> = hr_motion[1]
         .chunks_exact(3)
         .flat_map(|value| [value[0], value[1]])
         .collect();
@@ -1255,6 +1275,9 @@ fn temporal_runtime_matches_cpu_recurrence_and_reset() {
         texture.destroy(&context);
     }
     for texture in hr_albedo_texture {
+        texture.destroy(&context);
+    }
+    for texture in hr_motion_texture {
         texture.destroy(&context);
     }
     context.destroy_command_encoder(&mut encoder);

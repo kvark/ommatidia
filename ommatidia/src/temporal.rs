@@ -72,13 +72,49 @@ impl Surface {
 /// whether a bilinear tap is the same surface.
 #[derive(Clone, Copy)]
 pub struct Reprojection<'a> {
-    /// Current-to-previous motion at input resolution, in input pixels.
+    /// Current-to-previous motion at either input or output resolution.
+    ///
+    /// Input-resolution vectors are in input pixels and are scaled for every
+    /// output sub-pixel. Output-resolution vectors are in output pixels and
+    /// preserve motion at silhouettes instead of sharing one vector across an
+    /// entire reconstruction footprint.
     pub motion: &'a [f32],
     /// High-resolution surfaces of this frame, output-pixel major.
     pub current: &'a [Surface],
     /// High-resolution surfaces of the previous frame, output-pixel major.
     pub previous: &'a [Surface],
     pub rejection: RejectionConfig,
+}
+
+impl Reprojection<'_> {
+    /// Motion for one output pixel, expressed in output pixels.
+    ///
+    /// Keeping the two supported layouts distinguishable by their exact size
+    /// lets old datasets remain valid while newer captures carry precise
+    /// output-resolution motion.
+    pub fn output_motion(
+        self,
+        x: usize,
+        y: usize,
+        low_extent: [usize; 2],
+        scale: usize,
+    ) -> [f32; 2] {
+        let [low_width, low_height] = low_extent;
+        let width = low_width * scale;
+        let height = low_height * scale;
+        assert!(x < width && y < height);
+        let high_len = width * height * 2;
+        if self.motion.len() == high_len {
+            let index = (y * width + x) * 2;
+            return [self.motion[index], self.motion[index + 1]];
+        }
+        assert_eq!(self.motion.len(), low_width * low_height * 2);
+        let index = ((y / scale) * low_width + x / scale) * 2;
+        [
+            self.motion[index] * scale as f32,
+            self.motion[index + 1] * scale as f32,
+        ]
+    }
 }
 
 /// Bilinear-sample an interleaved linear RGB image, keeping only the taps
@@ -304,6 +340,10 @@ fn plane(sample: &Sample, layout: &Layout, plane: Plane, channel: usize, index: 
     sample.lr_channel(layout, plane, channel).unwrap()[index].to_f32()
 }
 
+fn hr_plane(sample: &Sample, layout: &Layout, plane: Plane, channel: usize, index: usize) -> f32 {
+    sample.hr_channel(layout, plane, channel).unwrap()[index].to_f32()
+}
+
 fn bilinear<const N: usize>(
     values: &[[f32; N]],
     width: usize,
@@ -341,6 +381,125 @@ fn surface_at(sample: &Sample, layout: &Layout, index: usize) -> Surface {
             plane(sample, layout, Plane::DiffuseAlbedo, 2, index),
         ],
     }
+}
+
+fn hr_surface_at(sample: &Sample, layout: &Layout, index: usize) -> Surface {
+    Surface {
+        depth: hr_plane(sample, layout, Plane::Depth, 0, index),
+        normal: [
+            hr_plane(sample, layout, Plane::Normal, 0, index),
+            hr_plane(sample, layout, Plane::Normal, 1, index),
+            hr_plane(sample, layout, Plane::Normal, 2, index),
+        ],
+        albedo: [
+            hr_plane(sample, layout, Plane::DiffuseAlbedo, 0, index),
+            hr_plane(sample, layout, Plane::DiffuseAlbedo, 1, index),
+            hr_plane(sample, layout, Plane::DiffuseAlbedo, 2, index),
+        ],
+    }
+}
+
+/// Warp phase samples as one sparse output-resolution image.
+///
+/// A phase slot names an output sub-pixel, not a value permanently attached to
+/// its low-resolution texel. Moving it with exact output motion allows history
+/// to cross both low texels and phase slots without mixing foreground and
+/// background vectors. Older static-jitter datasets have no HR motion and keep
+/// their screen-aligned phase storage unchanged.
+fn reproject_phases(
+    history: &History,
+    current: &Sample,
+    previous: &Sample,
+    layout: &Layout,
+    config: Config,
+) -> Option<(Vec<f32>, Vec<f32>, Vec<f32>)> {
+    if !config.features.has_phase() || !layout.hr_planes.contains(Plane::Motion) {
+        return None;
+    }
+    let scale = layout.scale as usize;
+    let low_width = layout.lr_width as usize;
+    let width = layout.hr_width() as usize;
+    let height = layout.hr_height() as usize;
+    let slots = scale * scale;
+    let storage_index = |x: usize, y: usize| {
+        let low = (y / scale) * low_width + x / scale;
+        let slot = (y % scale) * scale + x % scale;
+        low * slots + slot
+    };
+    let mut color = vec![0.0; history.phase_color.len()];
+    let mut count = vec![0.0; history.phase_count.len()];
+    let mut radiance = vec![0.0; history.phase_radiance.len()];
+
+    for y in 0..height {
+        for x in 0..width {
+            let output = y * width + x;
+            let position = [
+                x as f32 + hr_plane(current, layout, Plane::Motion, 0, output),
+                y as f32 + hr_plane(current, layout, Plane::Motion, 1, output),
+            ];
+            if position[0] < 0.0
+                || position[1] < 0.0
+                || position[0] > (width - 1) as f32
+                || position[1] > (height - 1) as f32
+            {
+                continue;
+            }
+
+            let x0 = position[0].floor();
+            let y0 = position[1].floor();
+            let tx = position[0] - x0;
+            let ty = position[1] - y0;
+            let surface = hr_surface_at(current, layout, output);
+            let mut color_sum = [0.0; 3];
+            let mut radiance_sum = [0.0; 9];
+            let mut weighted_count = 0.0;
+            let mut valid_weight = 0.0;
+            for (dy, wy) in [(0.0, 1.0 - ty), (1.0, ty)] {
+                for (dx, wx) in [(0.0, 1.0 - tx), (1.0, tx)] {
+                    let bilinear_weight = wx * wy;
+                    if bilinear_weight == 0.0 {
+                        continue;
+                    }
+                    let sx = (x0 + dx).clamp(0.0, (width - 1) as f32) as usize;
+                    let sy = (y0 + dy).clamp(0.0, (height - 1) as f32) as usize;
+                    let previous_output = sy * width + sx;
+                    if !surface.matches(
+                        hr_surface_at(previous, layout, previous_output),
+                        config.rejection,
+                    ) {
+                        continue;
+                    }
+                    valid_weight += bilinear_weight;
+                    let source = storage_index(sx, sy);
+                    let weight = bilinear_weight * history.phase_count[source];
+                    weighted_count += weight;
+                    for (channel, sum) in color_sum.iter_mut().enumerate() {
+                        *sum += weight * history.phase_color[source * 3 + channel];
+                    }
+                    if !radiance.is_empty() {
+                        for (channel, sum) in radiance_sum.iter_mut().enumerate() {
+                            *sum += weight * history.phase_radiance[source * 9 + channel];
+                        }
+                    }
+                }
+            }
+            if weighted_count == 0.0 {
+                continue;
+            }
+            let destination = storage_index(x, y);
+            count[destination] =
+                (weighted_count / valid_weight).min(config.frames.saturating_sub(1) as f32);
+            for (channel, sum) in color_sum.into_iter().enumerate() {
+                color[destination * 3 + channel] = sum / weighted_count;
+            }
+            if !radiance.is_empty() {
+                for (channel, sum) in radiance_sum.into_iter().enumerate() {
+                    radiance[destination * 9 + channel] = sum / weighted_count;
+                }
+            }
+        }
+    }
+    Some((color, count, radiance))
 }
 
 fn initial(sample: &Sample, layout: &Layout) -> History {
@@ -514,6 +673,14 @@ fn accumulate(
         .map(|rgb| [rgb[0], rgb[1], rgb[2]])
         .collect();
     let current_radiance = read_split_radiance(current, layout);
+    let reprojected_phases = reproject_phases(history, current, previous, layout, config);
+    let (phase_color, phase_count, phase_radiance) = reprojected_phases.unwrap_or_else(|| {
+        (
+            history.phase_color.clone(),
+            history.phase_count.clone(),
+            history.phase_radiance.clone(),
+        )
+    });
     let mut next = History {
         color: vec![0.0; texels * 3],
         radiance: vec![0.0; history.radiance.len()],
@@ -521,9 +688,9 @@ fn accumulate(
         luminance: vec![0.0; texels],
         luminance_square: vec![0.0; texels],
         unrejected: vec![0.0; texels * 3],
-        phase_color: history.phase_color.clone(),
-        phase_count: history.phase_count.clone(),
-        phase_radiance: history.phase_radiance.clone(),
+        phase_color,
+        phase_count,
+        phase_radiance,
     };
     let phase = phase_slot(current, layout);
     let slots = (layout.scale * layout.scale) as usize;
@@ -736,6 +903,107 @@ fn finish(mut sample: Sample, history: History, layout: &Layout, config: Config)
 mod tests {
     use super::*;
     use crate::dataset::{InputSource, PlaneSet, Writer};
+
+    #[test]
+    fn reprojection_accepts_low_or_output_resolution_motion() {
+        let surfaces = [flat_surface(1.0); 16];
+        let low = [1.5, -0.25, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0];
+        let low_warp = Reprojection {
+            motion: &low,
+            current: &surfaces,
+            previous: &surfaces,
+            rejection: RejectionConfig::default(),
+        };
+        assert_eq!(low_warp.output_motion(1, 1, [2, 2], 2), [3.0, -0.5]);
+
+        let mut high = [0.0; 32];
+        high[10] = 2.25;
+        high[11] = -1.75;
+        let high_warp = Reprojection {
+            motion: &high,
+            current: &surfaces,
+            previous: &surfaces,
+            rejection: RejectionConfig::default(),
+        };
+        assert_eq!(high_warp.output_motion(1, 1, [2, 2], 2), [2.25, -1.75]);
+    }
+
+    #[test]
+    fn exact_motion_reprojects_phase_history_across_subpixel_slots() {
+        let layout = Layout {
+            scale: 2,
+            lr_width: 1,
+            lr_height: 1,
+            lr_source: InputSource::PathTrace,
+            lr_planes: PlaneSet::new().with(Plane::Color),
+            hr_planes: PlaneSet::new()
+                .with(Plane::Color)
+                .with(Plane::Depth)
+                .with(Plane::Normal)
+                .with(Plane::DiffuseAlbedo)
+                .with(Plane::Motion),
+        };
+        let mut current = Sample {
+            lr: vec![f16::ZERO; layout.lr_len()],
+            hr: vec![f16::ZERO; layout.hr_len()],
+        };
+        let mut previous = current.clone();
+        let hr_texels = layout.hr_texels();
+        for sample in [&mut current, &mut previous] {
+            let depth = layout.hr_planes.channel_offset(Plane::Depth).unwrap();
+            let normal = layout.hr_planes.channel_offset(Plane::Normal).unwrap();
+            let albedo = layout
+                .hr_planes
+                .channel_offset(Plane::DiffuseAlbedo)
+                .unwrap();
+            sample.hr[depth * hr_texels..(depth + 1) * hr_texels].fill(f16::ONE);
+            sample.hr[(normal + 2) * hr_texels..(normal + 3) * hr_texels].fill(f16::ONE);
+            sample.hr[albedo * hr_texels..(albedo + 3) * hr_texels].fill(f16::ONE);
+        }
+        let motion = layout.hr_planes.channel_offset(Plane::Motion).unwrap();
+        current.hr[motion * hr_texels..(motion + 1) * hr_texels].fill(f16::ONE);
+
+        let mut phase_color = vec![0.0; 4 * 3];
+        let mut phase_radiance = vec![0.0; 4 * 9];
+        for phase in 0..4 {
+            phase_color[phase * 3] = 10.0 * (phase + 1) as f32;
+            phase_radiance[phase * 9] = 100.0 * (phase + 1) as f32;
+        }
+        let history = History {
+            color: Vec::new(),
+            radiance: Vec::new(),
+            count: Vec::new(),
+            luminance: Vec::new(),
+            luminance_square: Vec::new(),
+            unrejected: Vec::new(),
+            phase_color,
+            phase_count: vec![1.0; 4],
+            phase_radiance,
+        };
+        let (color, count, radiance) = reproject_phases(
+            &history,
+            &current,
+            &previous,
+            &layout,
+            Config {
+                frames: 4,
+                rejection: RejectionConfig::default(),
+                features: Features::PhaseLobes,
+                unrejected_tap: false,
+                previous_output: false,
+            },
+        )
+        .unwrap();
+
+        // +1 output-pixel motion moves the right subpixel of each row into the
+        // left subpixel, crossing phase slots rather than leaving it attached
+        // to the original low-resolution texel.
+        assert_eq!(color[0], 20.0);
+        assert_eq!(color[2 * 3], 40.0);
+        assert_eq!(radiance[0], 200.0);
+        assert_eq!(radiance[2 * 9], 400.0);
+        assert_eq!(count, vec![1.0, 0.0, 1.0, 0.0]);
+    }
 
     #[test]
     fn phase_history_keeps_each_output_subpixel_separate() {

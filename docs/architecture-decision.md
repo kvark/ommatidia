@@ -55,6 +55,48 @@ win, its dataflow should justify the smallest generic primitive needed then.
 We should not spend model or kernel complexity on static transformer scaling
 before that evidence exists.
 
+### DLSS 4/5 follow-up (2026-09-04)
+
+The official DLSS 4 report strengthens the case for long-range
+**spatiotemporal sample aggregation**, but still does not publish a topology
+that can be reproduced independently of its fused FP8/Tensor-Core execution.
+A cheaper control added a fourth U-Net level using only existing operations.
+At matched data and schedule it used 3.8× the parameters and 21% more
+arithmetic, yet lost 0.19 dB PSNR, 0.0127 SSIM, and 0.22 dB low-frequency
+PSNR. More spatial reach is not the missing evidence.
+
+Widening the new recurrent gather reaches the same answer. At a matched
+4,000-step schedule, b24 gains only 0.03 dB and 0.0029 SSIM over b16 while
+nearly doubling arithmetic (148.6 versus 77.3 GFLOP) and worsening temporal
+error. B8 retains the static score but learns almost no output recurrence and
+loses 0.86 dB temporal quality to its guide. B16 is therefore the smallest
+tested useful recurrent width; neither more depth nor more width justifies
+additional spatial capacity.
+
+The first exact-motion real-mesh audit also prevents declaring this shape
+finished: b16 loses 0.53 dB to its deterministic guide on eight held-out ABO
+families, and a balanced continuation on 24 disjoint families does not improve
+it. The next comparison must train real and procedural sequences together from
+reset with rolled-out state; another post-hoc content fine-tune is not an
+architecture experiment.
+
+The DLSS 5 report addresses generative appearance rather than physical
+reconstruction. Its transferable choices are causal one-frame streaming,
+bounded carried state, pixel-space output, and explicit renderer-attribute
+consistency—not its 154M-parameter transformer or perceptual objective. The
+current probe therefore keeps the compact U-Net, exact surface-validated
+motion, one previous output, and a learned mix between a linear physical
+sample gather and a deterministic guide. It adds no Meganeura operation or
+shader group. See the full source reading and controlled failures in
+[`dlss-4-5-lessons.md`](dlss-4-5-lessons.md) and
+[`results/dlss-4-5-probes-2026-09-04.md`](results/dlss-4-5-probes-2026-09-04.md).
+
+This does not rule out attention. It makes the next attention test narrower:
+only after reactive/disocclusion evidence and rollout-trained state work should
+a coarse current-query/history-key block compete against gated convolution at
+matched complete-frame time. A model-family change is not a substitute for a
+correct estimator, reset distribution, or motion capture.
+
 ## Why not DINOv3
 
 [DINOv3](https://arxiv.org/abs/2508.10104) is strong evidence that large

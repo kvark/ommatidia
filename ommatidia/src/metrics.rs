@@ -182,24 +182,32 @@ fn for_each_temporal_delta(
     assert_eq!(previous.len(), image_len);
     assert_eq!(current_reference.len(), image_len);
     assert_eq!(previous_reference.len(), image_len);
-    assert_eq!(warp.motion.len(), low_width * low_height * 2);
+    assert!(
+        warp.motion.len() == low_width * low_height * 2 || warp.motion.len() == width * height * 2
+    );
     assert_eq!(warp.current.len(), width * height);
     assert_eq!(warp.previous.len(), width * height);
     if let Some(region) = region {
-        assert_eq!(region.len(), low_width * low_height);
+        assert!(region.len() == low_width * low_height || region.len() == width * height);
     }
 
     let mut pixels = 0;
     for y in 0..height {
         for x in 0..width {
             let low_index = (y / scale) * low_width + x / scale;
-            if region.is_some_and(|keep| !keep[low_index]) {
+            let region_index = region.map_or(low_index, |keep| {
+                if keep.len() == width * height {
+                    y * width + x
+                } else {
+                    assert_eq!(keep.len(), low_width * low_height);
+                    low_index
+                }
+            });
+            if region.is_some_and(|keep| !keep[region_index]) {
                 continue;
             }
-            let position = [
-                x as f32 + warp.motion[low_index * 2] * scale as f32,
-                y as f32 + warp.motion[low_index * 2 + 1] * scale as f32,
-            ];
+            let motion = warp.output_motion(x, y, low_extent, scale);
+            let position = [x as f32 + motion[0], y as f32 + motion[1]];
             let current_surface = warp.current[y * width + x];
             let Some(predicted_prev) = crate::temporal::sample_reprojected(
                 previous,

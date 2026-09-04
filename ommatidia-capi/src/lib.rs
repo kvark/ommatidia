@@ -83,6 +83,30 @@ fn write_error(buffer: *mut c_char, capacity: usize, message: &str) {
     }
 }
 
+fn required_hr_planes(config: &ommatidia::ModelConfig) -> ommatidia::PlaneSet {
+    use ommatidia::{Plane, PlaneSet, ReconstructionBase};
+
+    let mut planes = PlaneSet::new();
+    if matches!(
+        config.reconstruction_base,
+        ReconstructionBase::HighResolutionGuided | ReconstructionBase::SplitRadianceGuided
+    ) || config.guide_mix
+        || config.temporal.is_some()
+    {
+        planes = planes
+            .with(Plane::Depth)
+            .with(Plane::Normal)
+            .with(Plane::DiffuseAlbedo);
+    }
+    if config.demodulate {
+        planes = planes.with(Plane::DiffuseAlbedo);
+    }
+    if config.reconstruction_base == ReconstructionBase::SplitRadianceGuided {
+        planes = planes.with(Plane::Roughness);
+    }
+    planes
+}
+
 fn inspect_model(stem: &Path) -> Result<ModelInfo, (Status, String)> {
     let (config, _) = ommatidia::checkpoint::load_config(stem).map_err(|error| match error {
         ommatidia::checkpoint::Error::Io(error) => (Status::Io, error.to_string()),
@@ -97,19 +121,7 @@ fn inspect_model(stem: &Path) -> Result<ModelInfo, (Status, String)> {
         ommatidia::Objective::Direct => 1,
         ommatidia::Objective::Diffusion => 2,
     };
-    let required_hr_plane_mask =
-        if config.reconstruction_base == ommatidia::ReconstructionBase::HighResolutionGuided {
-            [
-                ommatidia::Plane::Depth,
-                ommatidia::Plane::Normal,
-                ommatidia::Plane::DiffuseAlbedo,
-            ]
-            .into_iter()
-            .collect::<ommatidia::PlaneSet>()
-            .bits()
-        } else {
-            0
-        };
+    let required_hr_plane_mask = required_hr_planes(&config).bits();
     Ok(ModelInfo {
         scale: config.scale,
         training_tile: config.tile,
@@ -261,6 +273,41 @@ mod tests {
         assert_eq!(info.reconstruction_base, 2);
         assert_eq!(info.required_hr_plane_mask, 0);
         std::fs::remove_file(stem.to_str().unwrap().to_owned() + ".ron").unwrap();
+    }
+
+    #[test]
+    fn temporal_gather_reports_its_output_surface_contract() {
+        let mut config = ommatidia::ModelConfig {
+            prediction: ommatidia::Prediction::SubpixelKernel,
+            reconstruction_base: ommatidia::ReconstructionBase::Sample,
+            demodulate: true,
+            guide_mix: true,
+            temporal: Some(ommatidia::temporal::Config {
+                frames: 4,
+                rejection: ommatidia::temporal::RejectionConfig::default(),
+                features: ommatidia::temporal::Features::default(),
+                unrejected_tap: false,
+                previous_output: true,
+            }),
+            ..ommatidia::ModelConfig::default()
+        };
+        let expected = [
+            ommatidia::Plane::Depth,
+            ommatidia::Plane::Normal,
+            ommatidia::Plane::DiffuseAlbedo,
+        ]
+        .into_iter()
+        .collect::<ommatidia::PlaneSet>();
+        assert_eq!(required_hr_planes(&config), expected);
+
+        config.reconstruction_base = ommatidia::ReconstructionBase::SplitRadianceGuided;
+        config.demodulate = false;
+        config.guide_mix = false;
+        config.temporal = None;
+        assert_eq!(
+            required_hr_planes(&config),
+            expected.with(ommatidia::Plane::Roughness)
+        );
     }
 
     #[test]

@@ -117,6 +117,7 @@ struct TemporalUnpackData {
     t_hr_normal: gpu::TextureView,
     t_hr_albedo: gpu::TextureView,
     t_motion: gpu::TextureView,
+    t_hr_motion: gpu::TextureView,
     t_history_output: gpu::TextureView,
     t_history_surface0: gpu::TextureView,
     t_history_surface1: gpu::TextureView,
@@ -146,10 +147,13 @@ struct UnpackParams {
     history_ready: u32,
     guide_mix: u32,
     motion_scale: f32,
+    has_hr_motion: u32,
+    hr_motion_scale: f32,
     rejection_depth_delta: f32,
     rejection_normal_cosine: f32,
     rejection_albedo_delta2: f32,
-    _pad2: [u32; 2],
+    linear_kernel: u32,
+    _pad: u32,
 }
 
 /// The textures a frame is reconstructed from.
@@ -186,12 +190,16 @@ pub struct FrameInputs {
     pub hr_normal: gpu::TextureView,
     /// Optional high-resolution diffuse albedo.
     pub hr_albedo: gpu::TextureView,
+    /// Optional current-to-previous motion at output resolution.
+    pub hr_motion: gpu::TextureView,
     compose_blade_radiance: bool,
     decode_blade_gbuffer: bool,
     decode_hr_blade_gbuffer: bool,
     has_high_resolution_gbuffer: bool,
     has_motion: bool,
     motion_scale: f32,
+    has_hr_motion: bool,
+    hr_motion_scale: f32,
     jitter: [f32; 2],
 }
 
@@ -214,12 +222,15 @@ impl FrameInputs {
             hr_depth: placeholder,
             hr_normal: placeholder,
             hr_albedo: placeholder,
+            hr_motion: placeholder,
             compose_blade_radiance: false,
             decode_blade_gbuffer: false,
             decode_hr_blade_gbuffer: false,
             has_high_resolution_gbuffer: false,
             has_motion: false,
             motion_scale: 1.0,
+            has_hr_motion: false,
+            hr_motion_scale: 1.0,
             jitter: [0.0; 2],
         }
     }
@@ -249,12 +260,15 @@ impl FrameInputs {
             hr_depth: depth,
             hr_normal: normal,
             hr_albedo: albedo,
+            hr_motion: color,
             compose_blade_radiance: false,
             decode_blade_gbuffer: false,
             decode_hr_blade_gbuffer: false,
             has_high_resolution_gbuffer: false,
             has_motion: false,
             motion_scale: 1.0,
+            has_hr_motion: false,
+            hr_motion_scale: 1.0,
             jitter: [0.0; 2],
         }
     }
@@ -283,6 +297,18 @@ impl FrameInputs {
         self.motion = motion;
         self.has_motion = true;
         self.motion_scale = 1.0;
+        self
+    }
+
+    /// Add current-to-previous motion at output resolution, in output pixels.
+    ///
+    /// This is used for reprojecting the previous reconstructed frame. Keeping
+    /// it separate from input-resolution motion avoids sharing one vector
+    /// across several output surfaces at a silhouette.
+    pub fn with_high_resolution_motion(mut self, motion: gpu::TextureView) -> Self {
+        self.hr_motion = motion;
+        self.has_hr_motion = true;
+        self.hr_motion_scale = 1.0;
         self
     }
 
@@ -316,8 +342,11 @@ impl FrameInputs {
         self.hr_depth = gbuffer.depth;
         self.hr_normal = gbuffer.basis;
         self.hr_albedo = gbuffer.diffuse_albedo;
+        self.hr_motion = gbuffer.motion;
         self.decode_hr_blade_gbuffer = true;
         self.has_high_resolution_gbuffer = true;
+        self.has_hr_motion = true;
+        self.hr_motion_scale = 1.0 / 0.02;
         self
     }
 
@@ -351,12 +380,15 @@ impl FrameInputs {
             hr_depth: gbuffer.depth,
             hr_normal: gbuffer.basis,
             hr_albedo: gbuffer.diffuse_albedo,
+            hr_motion: gbuffer.motion,
             compose_blade_radiance: false,
             decode_blade_gbuffer: true,
             decode_hr_blade_gbuffer: true,
             has_high_resolution_gbuffer: false,
             has_motion: true,
             motion_scale: 1.0 / 0.02,
+            has_hr_motion: false,
+            hr_motion_scale: 1.0,
             jitter: [0.0; 2],
         }
     }
@@ -381,12 +413,15 @@ impl FrameInputs {
             hr_depth: gbuffer.depth,
             hr_normal: gbuffer.basis,
             hr_albedo: gbuffer.diffuse_albedo,
+            hr_motion: gbuffer.motion,
             compose_blade_radiance: true,
             decode_blade_gbuffer: true,
             decode_hr_blade_gbuffer: true,
             has_high_resolution_gbuffer: false,
             has_motion: true,
             motion_scale: 1.0 / 0.02,
+            has_hr_motion: false,
+            hr_motion_scale: 1.0,
             jitter: [0.0; 2],
         }
     }
@@ -1016,10 +1051,13 @@ impl Upscaler {
             history_ready: history_ready as u32,
             guide_mix: self.config.guide_mix as u32,
             motion_scale: inputs.motion_scale,
+            has_hr_motion: inputs.has_hr_motion as u32,
+            hr_motion_scale: inputs.hr_motion_scale,
             rejection_depth_delta: rejection.depth_delta,
             rejection_normal_cosine: rejection.normal_cosine,
             rejection_albedo_delta2: rejection.albedo_delta2,
-            _pad2: [0; 2],
+            linear_kernel: self.config.linear_kernel as u32,
+            _pad: 0,
         };
         let mut pass = encoder.compute("ommatidia-unpack");
         let mut commands = pass.with(&self.unpack_pipeline);
@@ -1039,6 +1077,7 @@ impl Upscaler {
                     t_hr_normal: inputs.hr_normal,
                     t_hr_albedo: inputs.hr_albedo,
                     t_motion: inputs.motion,
+                    t_hr_motion: inputs.hr_motion,
                     t_history_output: temporal.output[temporal.previous].view,
                     t_history_surface0: temporal.surface0[temporal.previous].view,
                     t_history_surface1: temporal.surface1[temporal.previous].view,

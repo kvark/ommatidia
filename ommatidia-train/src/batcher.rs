@@ -92,6 +92,13 @@ impl InputSample {
         }
     }
 
+    fn into_sample(self) -> Sample {
+        match self {
+            Self::Spatial(sample) => sample,
+            Self::Temporal(prepared) => prepared.sample,
+        }
+    }
+
     pub fn deviation(&self) -> Option<&[f32]> {
         match self {
             Self::Spatial(_) => None,
@@ -136,6 +143,20 @@ pub struct Batcher {
     residual: Vec<f32>,
     noise: Vec<f32>,
     noised: Vec<f32>,
+}
+
+/// First sequence frame eligible for one training draw.
+///
+/// Every temporal inference path has a real reset frame and should learn it.
+/// Only a standalone temporal-loss objective with no previous-output path
+/// requires a pair for every draw.
+fn first_training_frame(config: &ModelConfig) -> usize {
+    usize::from(
+        config.temporal_weight != 0.0
+            && !config
+                .temporal
+                .is_some_and(|temporal| temporal.previous_output),
+    )
 }
 
 impl Batcher {
@@ -220,22 +241,44 @@ impl Batcher {
     ) {
         let tile = crop.tile as usize;
         let scale = config.scale as usize;
-        let width = self.layout.lr_width as usize;
         let rejection = config.temporal.expect("temporal").rejection;
-        let motion_x = current
-            .sample()
-            .lr_channel(&self.layout, ommatidia::Plane::Motion, 0)
-            .expect("a sequence dataset carries motion");
-        let motion_y = current
-            .sample()
-            .lr_channel(&self.layout, ommatidia::Plane::Motion, 1)
-            .expect("a sequence dataset carries motion");
-        for y in 0..tile {
-            for x in 0..tile {
-                let source = (crop.y as usize + y) * width + crop.x as usize + x;
-                let texel = slot * tile * tile + y * tile + x;
-                out.motion[texel * 2] = motion_x[source].to_f32();
-                out.motion[texel * 2 + 1] = motion_y[source].to_f32();
+        if self.layout.hr_planes.contains(ommatidia::Plane::Motion) {
+            let width = self.layout.hr_width() as usize;
+            let extent = tile * scale;
+            let motion_x = current
+                .sample()
+                .hr_channel(&self.layout, ommatidia::Plane::Motion, 0)
+                .expect("the high-resolution motion plane disappeared");
+            let motion_y = current
+                .sample()
+                .hr_channel(&self.layout, ommatidia::Plane::Motion, 1)
+                .expect("the high-resolution motion plane disappeared");
+            for y in 0..extent {
+                for x in 0..extent {
+                    let source =
+                        (crop.y as usize * scale + y) * width + crop.x as usize * scale + x;
+                    let pixel = slot * extent * extent + y * extent + x;
+                    out.motion[pixel * 2] = motion_x[source].to_f32();
+                    out.motion[pixel * 2 + 1] = motion_y[source].to_f32();
+                }
+            }
+        } else {
+            let width = self.layout.lr_width as usize;
+            let motion_x = current
+                .sample()
+                .lr_channel(&self.layout, ommatidia::Plane::Motion, 0)
+                .expect("a sequence dataset carries motion");
+            let motion_y = current
+                .sample()
+                .lr_channel(&self.layout, ommatidia::Plane::Motion, 1)
+                .expect("a sequence dataset carries motion");
+            for y in 0..tile {
+                for x in 0..tile {
+                    let source = (crop.y as usize + y) * width + crop.x as usize + x;
+                    let texel = slot * tile * tile + y * tile + x;
+                    out.motion[texel * 2] = motion_x[source].to_f32();
+                    out.motion[texel * 2 + 1] = motion_y[source].to_f32();
+                }
             }
         }
 
@@ -257,7 +300,8 @@ impl Batcher {
         let mut then = vec![0.0; per_slot];
         batch::write_kernel_target(current.sample(), &self.layout, crop, 0, config, &mut now);
         batch::write_kernel_target(earlier.sample(), &self.layout, crop, 0, config, &mut then);
-        let slot_motion = &out.motion[slot * tile * tile * 2..(slot + 1) * tile * tile * 2];
+        let motion_per_slot = out.motion.len() / config.batch as usize;
+        let slot_motion = &out.motion[slot * motion_per_slot..(slot + 1) * motion_per_slot];
         let change = batch::reference_change(
             &now,
             &then,
@@ -356,7 +400,14 @@ impl Batcher {
                         (config.batch * config.scale * config.scale * config.tile * config.tile)
                             as usize
                     ],
-                    motion: vec![0.0; texels * 2],
+                    motion: vec![
+                        0.0;
+                        if self.layout.hr_planes.contains(ommatidia::Plane::Motion) {
+                            pixels * 2
+                        } else {
+                            texels * 2
+                        }
+                    ],
                     current_surfaces: vec![blank; pixels],
                     previous_surfaces: vec![blank; pixels],
                     reference_change: vec![0.0; config.loss_len()],
@@ -373,18 +424,30 @@ impl Batcher {
         // sample reads deterministic and parallelise only this pure work after
         // the batch has been assembled.
         let mut guide_jobs = Vec::new();
+        let mut low_resolution_target_jobs = Vec::new();
 
         for slot in 0..batch_size {
             let index = if config.temporal.is_some() {
                 let sequence_length = self.reader.sequence_length();
                 let sequences = self.train.len() / sequence_length;
                 let sequence = self.rng.below(sequences as u32) as usize;
-                let frame = 1 + self.rng.below((sequence_length - 1) as u32) as usize;
+                // A temporal model is deployed on reset/cut frames too.
+                // Training only frames with valid history lets its spatial
+                // gather sacrifice the current image for temporal stability;
+                // evaluation then starts from an out-of-distribution first
+                // frame and feeds that error back. Give reset frames their
+                // natural 1/N share. Other temporal objectives still require
+                // a pair and retain the historical non-reset sampling.
+                let first_frame = first_training_frame(&config);
+                let frame =
+                    first_frame + self.rng.below((sequence_length - first_frame) as u32) as usize;
                 self.train.start + sequence * sequence_length + frame
             } else {
                 self.train.start + self.rng.below(self.train.len() as u32) as usize
             };
-            let (earlier, sample) = if self.paired {
+            let reset =
+                config.temporal.is_some() && index.is_multiple_of(self.reader.sequence_length());
+            let (earlier, sample) = if self.paired && !reset {
                 let (earlier, current) = ommatidia::temporal::prepare_pair(
                     &mut self.reader,
                     index,
@@ -401,7 +464,19 @@ impl Batcher {
 
             let guided =
                 sample.write_conditioning(&self.layout, &config, crop, slot, &mut out.cond);
-            if config.prediction == ommatidia::model::Prediction::LowResolutionResidual {
+            if config.prediction != ommatidia::model::Prediction::LowResolutionResidual {
+                batch::write_target(
+                    sample.sample(),
+                    &self.layout,
+                    crop,
+                    0,
+                    &config,
+                    &mut self.residual,
+                );
+            } else if diffusing {
+                // Diffusion consumes this slot's target immediately below to
+                // construct x_t with the batcher's deterministic RNG stream.
+                // Keep that uncommon experimental combination serial.
                 batch::write_low_resolution_residual_from_base(
                     sample.sample(),
                     &self.layout,
@@ -409,15 +484,6 @@ impl Batcher {
                     0,
                     &config,
                     guided.as_deref(),
-                    &mut self.residual,
-                );
-            } else {
-                batch::write_target(
-                    sample.sample(),
-                    &self.layout,
-                    crop,
-                    0,
-                    &config,
                     &mut self.residual,
                 );
             }
@@ -499,6 +565,17 @@ impl Batcher {
                 self.write_temporal_evidence(&sample, earlier, crop, slot, &config, temporal);
             }
 
+            if config.prediction == ommatidia::model::Prediction::LowResolutionResidual
+                && !diffusing
+            {
+                // Computing the split-radiance base dominates batch assembly.
+                // The records and crop choices were read serially above; move
+                // the now-unused samples into pure jobs so a batch uses all CPU
+                // cores while preserving the exact RNG and optimizer schedule.
+                low_resolution_target_jobs.push((slot, sample.into_sample(), crop, guided));
+                continue;
+            }
+
             if diffusing {
                 // Every slot gets its own timestep. Sharing one across the
                 // batch would make each step a much noisier estimate of the
@@ -524,6 +601,35 @@ impl Batcher {
         }
 
         let layout = self.layout;
+        let low_resolution_targets = std::thread::scope(|scope| {
+            let handles: Vec<_> = low_resolution_target_jobs
+                .into_iter()
+                .map(|(slot, sample, crop, guided)| {
+                    let config = &config;
+                    scope.spawn(move || {
+                        let mut target = vec![0.0; config.loss_len() / config.batch as usize];
+                        batch::write_low_resolution_residual_from_base(
+                            &sample,
+                            &layout,
+                            crop,
+                            0,
+                            config,
+                            guided.as_deref(),
+                            &mut target,
+                        );
+                        (slot, target)
+                    })
+                })
+                .collect();
+            handles
+                .into_iter()
+                .map(|handle| handle.join().expect("target worker panicked"))
+                .collect::<Vec<_>>()
+        });
+        for (slot, target) in low_resolution_targets {
+            out.target[slot * loss_per_slot..(slot + 1) * loss_per_slot].copy_from_slice(&target);
+        }
+
         let guides = std::thread::scope(|scope| {
             let handles: Vec<_> = guide_jobs
                 .into_iter()
@@ -776,5 +882,26 @@ mod tests {
         assert_eq!(make().x_t, make().x_t);
 
         std::fs::remove_file(&path).unwrap();
+    }
+
+    #[test]
+    fn temporal_training_samples_resets_unless_every_draw_needs_a_pair() {
+        let mut config = config(Objective::Direct);
+        config.temporal = Some(ommatidia::temporal::Config {
+            frames: 4,
+            rejection: ommatidia::temporal::RejectionConfig {
+                depth_delta: 0.01,
+                normal_cosine: 0.9,
+                albedo_delta2: 0.04,
+            },
+            features: ommatidia::temporal::Features::Variance,
+            unrejected_tap: false,
+            previous_output: false,
+        });
+        assert_eq!(first_training_frame(&config), 0);
+        config.temporal_weight = 1.0;
+        assert_eq!(first_training_frame(&config), 1);
+        config.temporal.as_mut().unwrap().previous_output = true;
+        assert_eq!(first_training_frame(&config), 0);
     }
 }

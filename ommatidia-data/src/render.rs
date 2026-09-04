@@ -233,7 +233,13 @@ pub enum Pass {
     /// Sparse unbiased paths: the primary network input.
     PathTrace { frames: usize },
     /// Accumulated path tracing: the reference.
-    Canonical { frames: usize, max_bounces: u32 },
+    Canonical {
+        frames: usize,
+        max_bounces: u32,
+        /// Path-tracing frames to advance before resetting accumulation and
+        /// retaining `frames` independent reference samples.
+        sample_offset: usize,
+    },
 }
 
 impl Pass {
@@ -248,8 +254,17 @@ impl Pass {
         match self {
             Self::RealTime => RESTIR_FRAMES,
             Self::PathTrace { frames } => frames,
-            Self::Canonical { frames, .. } => frames,
+            Self::Canonical {
+                frames,
+                sample_offset,
+                ..
+            } => frames + sample_offset,
         }
+    }
+
+    fn reset_accumulation(self, frame: usize) -> bool {
+        frame == 0
+            || matches!(self, Self::Canonical { sample_offset, .. } if sample_offset != 0 && frame == sample_offset)
     }
 
     fn ray_config(self) -> blade_render::RayConfig {
@@ -336,6 +351,7 @@ pub fn capture(
     encoder.start();
     asset_hub.flush(encoder, &mut temp.buffers);
 
+    let mut gbuffer_recorded = false;
     for frame in 0..pass.frames() {
         renderer.build_scene(encoder, objects, None, asset_hub, context, &mut temp);
         renderer.prepare(
@@ -346,7 +362,7 @@ pub fn capture(
                 debug_draw: false,
                 reset_variance: frame == 0,
                 reset_reservoirs: frame == 0,
-                reset_accumulation: frame == 0,
+                reset_accumulation: pass.reset_accumulation(frame),
             },
         );
         renderer.render(
@@ -359,6 +375,25 @@ pub fn capture(
                 temporal_weight: 0.1,
             }),
         );
+
+        // Every accumulation/settling iteration prepares the same camera. At
+        // the end, both of Blade's ping-ponged camera slots therefore contain
+        // the current frame and its motion is zero. Capture the deterministic
+        // primary surfaces after the first iteration instead, while
+        // `prev_camera` and previous object transforms still describe the
+        // preceding sequence frame. Later iterations affect radiance and
+        // reservoirs, not this G-buffer.
+        if frame == 0
+            && let Some(probe) = probe
+        {
+            // ReSTIR already filled these surfaces while rendering; plain
+            // path tracing has not.
+            if pass != Pass::RealTime {
+                renderer.fill_gbuffer(encoder, debug_config);
+            }
+            probe.record(encoder, &renderer.view_gbuffer());
+            gbuffer_recorded = true;
+        }
 
         if (frame + 1).is_multiple_of(FRAMES_PER_SUBMISSION) && frame + 1 < pass.frames() {
             let sync_point = context.submit(encoder);
@@ -376,13 +411,14 @@ pub fn capture(
         }
     }
 
-    if pass != Pass::RealTime {
+    if pass != Pass::RealTime && !gbuffer_recorded {
         renderer.fill_gbuffer(encoder, debug_config);
     }
 
-    // Read the G-buffer before the post processing, while it still describes
-    // the frame the loop above just finished.
-    if let Some(probe) = probe {
+    // Every multi-iteration pass was snapshotted above before its camera
+    // history was consumed. The fallback is for callers that do not need a
+    // probe but still need the path-traced G-buffer for post processing.
+    if let Some(probe) = probe.filter(|_| !gbuffer_recorded) {
         probe.record(encoder, &renderer.view_gbuffer());
     }
     if let Some(probe) = radiance_probe {
@@ -448,6 +484,7 @@ mod tests {
         let reference = Pass::Canonical {
             frames: 1,
             max_bounces: REFERENCE_MAX_BOUNCES,
+            sample_offset: 0,
         }
         .ray_config();
 
@@ -462,5 +499,19 @@ mod tests {
         assert_eq!(reference.max_bounces, REFERENCE_MAX_BOUNCES);
         assert!(reference.jitter_primary_rays);
         assert!(reference.max_bounces > input.max_bounces);
+    }
+
+    #[test]
+    fn reference_offset_advances_then_restarts_the_accumulator() {
+        let pass = Pass::Canonical {
+            frames: 1024,
+            max_bounces: REFERENCE_MAX_BOUNCES,
+            sample_offset: 1024,
+        };
+        assert_eq!(pass.frames(), 2048);
+        assert!(pass.reset_accumulation(0));
+        assert!(!pass.reset_accumulation(1023));
+        assert!(pass.reset_accumulation(1024));
+        assert!(!pass.reset_accumulation(1025));
     }
 }

@@ -23,6 +23,39 @@ without losing mean energy. That reference-derived oracle is not deployable,
 but it shows that better scale selection can remove substantially more broad
 noise without a larger backbone or new general-purpose Meganeura operations.
 
+The September DLSS 4/5 audit changes the immediate order without changing the
+goal. Exact moving/jittered captures, reset-frame sampling, a linear-radiance
+kernel, and a validity-aware mix with the deterministic guide now form one
+native-compatible recurrent checkpoint. Its first 8k control improves
+per-frame PSNR, reset quality, broad temporal fluctuation, and mean energy on
+both the selector and an untouched audit. It still loses about 0.4 dB of
+fine-grained temporal error to its guide and visibly smooths tight glossy
+structure. This is progress, not a release-quality endpoint.
+
+After exact-motion retraining that fine-temporal deficit narrows to 0.17 dB,
+but a stricter real-mesh audit reverses the spatial result: on eight held-out
+ABO families the network loses 0.53 dB to its own guide. Balancing 24 disjoint
+ABO families into a short continuation does not improve that holdout and hurts
+temporal quality on both domains. The rollout corpus must include real geometry
+from the start; a procedural selector plus post-hoc adaptation is not a release
+gate.
+
+The next gates are consequently:
+
+1. measure each reference set against an independently rendered path range and
+   stop treating residual reference grain as model error;
+2. train through rolled-out state and add explicit reactive/disocclusion
+   evidence before reintroducing a temporal loss—the one-step detached teacher
+   currently rewards a stable dark answer;
+3. publish quality against the same total frame time spent on additional paths,
+   not only against one fixed 1-spp input; and
+4. only then compare a coarse current-query/history-key attention block with a
+   gated convolutional state at matched complete-frame latency and memory.
+
+The reasoning and rejected controls are in
+[`dlss-4-5-lessons.md`](dlss-4-5-lessons.md) and the
+[`controlled result`](results/dlss-4-5-probes-2026-09-04.md).
+
 ## Ordered experiments
 
 1. **Close the scale-selection investigation.** A pooled CPU selector recovered

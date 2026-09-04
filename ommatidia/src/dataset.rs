@@ -77,8 +77,10 @@ pub enum Plane {
     SpecularF0 = 4,
     /// Surface roughness, in `[0, 1]`.
     Roughness = 5,
-    /// Current-to-previous screen-space motion in pixels: add it to the
-    /// current pixel centre to locate the same surface in the prior frame.
+    /// Current-to-previous screen-space motion in the plane's pixel units: add
+    /// it to the current pixel centre to locate the same surface in the prior
+    /// frame. An LR plane therefore uses input pixels and an HR plane uses
+    /// output pixels.
     ///
     /// Unused by the static model; reserved so that adding temporal context
     /// does not invalidate datasets generated before it.

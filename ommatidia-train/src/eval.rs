@@ -90,6 +90,7 @@ pub fn reconstruct(
     guided: Option<&[f32]>,
     sampler_steps: usize,
     seed: u64,
+    guide_scale: f32,
     history_scale: f32,
     residual_scale: f32,
     previous_output: Option<&[f32]>,
@@ -159,6 +160,18 @@ pub fn reconstruct(
         }
     };
 
+    if guide_scale != 1.0 && config.guide_mix_channels() != 0 {
+        let spatial = (config.tile * config.tile) as usize;
+        let start = (config.scale * config.scale * config.gather_taps()) as usize * spatial;
+        let len = config.guide_mix_channels() as usize * spatial;
+        for value in &mut residual[start..start + len] {
+            // The positive head value is the odds of choosing the physical
+            // gather: the mixer maps m to m/(1+m). Scaling it here is thus a
+            // well-defined confidence calibration rather than an RGB blend.
+            *value *= guide_scale;
+        }
+    }
+
     if history_scale != 1.0 && config.history_mix_channels() != 0 {
         let spatial = (config.tile * config.tile) as usize;
         let start = (config.scale * config.scale * config.gather_taps()
@@ -205,10 +218,15 @@ pub fn reconstruct(
             if config.reconstruction_base
                 == ommatidia::model::ReconstructionBase::SplitRadianceGuided
             {
-                let base = batch::high_resolution_split_base(sample, layout, crop, config.guide);
+                // The evaluator already constructs this exact base in order
+                // to score it beside the network. Reusing it matters: the
+                // split-radiance filters dominate CPU evaluation time, and
+                // recomputing them here used to double that work for every
+                // crop without changing a pixel.
+                let base = guided.expect("split-radiance reconstruction needs its base");
                 return Reconstruction {
                     image: batch::assemble_low_resolution_on_base(
-                        &base,
+                        base,
                         &residual,
                         [crop.tile as usize; 2],
                         config.scale as usize,
@@ -294,6 +312,10 @@ pub struct Scores {
     error: f64,
     ssim: f64,
     relative: f64,
+    /// Sum of linear radiance relative to the reference. Unlike compressed
+    /// error metrics, this exposes a systematic brightening or darkening.
+    energy: f64,
+    reference_energy: f64,
     /// MSE after averaging 16x16 output blocks. This removes grain and most
     /// edge placement error, leaving the broad illumination mottling that a
     /// full-frame score can hide.
@@ -313,6 +335,8 @@ impl Scores {
         let relative = ommatidia::metrics::relative_error(image, reference);
         self.relative += relative;
         self.worst_relative = self.worst_relative.max(relative);
+        self.energy += image.iter().map(|&value| value as f64).sum::<f64>();
+        self.reference_energy += reference.iter().map(|&value| value as f64).sum::<f64>();
         self.detail += ommatidia::metrics::detail(image, extent, extent);
         self.low_frequency +=
             ommatidia::metrics::low_frequency_error(image, reference, extent, extent, 16);
@@ -321,6 +345,10 @@ impl Scores {
 
     pub fn mse(&self) -> f64 {
         self.error / self.crops.max(1) as f64
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.crops == 0
     }
 
     pub fn psnr(&self) -> f64 {
@@ -332,6 +360,10 @@ impl Scores {
         -10.0 * mse.log10()
     }
 
+    pub fn energy_ratio(&self) -> f64 {
+        self.energy / self.reference_energy.max(f64::MIN_POSITIVE)
+    }
+
     /// One reported line. `reference_detail` is the same accumulator taken over
     /// the canonical images, so what is printed is the fraction of the
     /// reference's detail that survived rather than a gradient nobody can
@@ -340,13 +372,14 @@ impl Scores {
         let crops = self.crops.max(1) as f64;
         format!(
             "{name:<9} MSE {:.6}, PSNR {:.2} dB, SSIM {:.4}, relMSE {:.5} (worst crop \
-             {:.2}), detail {:.0}%, low-frequency PSNR {:.2} dB",
+             {:.2}), detail {:.0}%, energy {:.3}, low-frequency PSNR {:.2} dB",
             self.mse(),
             self.psnr(),
             self.ssim / crops,
             self.relative / crops,
             self.worst_relative,
             100.0 * self.detail / reference_detail,
+            self.energy_ratio(),
             self.low_frequency_psnr(),
         )
     }
@@ -357,18 +390,40 @@ pub fn temporal_motion(input: &InputSample, layout: &Layout, crop: Crop) -> Opti
     let InputSample::Temporal(prepared) = input else {
         return None;
     };
-    let motion_x = prepared
-        .sample
-        .lr_channel(layout, ommatidia::Plane::Motion, 0)?;
-    let motion_y = prepared
-        .sample
-        .lr_channel(layout, ommatidia::Plane::Motion, 1)?;
-    let width = layout.lr_width as usize;
-    let tile = crop.tile as usize;
+    let high_resolution = layout.hr_planes.contains(ommatidia::Plane::Motion);
+    let motion_x = if high_resolution {
+        prepared
+            .sample
+            .hr_channel(layout, ommatidia::Plane::Motion, 0)?
+    } else {
+        prepared
+            .sample
+            .lr_channel(layout, ommatidia::Plane::Motion, 0)?
+    };
+    let motion_y = if high_resolution {
+        prepared
+            .sample
+            .hr_channel(layout, ommatidia::Plane::Motion, 1)?
+    } else {
+        prepared
+            .sample
+            .lr_channel(layout, ommatidia::Plane::Motion, 1)?
+    };
+    let scale = if high_resolution {
+        layout.scale as usize
+    } else {
+        1
+    };
+    let width = if high_resolution {
+        layout.hr_width() as usize
+    } else {
+        layout.lr_width as usize
+    };
+    let tile = crop.tile as usize * scale;
     let mut motion = Vec::with_capacity(tile * tile * 2);
     for y in 0..tile {
         for x in 0..tile {
-            let index = (crop.y as usize + y) * width + crop.x as usize + x;
+            let index = (crop.y as usize * scale + y) * width + crop.x as usize * scale + x;
             motion.push(motion_x[index].to_f32());
             motion.push(motion_y[index].to_f32());
         }
@@ -474,6 +529,15 @@ mod tests {
         // Compressed space keeps a huge outlier from dominating.
         let b = vec![0.0, 1.0, 10_000.0, 5.0];
         assert!(error(&a, &b) < 1.0, "one bright pixel swamped the metric");
+    }
+
+    #[test]
+    fn score_energy_reports_linear_radiance_bias() {
+        let reference = vec![2.0; 2 * 2 * 3];
+        let darker = vec![1.5; reference.len()];
+        let mut scores = Scores::default();
+        scores.add(&darker, &reference, 2);
+        assert!((scores.energy_ratio() - 0.75).abs() < 1e-12);
     }
 
     #[test]
