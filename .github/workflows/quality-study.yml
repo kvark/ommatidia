@@ -1,0 +1,143 @@
+name: controlled reconstruction study
+on:
+  pull_request:
+    paths: ['.github/quality-edit.py', '.github/workflows/quality-study.yml']
+permissions:
+  contents: read
+jobs:
+  prepare:
+    if: github.event.pull_request.number == 19 && github.head_ref == 'docs/visual-quality-roadmap' && github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    permissions:
+      contents: write
+    outputs:
+      sha: ${{ steps.commit.outputs.sha }}
+    env:
+      VK_ICD_FILENAMES: /usr/share/vulkan/icd.d/lvp_icd.json
+      OMMATIDIA_REQUIRE_GPU: '1'
+    defaults:
+      run:
+        shell: bash
+        working-directory: ommatidia
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          path: ommatidia
+      - uses: actions/checkout@v4
+        with:
+          repository: kvark/meganeura
+          ref: d903bba0a478277216133719e1eaa31b56d0be10
+          path: meganeura
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          repository: kvark/blade
+          ref: c24621aa6606da968fd1b3967d5993f8aa2b74e8
+          path: blade
+          persist-credentials: false
+      - name: Setup
+        run: |
+          rustup toolchain install 1.92.0 --profile minimal --component rustfmt,clippy
+          sudo apt-get update -qq
+          sudo apt-get install -y libvulkan1 mesa-vulkan-drivers
+      - name: Apply and check source
+        run: |
+          python3 .github/quality-edit.py
+          cargo +1.92.0 fmt --all
+          mkdir -p target/quality-validation
+          cargo +1.92.0 check --workspace --all-targets --locked 2>&1 | tee target/quality-validation/check.log
+          cargo +1.92.0 test --workspace --locked 2>&1 | tee target/quality-validation/unit.log
+          cargo +1.92.0 clippy --workspace --all-targets --locked -- -D warnings 2>&1 | tee target/quality-validation/clippy.log
+      - name: Vulkan tests
+        run: |
+          for suite in gpu_runtime transport field quality_controls; do
+            cargo +1.92.0 test -p ommatidia --test "$suite" --locked -- --ignored --nocapture --test-threads=1 2>&1 | tee "target/quality-validation/$suite.log"
+          done
+          cargo +1.92.0 test -p ommatidia-data incident_capture --locked -- --ignored --nocapture --test-threads=1 2>&1 | tee target/quality-validation/capture.log
+      - name: Commit validated source
+        id: commit
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          test "$(git ls-remote origin refs/heads/docs/visual-quality-roadmap | cut -f1)" = "$EXPECTED_SHA"
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git rm .github/quality-edit.py
+          git add ommatidia ommatidia-train benchmarks/quality-controls.sh
+          git diff --cached --check
+          test -z "$(git diff --cached --name-only -- .github/workflows)"
+          git commit -m 'feat: stratified field sampling and independently weighted transport losses'
+          git push origin HEAD:refs/heads/docs/visual-quality-roadmap
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+      - name: Capture common construction data
+        env:
+          QUALITY_CAPTURE_ONLY: '1'
+        run: |
+          bash benchmarks/quality-controls.sh field-midpoint
+          bash benchmarks/quality-controls.sh transport-control
+          cd target/quality-control-data
+          sha256sum *.omd *.json > SHA256SUMS
+      - uses: actions/upload-artifact@v4
+        with:
+          name: quality-control-data
+          path: ommatidia/target/quality-control-data
+          retention-days: 7
+      - name: Archive inspected source and test evidence
+        if: always()
+        run: tar --exclude=.git --exclude=target -czf "$RUNNER_TEMP/quality-source.tar.gz" .
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: quality-source-and-tests
+          path: |
+            ${{ runner.temp }}/quality-source.tar.gz
+            ommatidia/target/quality-validation
+          retention-days: 7
+  quality:
+    needs: prepare
+    strategy:
+      fail-fast: false
+      max-parallel: 8
+      matrix:
+        arm: [field-midpoint, field-stratified, field-fine, field-wide, transport-control, transport-no-compressed, transport-no-confidence, transport-no-temporal]
+    runs-on: ubuntu-latest
+    timeout-minutes: 55
+    defaults:
+      run:
+        shell: bash
+        working-directory: ommatidia
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.sha }}
+          path: ommatidia
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          repository: kvark/meganeura
+          ref: d903bba0a478277216133719e1eaa31b56d0be10
+          path: meganeura
+          persist-credentials: false
+      - name: Setup
+        run: |
+          rustup toolchain install 1.92.0 --profile minimal
+          sudo apt-get update -qq
+          sudo apt-get install -y libvulkan1 mesa-vulkan-drivers
+      - uses: actions/download-artifact@v4
+        with:
+          name: quality-control-data
+          path: ommatidia/target/quality-control-data
+      - name: Verify shared capture bytes
+        run: cd target/quality-control-data && sha256sum -c SHA256SUMS
+      - name: Train, reload and evaluate
+        env:
+          ARM: ${{ matrix.arm }}
+        run: bash benchmarks/quality-controls.sh "$ARM"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: control-${{ matrix.arm }}
+          path: ommatidia/target/quality-controls/${{ matrix.arm }}
+          retention-days: 7
