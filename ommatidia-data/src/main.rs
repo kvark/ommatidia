@@ -30,6 +30,7 @@ struct Args {
     scale: u32,
     canonical_frames: usize,
     canonical_bounces: u32,
+    input_bounces: Option<u32>,
     reference_sample_offset: usize,
     input_frames: usize,
     sequence_frames: usize,
@@ -71,6 +72,7 @@ impl Default for Args {
             scale: 2,
             canonical_frames: 1024,
             canonical_bounces: render::REFERENCE_MAX_BOUNCES,
+            input_bounces: None,
             reference_sample_offset: 0,
             input_frames: 1,
             sequence_frames: 1,
@@ -115,6 +117,9 @@ usage: ommatidia-data [options]
   --scale S                 high resolution is low times this  [2]
   --canonical-frames N      accumulated reference frames, 4 spp each [1024]
   --canonical-bounces N     maximum reference path depth [8]
+  --input-bounces N         sparse path depth [same as --canonical-bounces]
+                            use 3 explicitly to reproduce historical truncated
+                            transport; records a .transport.json sidecar
   --reference-sample-offset N
                             discard N canonical frames before each reference,
                             for an independent finite-sample noise audit [0]
@@ -206,6 +211,13 @@ fn parse_args() -> Result<Args, String> {
                 args.canonical_frames = value()?
                     .parse()
                     .map_err(|e| format!("--canonical-frames: {e}"))?
+            }
+            "--input-bounces" => {
+                args.input_bounces = Some(
+                    value()?
+                        .parse()
+                        .map_err(|e| format!("--input-bounces: {e}"))?,
+                );
             }
             "--canonical-bounces" => {
                 args.canonical_bounces = value()?
@@ -299,6 +311,14 @@ fn parse_args() -> Result<Args, String> {
     }
     if args.samples == 0 {
         return Err("--samples must be positive".into());
+    }
+    if args.canonical_bounces == 0 || args.input_bounces == Some(0) {
+        return Err("path depths must be positive".into());
+    }
+    if args.input_bounces.is_some() && (args.svgf_input || args.restir_input) {
+        return Err(
+            "--input-bounces applies to sparse path tracing, not the ReSTIR/SVGF control".into(),
+        );
     }
     if args.input_frames == 0 {
         return Err("--input-frames must be positive".into());
@@ -1185,6 +1205,7 @@ fn main() {
         } else {
             render::Pass::PathTrace {
                 frames: args.input_frames,
+                max_bounces: args.input_bounces.unwrap_or(args.canonical_bounces),
             }
         };
         let lr = render::capture(
@@ -1237,7 +1258,10 @@ fn main() {
                     &harness.asset_hub,
                     &mut sequence.objects,
                     &camera,
-                    render::Pass::PathTrace { frames: 1 },
+                    render::Pass::PathTrace {
+                        frames: 1,
+                        max_bounces: args.input_bounces.unwrap_or(args.canonical_bounces),
+                    },
                     false,
                     hr_probe.as_ref(),
                     hr_radiance_probe.as_ref(),
@@ -1420,6 +1444,39 @@ fn main() {
     }
 
     let count = writer.finish().expect("cannot finish the dataset");
+    // The legacy OMD binary does not store transport depth. Keep an explicit
+    // capture sidecar; copied references have unknown depth unless audited,
+    // so never label them matched merely from today's command-line defaults.
+    let independent_paths = !args.svgf_input && !args.restir_input;
+    let input_depth =
+        independent_paths.then_some(args.input_bounces.unwrap_or(args.canonical_bounces));
+    let reference_depth = args
+        .reference_from
+        .is_none()
+        .then_some(args.canonical_bounces);
+    let matched = input_depth.zip(reference_depth).map(|(a, b)| a == b);
+    let transport = serde_json::json!({
+        "schema": 1,
+        "records": count,
+        "input_estimator": if args.svgf_input { "restir-svgf" } else if args.restir_input { "restir" } else { "independent-paths" },
+        "input_max_bounces": input_depth,
+        "reference_max_bounces": reference_depth,
+        "matching_path_depth": matched,
+        "reference_from": args.reference_from,
+        "note": "Matching path depth is necessary, not sufficient, for a matched integrator. Copied-reference depth is unknown; null is not a match."
+    });
+    let provenance_path = args.out.with_extension("transport.json");
+    std::fs::write(
+        &provenance_path,
+        serde_json::to_vec_pretty(&transport).unwrap(),
+    )
+    .expect("cannot write transport provenance");
+    if matched != Some(true) {
+        eprintln!(
+            "transport is mismatched or unverified; see {} before treating this as a denoising-only dataset",
+            provenance_path.display()
+        );
+    }
     println!(
         "wrote {count} records ({} sequences) to {} in {:.1}s, peak radiance {peak:.2}",
         count as usize / args.sequence_frames,

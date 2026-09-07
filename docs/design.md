@@ -1,570 +1,69 @@
-# Ommatidia design
+# Ommatidia: reconstruction contracts
 
-Ommatidia reconstructs a high resolution frame from a cheaply rendered low
-resolution one. It is a portable DLSS replacement: the network runs through
-[meganeura](https://github.com/kvark/meganeura) on Vulkan and Metal, so it has
-no dependency on CUDA, on a vendor SDK, or on a specific GPU generation.
+Ommatidia is a portable research reconstructor using Blade and Meganeura on
+Vulkan/Metal. The published checkpoint is a spatial 2× model. Recurrent 2×
+reconstruction exists but is not yet a demonstrated DLSS replacement.
 
-The current milestone is deliberately narrow: **spatial upscaling of a single
-frame, no temporal context**. The concrete history/reprojection design is in
-[`temporal.md`](temporal.md).
+The active architecture review and experiment order are in
+[reconstruction-review-2026-09-06.md](reconstruction-review-2026-09-06.md).
+Historical diffusion and early spatial reasoning is retained in
+[design-legacy.md](design-legacy.md), not treated as the current design.
 
-## Why diffusion, and what it costs
+## Current and experimental contracts
 
-Upscaling is ill-posed. A 2x upscale has to invent three quarters of its
-output pixels, and the honest answer is a distribution over plausible frames
-rather than a single one. A regression network trained on L2 collapses that
-distribution onto its mean, which is exactly the blur that makes naive neural
-upscalers look worse than a good sharpening filter. Diffusion models the
-distribution instead, which is why they set the quality bar on
-super-resolution.
+`ModelConfig` is the checkpoint's interpretation, not just training metadata.
+Missing `fusion` selects `Legacy`; missing `backbone` selects `GroupNorm`.
+Never relabel trained weights to opt into a different interpretation.
 
-The cost is that sampling is iterative. A network that would fit a real-time
-budget in one forward pass does not fit it in twenty. This is a real tension
-and it is worth stating plainly up front rather than discovering it at
-integration time:
-
-- The **backbone** is a plain timestep-conditioned U-Net. Nothing about it is
-  diffusion-specific except that one of its inputs is a noise level.
-- The **objective** and the **sampler** are separable from the backbone. The
-  same weights shape can be trained as an e-prediction diffusion model or, by
-  fixing the timestep to zero and dropping the noise input, as a direct
-  regressor.
-
-So the plan was to establish the quality ceiling with diffusion first, then buy
-the latency back through step distillation, with the direct regressor as the
-always-available fast path and as the baseline that distillation has to beat.
-`Objective` in `ommatidia::model` is the switch.
-
-### That plan did not survive contact with the measurement
-
-Matched backbone, matched data, matched everything but the objective, on 2400
-scenes with 360 held out:
-
-| objective | steps | held-out vs nearest |
+| Axis | Existing contract | New opt-in contract |
 |---|---|---|
-| direct | 8000 | **+5.12 dB** |
-| diffusion, 20 sampler steps | 12000 | +1.54 dB |
-| diffusion, 1 sampler step | 12000 | +3.31 dB |
+| Fusion | Compressed-space guide/history mixing | Linear radiance mixing |
+| History storage | Compressed f16 | Linear demodulated f16 in the same texture |
+| History interpolation | Compressed bilinear | Linear bilinear, then compress for features |
+| Gate | Positive scalar odds predicted from LR conditioning | Signed affine coefficients applied to actual candidate disagreements |
+| Backbone | Image-wide GroupNorm residual U-Net | Local residual U-Net, no spatial statistics, branch scale 0.1 |
 
-The raw logs are in `docs/results/`, and `scripts/curve.py` lines any two runs
-up by step.
+`--fusion linear` isolates the radiance contract from the new gate.
+`--fusion candidate` adds candidate-aware gates. Both require direct kernel
+prediction, linear gather taps, `--guide-mix` and `--previous-output`.
+`--backbone local` is an independent direct-regression experiment.
 
-Diffusion was given half again as much training and lost by a wide margin. And
-the sampler, the thing the whole formulation is built around, makes the result
-*worse* the more it is used — monotonically, on the same checkpoint:
+## Data flow
 
-| sampler steps | 1 | 2 | 4 | 8 | 16 | 20 |
-|---|---|---|---|---|---|---|
-| dB | +3.31 | +3.31 | +2.49 | +2.72 | +1.99 | +1.55 |
-
-With x0-prediction, a single DDIM step from the top of the chain returns the
-model's `x0` estimate directly, with no re-noising. So the best thing this
-diffusion model can do is to stop being a diffusion model.
-
-The reason is that the premise at the top of this section is wrong for *this*
-conditioning. Upscaling is ill-posed when the input is an image. It is much
-closer to determined when the input is a low resolution render **plus the
-renderer's own depth, normals, albedo, specular reflectance, and roughness** —
-the network is not being asked to invent plausible detail, it is being asked to
-resolve detail that the conditioning already implies. When the conditional
-distribution is near a delta function, there is nothing for a sampler to
-explore: iterating only accumulates the model's own error, and the capacity
-spent learning to denoise at every noise level is capacity not spent on the one
-mapping that matters.
-
-Caveats, because this is one experiment: a single seed, one dataset, one model
-size, one scale factor, and a scene distribution that is procedural rather than
-authored. A harder distribution — thin geometry, strong specular detail, a
-larger scale factor — would push back toward ill-posed, and the conclusion
-could change with it. What is not in doubt is that on this problem, as posed,
-the diffusion machinery cost quality rather than buying it.
-
-**So the direct objective is the main line**, not the fallback, and the
-sub-pixel residual formulation below stands on its own without the noise
-schedule. The diffusion path stays because the backbone is shared and the
-comparison is worth being able to re-run, and because the caveats above are
-real. It is no longer the thing to beat.
-
-## Formulation: sub-pixel residual reconstruction
-
-The naive setup runs the U-Net at output resolution. For a 4K target that is
-four times the work of running it at 1080p, which is the wrong place to spend
-the budget: the conditioning signal only exists at low resolution anyway.
-
-Instead, Ommatidium predicts in a **sub-pixel space** at input resolution.
-
-Let `S` be the scale factor, `(W, H)` the low resolution extent. The target
-high resolution image `Y` of shape `[3, S*H, S*W]` is rearranged into
-`[3*S^2, H, W]` by space-to-depth: sub-pixel `(dy, dx)` of low resolution pixel
-`(y, x)` becomes channel `c*S^2 + dy*S + dx`. This is a pure reindexing, no
-interpolation and no information lost.
-
-The network predicts a **residual** over a renderer-guided deterministic base.
-The v0.2 base is a low-resolution joint bilateral prefilter followed by
-texel-center-aligned bilinear upsampling:
-
-```
-target[c, dy, dx, y, x] = Y[c, S*y + dy, S*x + dx] - bilinear(guided(LR, G), S*y + dy, S*x + dx)
+```text
+sparse paths + G-buffer + accumulated LR evidence
+    -> LR residual U-Net -> positive spatial kernels + gate coefficients
+    -> actual spatial gather C + deterministic guide G + warped output H
+    -> candidate disagreement features + validity
+    -> guide/gather fusion -> valid previous-output fusion
+    -> linear HDR history / exact current albedo remodulation / output
 ```
 
-`guided` is a joint bilateral filter over depth, world normal, and diffuse
-albedo. It runs once at input resolution inside the existing pack stage; the
-unpack stage bilinearly reconstructs its RGB buffer. Both stages are exactly
-reproduced by the CPU trainer. This is not a cosmetic baseline choice: on 76
-crops from a separate 128-scene 4-spp validation set, bilinear alone scores
-26.46 dB / 0.5864 SSIM while the guided base scores 34.08 dB / 0.9473 before
-the learned correction runs.
-
-The v0.3 path optionally consumes output-resolution depth, normal, and diffuse
-albedo. Unpack then uses the exact primary surface at each output pixel to
-joint-bilaterally gather a 5×5 window from the filtered low-resolution color.
-On the same validation set this raises the deterministic base to 34.75 dB /
-0.9545 SSIM. It puts silhouettes at output resolution without moving the
-network itself out of low resolution. The checkpoint records this requirement;
-a host cannot accidentally run an HR-guided checkpoint without the three
-views.
-Version 0.1 checkpoints retain their historical nearest-neighbour base, and
-the controlled bilinear checkpoint retains plain bilinear, through the sidecar
-contract.
-
-Three things fall out of this:
-
-- The entire network runs at low resolution. Input, every level, and output.
-- Direct residuals—and the optional diffusion experiment's `x_t`—have the
-  same low-resolution spatial shape.
-- The output head is a free reindex. The unpack shader writes sub-pixel
-  channel `c*S^2 + dy*S + dx` to high resolution texel `(S*x + dx, S*y + dy)`,
-  adding the checkpoint-selected deterministic reconstruction back as it goes.
-
-It also puts the learned correction where the uncertainty actually is. The low
-frequency content is already determined by the input; only denoising and
-sub-pixel detail need to be reconstructed.
-
-### Two things this formulation gets wrong if you are not careful
-
-Both were found by measuring reconstruction quality rather than training loss,
-and both produced a *falling* loss with a sampler that returned pure noise.
-They are recorded here because the failure gives no hint of the cause.
-
-**The residual is not unit scale.** Most of a frame is already correct at low
-resolution, so the residual's standard deviation is a few hundredths — measured
-at 0.057 on the first dataset. A diffusion schedule assumes unit variance data,
-and against unit noise a signal that small is invisible at nearly every
-timestep. The network settles on the degenerate solution and the sampler
-returns noise. The fix is a gain that brings the residual to unit variance,
-measured from the training set by `batch::estimate_gain` and carried in the
-checkpoint so inference divides by exactly what training multiplied by. This is
-the same correction latent diffusion models apply to their latents.
-
-**e-prediction cannot be sampled here.** Recovering the clean signal from a
-predicted noise means dividing by `sqrt(alpha_bar)`, which at the end of a
-cosine schedule is around `1e-3`. That multiplies the network's error by a
-thousand, at exactly the first sampling step, which is where the network knows
-least. Predicting `x0` instead never performs that division — the corresponding
-recovery divides by `sqrt(1 - alpha_bar)`, which approaches 1 where the other
-approaches 0. Switching the parameterization moved reconstruction error from
-0.29 to 0.001 with no change to training. It also unifies the objectives:
-`Objective::Direct` is x0-prediction with the noise level pinned at zero.
-
-## Conditioning: use the G-buffer
-
-This is the main structural advantage a renderer has over photographic
-super-resolution, and the reason a neural upscaler for rendering can beat a
-generic one. A renderer is not handed an image, it is asked to produce one, and
-it knows things about the frame that are not recoverable from pixels:
-
-- **Depth and normals** give exact geometric edges. An upscaler does not have
-  to guess where a silhouette is, it is told, at sub-pixel accuracy.
-- **Diffuse albedo and specular F0** separate material from lighting. Texture
-  detail that survives at low resolution comes back through albedo rather than
-  having to be hallucinated.
-- **Roughness** predicts how sharp a specular highlight should be, which is the
-  single hardest thing for a spatial upscaler to get right.
-
-All of these are cheap. Producing them at low resolution is free, they are
-already in the G-buffer.
-
-Blade hands them over through `RayTracer::view_gbuffer`, and the generator's
-probe reads them straight into the planar layout a record uses. The shading
-normal comes from the `basis` quaternion rather than the flat normal, so
-normal-mapped detail survives; a ray that hit nothing is recorded as a very
-large depth and a zero normal, which is not a direction any surface can have
-and so marks the sky unambiguously.
-
-The network itself only consumes the input-resolution G-buffer. The optional
-output-resolution depth, normal, and albedo go directly to reconstruction in
-unpack; they do not inflate the learned tensor or its arithmetic.
-
-### It measurably helps
-
-Two runs over the same 2400-scene set, same seed, same crops, same batch order,
-differing only in which channels reach the network — `--color-only` is the
-other arm, so no dataset is regenerated and nothing else can drift. Scored on
-360 held-out scenes at every thousand steps:
-
-| step | colour + G-buffer | colour alone | difference |
-|---|---|---|---|
-| 938 | +3.43 dB | +3.19 dB | +0.24 |
-| 1876 | +4.41 | +4.00 | +0.41 |
-| 2948 | +4.79 | +4.29 | +0.50 |
-| 3886 | +4.99 | +4.48 | +0.51 |
-| 4958 | +5.07 | +4.56 | +0.51 |
-| 8000 | **+5.12** | **+4.61** | **+0.51** |
-
-Half a decibel, holding steady across the whole run, for channels the renderer
-had already produced. An earlier version of this comparison on a 192-scene set
-measured 0.66 dB; the gap narrowing slightly as the data grows is what one
-would expect, since more scenes give the colour-only arm more chance to learn
-what the G-buffer would otherwise have told it.
-
-Absolute numbers are not comparable between the two sets — the nearest baseline
-itself moved from 0.0033 to 0.0041 when boxes entered the scene distribution,
-because straight silhouettes carry high frequency content that spheres do not.
-Only the within-set difference means anything.
-
-The first attempt at this comparison scored one crop of one *training* sample
-and reported the two arms as indistinguishable. Both halves of that were wrong:
-the score was in-sample, and one 64x64 tile is far too small and too lucky to
-separate anything — the tile it happened to pick was a flat wall, where the
-nearest baseline scores 0.0009 against the 0.0033 it scores across the held-out
-set. Hence `Split`, and hence scoring over a grid of crops. It is worth being
-suspicious of any number produced before that was in place.
-
-### Output-resolution primary surfaces
-
-The first experiment uses output-resolution depth, normal, and diffuse albedo
-as a deterministic reconstruction guide. A 7×7 gather gives the best measured
-spatial score (34.84 dB / 0.9556 SSIM) but costs 1.74 ms in unpack. A 5×5
-gather retains all but 0.09 dB and 0.0011 SSIM while reducing unpack to 0.89
-ms, so it is the selected point. A 3×3 control falls to 34.54 dB / 0.9515.
-
-This input is not free in every renderer. Deferred/raster hybrids often already
-own output-resolution primary surfaces; a pure low-resolution path tracer may
-need an additional primary-ray pass. The reported Ommatidium runtime excludes
-that application-side pass, just as it excludes sparse shading. The C ABI
-therefore reports the required high-resolution plane mask before resource
-allocation, and the low-resolution guided checkpoint remains valid for hosts
-that cannot supply it.
-
-## Data generation
-
-Training data comes from [blade](https://github.com/kvark/blade), which has
-both halves of the primary pair already:
-
-- `RenderMode::Canonical` at low resolution and one path per pixel is the
-  primary input. It matches the target application contract: an arbitrary
-  sparse ray/path tracer followed by Ommatidium, without assuming ReSTIR.
-- `RenderMode::Canonical` is `RayTracer::path_trace`: full paths, BSDF sampling
-  with next event estimation, MIS, accumulated over many frames with no reuse
-  and no denoising. This is the ground truth.
-- `RenderMode::RealTime`, with and without Blade's SVGF pass, remains available
-  for the explicit ReSTIR+SVGF versus sparse-path+Ommatidium comparison.
-
-The `.omd` header records which renderer path produced the input. Version-1
-files are identified as SVGF because they predate provenance tracking, and the
-trainer rejects pre-denoised input by default. Sparse paths are the product
-source; raw ReSTIR remains tagged only for explicit historical experiments.
-Sources are never silently mixed.
-
-Both are driven headless. For each sample the generator builds a fresh
-procedural scene, picks a camera pose, renders the low resolution input, then
-renders the high resolution reference by accumulating canonical samples until
-the configured count is reached, and writes one record. Scenes are randomised
-per sample rather than viewed from many angles, so the network sees layout
-variety rather than one scene memorised.
-
-Capturing this needs the renderer to hand back radiance rather than a picture,
-which is what `PostProcConfig::tone_map` is for: cleared, the post process
-leaves the composed linear radiance alone and skips the display transfer
-function, and an `Rgba32Float` target holds it unclamped. The generator reports
-the peak radiance it saw for exactly this reason — a peak pinned at 1.0 means
-something clamped and the dataset is quietly worthless.
-
-Ground truth being an unbiased path trace rather than a supersampled raster is
-worth more than it might look. The network is not being taught to imitate a
-sharper version of the same estimator, it is being taught what the estimator is
-converging to, which means it can learn to remove the estimator's bias and not
-just its aliasing.
-
-The corollary is that a change to the canonical renderer invalidates the
-dataset. Blade's `732d0ef` fixed next event estimation losing the share of the
-contribution it had held back for a BSDF sample that a terminating path never
-takes, which made every reference frame slightly dark. A set generated before
-it teaches the network to reproduce that bias. Regenerate rather than reuse.
-
-Scenes carry spheres and boxes over a ground plane, lit by an ambient
-environment and a few emissive spheres, with material, layout, and viewpoint
-randomised per sample. The boxes matter more than the count suggests: spheres
-never present a straight silhouette at an arbitrary angle, which is exactly
-where a spatial upscaler staircases, nor a hard normal discontinuity. The
-ground's tone and roughness vary per scene too, since a floor of one fixed
-brightness in every sample is something the network can learn instead of the
-geometry.
-
-## File format
-
-`.omd`, described in `ommatidia::dataset`. A fixed 64 byte header followed by
-tightly packed records. Everything is `f16`, planar, channel-major, which is
-already NCHW so the trainer can hand a batch to meganeura without shuffling.
-
-The header names which planes are present, so a dataset generated with more
-channels than a given model consumes stays readable, and the trainer errors
-loudly rather than silently misinterpreting a plane if they disagree.
-
-What is stored is what the renderer produced — linear radiance, view-space
-distance, unit normals — and *not* anything preconditioned for the network.
-That distinction is worth being deliberate about, because getting it backwards
-is an easy and expensive mistake.
-
-The network does want bounded inputs, so radiance is range-compressed by
-`x / (1 + x)` and depth is inverted to `1 / (1 + d)`. The temptation is to
-apply those on write and store the result. Doing so would destroy the data:
-`f16` spends its bits on an exponent and so holds radiance at roughly 0.1%
-relative precision across its entire range, which is exactly what high dynamic
-range needs, whereas compressing first crushes every bright value up against
-1.0 where `f16` steps by 1/2048. A radiance of 1000 and one of 2000 would land
-on adjacent representable values.
-
-So the transforms live in `ommatidia::transform`, applied on load, and mirrored
-by the pack shader so the trainer and the runtime agree exactly. `f16`'s only
-real limit, saturation at 65504, is left as a clamp on write.
-
-## Runtime
-
-Blade users hand over their `Arc<blade_graphics::Context>`. Meganeura's
-`SessionConfig::gpu` takes it directly, so the network executes on the host's
-own device and queue with no second context, no external memory import, and no
-cross-device copy. This requires that both resolve to the same `blade-graphics`
-crate, which the workspace `[patch]` section enforces.
-
-Per frame:
-
-1. **Pack.** One compute dispatch reads the host's colour and G-buffer texture
-   views, writes the model's planar `f32` input, and computes the guided
-   low-resolution RGB base. Format conversion, range compression, denoising,
-   and layout change happen here, so the host is free to hand over its native
-   texture formats.
-2. **Step.** `Session::step()`, once per sampler step.
-3. **Unpack.** One compute dispatch scatters the sub-pixel output to the high
-   resolution target, reconstructs the checkpoint-selected base (bilinear or
-   output-resolution geometry-aware), and undoes the range compression.
-
-Pack and unpack are ommatidia's own WGSL, dispatched onto the caller's command
-encoder, so the whole thing is one recorded sequence with no CPU roundtrip.
-
-## Training
-
-`scripts/curriculum.sh` drives a long run. Two things it does are worth
-repeating anywhere else this gets run.
-
-It **serialises** the runs. Two trainings on one GPU contend for the same cores
-and the same memory, so running them one after another costs nothing in
-throughput and keeps the footprint to one model — which matters, because this
-device is often shared with something else entirely.
-
-It **calibrates before sizing**. Step rate here is set by contention, not by
-model size: the same network measured 8.3 steps/s on an idle device and 1.1
-steps/s beside another training process. Sizing a run from a figure measured in
-the other regime is wrong by an order of magnitude, and the cosine learning rate
-schedule needs the total step count up front, so it cannot be corrected
-halfway.
-
-The trainer scores a held-out split periodically rather than only at the end,
-which is what makes a multi-hour run steerable, and checkpoints on the same
-cadence so a crash costs one interval rather than everything.
-
-## The latency problem
-
-The historical shape sweep below used a 720×720 input proxy. The current guided
-b8 deployment path is measured at an actual 960×540 input and 1920×1080 output
-on an otherwise idle RX 7900 XT: **7.76 ms median and 7.94 ms p90** end to end,
-including pack, the model, unpack, and queue submissions. Its isolated stages
-are 0.76 ms guided pack, 6.99 ms model, and 0.12 ms unpack. It stays within
-0.03 dB and 0.0002 SSIM of guided b24 while taking 37% of its frame time.
-
-The v0.3 output-resolution guide changes only unpack. Across repeated final
-runs, the full path spans 8.46–9.30 ms median; isolated unpack is consistently
-0.89–0.90 ms, versus 0.12 ms for the v0.2 bilinear unpack. The amdgpu busy
-counter was intermittently unreadable during those runs, so a range is more
-honest than selecting one median and labelling it idle. The profiler now prints
-an explicit “load unavailable” state instead of silently omitting validation.
-
-| shape | params | GFLOP | ms @1080p, start | ms now | held-out dB |
-|---|---|---|---|---|---|
-| base 64, 3 levels, 2 blocks | 6.50M | 1096 | 656 | 122 | +5.08 |
-| base 32, 3 levels, 1 block | 1.15M | 182 | 131 | 35 | — |
-| **base 24, 3 levels, 1 block** | **649k** | **104** | **89** | **20.13** | **+5.04** |
-| base 16, 2 levels, 1 block | 72k | 33 | 42 | **15** | +4.30 |
-| base 8, 2 levels, 1 block | 19k | 9 | 21 | 8.8 | — |
-
-Quality is on 128 held-out crops, every shape trained to 20000 steps except the
-reference, which had 8000 and had plateaued. **base 24 matches the reference
-within noise on a tenth of the arithmetic and a quarter of the frame time**, so
-the whole middle of this table was a measurement artefact of the earlier sweep,
-which gave every shape 5000 steps and so compared undertrained large networks
-against nearly-converged small ones. It read +4.10 for base 24 and +2.92 for
-base 16; trained out they are +5.04 and +4.30.
-
-Taken together with the kernel and reconstruction work, the deployment shape
-went from 656 ms to 7.76 ms while substantially improving independent-path
-quality. The most recent figure is an actual rectangular 960×540 input rather
-than the equal-pixel square proxy used during the earlier optimization work.
-
-The two kernel fixes below account for 5.4x of that on the reference shape and
-2.3x at the small end, with the weights untouched: a checkpoint trained before
-the changes scores 0.001247 where it scored 0.001248, which is float
-reassociation.
-
-Roughly 20 ms for the complete upscaler is about 50 fps, so it still misses a
-60 fps frame budget before the renderer is counted. It is promising, but it is
-not yet a 1080p real-time claim for the complete product.
-
-Where the time goes, from `gpu_profile`'s per-pass timings:
-
-| family | dispatches | time | share |
-|---|---:|---:|---:|
-| spatial convolution | 45 | 17.14 ms | 86.8% |
-| normalization and reduction | 30 | 1.53 ms | 7.7% |
-| pointwise | 7 | 0.57 ms | 2.9% |
-| data movement | 2 | 0.50 ms | 2.6% |
-
-The trace covers 96.2% of the instrumented wall time. Instrumentation measured
-2.4% over the separate uninstrumented median; it is used to explain that median,
-not replace it. The largest individual dispatch is the convolution after the
-full-resolution decoder concatenation, at roughly 4 ms and one fifth of the
-frame.
-
-The end-to-end test warms up twenty frames. Three looked adequate but left the
-discrete GPU on its clock ramp and produced plausible medians between 31 and
-43 ms; after sustained warm-up, pack/model/unpack timing and the integrated
-final wait agree in the 19.5–20.9 ms range. Profiling infrastructure has to
-control that power-state variable before attributing the difference to
-synchronization.
-
-The test now reports p90 and min/max as well as the median. Two consecutive
-40-frame runs measured 20.82/20.91 ms medians but 29.24/29.95 ms p90s, with no
-other GPU process active. That tail is host-visible and must not be hidden by a
-throughput median; correlating it with device-clock telemetry and GPU
-timestamps is a frame-pacing task still open for the next profiling pass.
-
-The kernel discussion below records the optimization history at the old square
-proxy. Its relative findings led to the current kernels, but its absolute
-milliseconds are not deployment measurements.
-
-### Two kernels were leaving the device idle
-
-Both were shaped for training, where a large batch supplies the parallelism,
-and both starve at a batch of one.
-
-**GroupNorm was parallel in the batch, not in the image.** It launched
-`batch * num_groups` workgroups of 256 threads — at inference with eight
-groups, 2048 threads, whatever the resolution, on a tensor of millions of
-elements. Raising the group count showed the shape of it directly, since that
-changes the parallelism and nothing else: 340 ms at 8 groups, 244 at 32, 230 at
-64. That is not a usable fix, because groups are a modelling choice and
-training base 24 with one channel per group cost 1.55 dB. The fix is to split
-each group's elements into slices with a workgroup each, in two passes — one
-writing partial sums, one combining them and normalising. The frame went from
-340 ms to 239.
-
-**The Winograd transforms read and wrote a megabyte apart per lane.** With
-GroupNorm out of the way the input transform stood at 68% of the frame, taking
-eight times the batched matmul it exists to make cheaper. Both transforms
-indexed threads as `tile_idx = idx / channels`, putting neighbouring threads on
-neighbouring channels, which are `H * W` apart in the input and `total_tiles`
-apart in the transform domain. Every wave scattered, on the load and the store
-alike. Swapping the decomposition so neighbouring threads take neighbouring
-tiles makes the store contiguous and the load walk a row: 239 ms to 59.
-
-The second one only became visible once the first was fixed, and the first only
-became visible once the profile was read at all. Worth remembering before
-concluding that a stack is simply slow.
-
-### What is left, and what will not help
-
-After both fixes the profile at 512x512 is 60 ms, and convolution is 82% of it
-— which is where the arithmetic is, so that is the right shape. GroupNorm is
-down to 11% from 34%, and the pointwise operations are 7%.
-
-The largest single item is the Winograd batched matmul, 41% across the three
-widths. It is **memory bound, and cooperative matrix would not help it**: at
-level 0 it moves 537 MB to do 8.6 GFLOP, an arithmetic intensity of 16 FLOP per
-byte against a ridge point of 64 on this device. It achieves 405 GB/s of a
-possible 960, so there is perhaps 2x of tuning in it, but no more.
-
-The reason is inherent to the algorithm. Winograd F(2,3) carries sixteen values
-for every four outputs, so the transform domain is **four times** the size of
-the activations. It trades arithmetic for bandwidth, which is the resource that
-is actually scarce here. It still wins — 59 ms against 84 with it disabled —
-but it wins less than it would on a compute-bound workload.
-
-So the two levers left both move less data rather than doing less arithmetic:
-
-- **`f16` activations.** Halves the traffic everywhere, and the profile is
-  bandwidth bound almost end to end. Three of meganeura's seventy-seven shaders
-  currently mention `f16`, and none of them are in the convolution path, so this
-  is a real project rather than a flag.
-- **Implicit-GEMM Winograd**, folding the transforms into the matmul so the
-  transform-domain tensors are never written to memory at all. That removes the
-  4x expansion from the bandwidth bill entirely, and is the larger rewrite.
-
-Neither is a small change, and the profile should be re-read after either,
-because both of the fixes above only became visible once the one before it was
-out of the way.
-
-### Barriers are not the bottleneck, yet
-
-Meganeura groups dispatches by dependency level and puts a global barrier
-between groups. The network is a chain, so this comes to 145 dispatches in 117
-groups — 1.24 dispatches per group, which is close to one barrier each.
-
-That sounds bad and currently is not: forcing one dispatch per group with
-`MEGANEURA_SERIAL_DISPATCH`, which adds 28 more barriers, changes the frame
-time by less than the measurement noise (340.6 and 340.7 ms against 340.4 and
-341.6). The chain's dependencies are real, so a finer-grained barrier would
-have little to overlap.
-
-It becomes a problem at the target. A hundred-odd global barriers at even ten
-microseconds apiece is most of a 2 ms budget, so reaching real time means
-fewer dispatches — fusing convolution with the normalisation and activation
-around it — rather than cheaper barriers.
-
-### A correction
-
-An earlier version of this section reported 175 ms at 1080p and 10% of peak.
-Both were wrong: the benchmark inherited the small configuration the smoke
-tests use, so it was costing a base-16 two-level network with four
-conditioning channels and calling it the trained one. The real figure is 656
-ms and 2.7%. The benchmark now builds the shape explicitly and measures at the
-1080p pixel count instead of extrapolating from a quarter of it.
-
-A second correction: a 9x figure for what shrinking the architecture buys was
-measured while another job had the GPU. Idle, it is 32x.
-
-## Roadmap
-
-**Now.** Static frame, no history. Everything above.
-
-**A network that can actually run.** Ahead of everything below, for the reason
-above: quality work on something that takes 175 ms per frame is quality work on
-something nobody can ship. Fewer channels at full resolution is the first
-lever, since that is where both the arithmetic and the bandwidth are.
-
-**Temporal context.** The largest quality win available, and the reason DLSS
-works as well as it does: motion vectors plus a history buffer turn upscaling
-from invention into accumulation. Blade already writes a motion vector target,
-and the format reserves the plane. The generator gets more involved because
-samples stop being independent, so it has to emit camera trajectories rather
-than isolated poses, and the record has to carry the previous frame's output.
-
-**Step distillation.** Deprioritised. It was going to buy the diffusion path's
-latency back, but the measurement above says one step already beats twenty on
-this problem, so there is nothing to distil — the fast path and the good path
-turned out to be the same path.
-
-**Standalone.** Drop the `blade-graphics` requirement from the public API and
-connect at raw Vulkan: the host passes `VkImage` handles and a `VkCommandBuffer`
-to record into. Blade already imports external memory, so the internals stay
-the same and it is the surface that changes. A C ABI over that surface is what
-makes C++ engines callable.
+Gate features are `[1, mean((C-G)^2), valid*mean((C-H)^2),
+valid*mean((G-H)^2)]`, with compressed RGB for numerical range. Their signed
+coefficients are feature-major, then output-subpixel-major. The final image
+averages decoded linear candidates, not compressed values. Features do not
+provide per-lobe motion, learned recurrent feature state, or general attention.
+
+The runtime still uses the existing pack/network/unpack path and history
+textures. A wider output head has a cost; unchanged dispatch/buffer counts do
+not imply unchanged frame time. The existing inverse-transform HDR ceiling is
+retained and must be addressed explicitly in a future exposure contract.
+
+## Training and evaluation
+
+The new path receives gradients through physical image reconstruction. The
+`confidence_target` utility constructs identifiable, detached linear-mixture
+oracle labels; an auxiliary confidence-loss trainer is not implemented yet.
+A label utility is not evidence that confidence supervision has been trained.
+
+Causal rollout currently detaches prior predictions: it is state-distribution
+training, not backpropagation through time. Compare both equal-frame and
+equal-optimizer-update budgets, use longer sequences, and evaluate full-frame
+causal runs on untouched scene families.
+
+Retain legacy tests, three-way CPU/image-graph/WGSL parity, cut/disocclusion
+coverage, fractional-history interpolation, nonzero-head crop invariance,
+and a backward/optimizer smoke test before any quality experiment. New
+checkpoint promotion additionally requires the quality and performance gates
+in the review. No pretrained weights are changed by this architecture patch.

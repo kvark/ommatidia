@@ -136,6 +136,8 @@ struct Args {
     unrejected_tap: bool,
     previous_output: bool,
     guide_mix: bool,
+    fusion: ommatidia::fusion::Mode,
+    backbone: ommatidia::model::Backbone,
 }
 
 const ADAM_BETA1: f32 = 0.9;
@@ -211,7 +213,13 @@ fn recurrent_inputs(
             rejection,
         };
         if config.history_mix_channels() != 0 {
-            let warped = batch::warp_previous_output(&previous[span.clone()], warp, tile, scale);
+            let warped = batch::warp_previous_output_for_fusion(
+                &previous[span.clone()],
+                warp,
+                tile,
+                scale,
+                config.fusion,
+            );
             batch::fill_history_slot(
                 &mut out.history,
                 &mut out.history_validity,
@@ -327,6 +335,8 @@ impl Default for Args {
             unrejected_tap: false,
             previous_output: false,
             guide_mix: false,
+            fusion: ommatidia::fusion::Mode::Legacy,
+            backbone: ommatidia::model::Backbone::GroupNorm,
         }
     }
 }
@@ -430,6 +440,11 @@ usage: ommatidia-train [options]
                        retaining sparse temporal accumulation
   --eval-tile N        eval-only crop size override; use the input width for
                        full-frame comparison images [checkpoint tile]
+  --backbone MODE      group-norm | local; local removes spatial statistics and
+                       scales residual branches by 0.1 [group-norm]
+  --fusion MODE        legacy | linear | candidate; new temporal fusion contract
+                       requires --guide-mix --previous-output; retrain, do not
+                       relabel an old checkpoint [legacy]
   --guide-scale F      eval-only multiplier for learned physical-gather odds,
                        before mapping them to a guide mixture in [0, 1]  [1]
   --history-scale F    eval-only multiplier for the learned previous-output
@@ -595,6 +610,29 @@ fn parse_from(argv: impl Iterator<Item = String>) -> Result<Args, String> {
             "--unrejected-tap" => args.unrejected_tap = true,
             "--previous-output" => args.previous_output = true,
             "--guide-mix" => args.guide_mix = true,
+            "--backbone" => {
+                args.backbone = match value()?.as_str() {
+                    "group-norm" => ommatidia::model::Backbone::GroupNorm,
+                    "local" => ommatidia::model::Backbone::Local,
+                    other => {
+                        return Err(format!(
+                            "unknown backbone {other:?}; use group-norm or local"
+                        ));
+                    }
+                };
+            }
+            "--fusion" => {
+                args.fusion = match value()?.as_str() {
+                    "legacy" => ommatidia::fusion::Mode::Legacy,
+                    "linear" => ommatidia::fusion::Mode::Linear,
+                    "candidate" => ommatidia::fusion::Mode::CandidateAware,
+                    other => {
+                        return Err(format!(
+                            "unknown fusion mode {other:?}; use legacy, linear or candidate"
+                        ));
+                    }
+                };
+            }
             "--log-every" => {
                 args.log_every = value()?.parse().map_err(|e| format!("--log-every: {e}"))?
             }
@@ -1006,6 +1044,8 @@ fn main() {
         kernel_radius,
         demodulate,
         guide_mix: args.guide_mix,
+        fusion: args.fusion,
+        backbone: args.backbone,
         demodulation_offset,
         head_kernel: args.head_kernel,
         temporal_weight: args.temporal_weight,
@@ -1733,7 +1773,7 @@ impl Evaluator {
                         let current_surfaces = batch::crop_hr_surfaces(sample, &layout, crop);
                         let tile = crop.tile as usize;
                         let scale = self.config.scale as usize;
-                        batch::warp_previous_output(
+                        batch::warp_previous_output_for_fusion(
                             &previous.compressed,
                             ommatidia::temporal::Reprojection {
                                 motion: &motion,
@@ -1743,6 +1783,7 @@ impl Evaluator {
                             },
                             tile,
                             scale,
+                            self.config.fusion,
                         )
                     });
                 let reconstruction = eval::reconstruct(

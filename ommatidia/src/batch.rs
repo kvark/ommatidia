@@ -1589,6 +1589,67 @@ pub fn warp_previous_output(
     }
 }
 
+/// Replay the native previous-output texture contract, including f16 storage.
+///
+/// Legacy checkpoints interpolate compressed RGB. Physical modes decode before
+/// storing and interpolate linear radiance. The temporal-loss helper above
+/// deliberately interpolates linear radiance in every mode to match its metric;
+/// it is not interchangeable with replay of a legacy runtime history texture.
+pub fn warp_previous_output_for_fusion(
+    previous: &[f32],
+    warp: crate::temporal::Reprojection<'_>,
+    tile: usize,
+    scale: usize,
+    mode: crate::fusion::Mode,
+) -> WarpedOutput {
+    let extent = tile * scale;
+    let slots = scale * scale;
+    assert_eq!(previous.len(), 3 * extent * extent);
+    assert_eq!(warp.current.len(), extent * extent);
+    assert_eq!(warp.previous.len(), extent * extent);
+    let stored: Vec<_> = spread(previous, tile, scale)
+        .into_iter()
+        .map(|value| {
+            let value = if mode.is_linear() {
+                transform::decompress(value)
+            } else {
+                value
+            };
+            f16::from_f32(value).to_f32()
+        })
+        .collect();
+    let mut color = vec![0.0; previous.len()];
+    let mut validity = vec![0.0; slots * tile * tile];
+    for y in 0..extent {
+        for x in 0..extent {
+            let motion = warp.output_motion(x, y, [tile, tile], scale);
+            let position = [x as f32 + motion[0], y as f32 + motion[1]];
+            let Some(rgb) = crate::temporal::sample_reprojected(
+                &stored,
+                warp.previous,
+                warp.current[y * extent + x],
+                position,
+                extent,
+                extent,
+                warp.rejection,
+            ) else {
+                continue;
+            };
+            let slot = (y % scale) * scale + x % scale;
+            let pixel = (y / scale) * tile + x / scale;
+            validity[slot * tile * tile + pixel] = 1.0;
+            for c in 0..3 {
+                color[(c * slots + slot) * tile * tile + pixel] = if mode.is_linear() {
+                    transform::compress(rgb[c])
+                } else {
+                    rgb[c]
+                };
+            }
+        }
+    }
+    WarpedOutput { color, validity }
+}
+
 /// Convert an interleaved linear crop into compressed sub-pixel layout.
 ///
 /// Evaluation stores the assembled picture in display-linear RGB. The gather
@@ -2074,34 +2135,71 @@ pub fn assemble_kernel(
                 let (sub_x, sub_y) = config.sub_pixel(slot as u32);
                 let (out_x, out_y) = (x * scale + sub_x as usize, y * scale + sub_y as usize);
                 let destination = (out_y * out_width + out_x) * 3;
-                let guide_gate = if guide_mix_ch != 0 {
-                    let m = weights[((slots * taps + slot) * tile + y) * tile + x];
-                    m / (m + 1.0)
-                } else {
-                    1.0
-                };
-                let history_gate = if history_mix_ch != 0 && extra.previous_output.is_some() {
-                    let channel = slots * taps + guide_mix_ch + slot;
-                    let m = weights[(channel * tile + y) * tile + x];
-                    let valid = extra.previous_validity.unwrap()[(slot * tile + y) * tile + x];
-                    valid * m / (m + 1.0)
-                } else {
-                    0.0
-                };
+                let fused = config.fusion.is_linear().then(|| {
+                    let index = |c: usize| (c * slots + slot) * tile * tile + y * tile + x;
+                    let current = std::array::from_fn(|c| {
+                        transform::compress(sum[c] / total.max(KERNEL_FLOOR))
+                    });
+                    let guided = std::array::from_fn(|c| extra.guide.unwrap()[index(c)]);
+                    let history =
+                        std::array::from_fn(|c| extra.previous_output.map_or(0.0, |h| h[index(c)]));
+                    let valid = extra
+                        .previous_validity
+                        .map_or(0.0, |v| v[(slot * tile + y) * tile + x]);
+                    let features = crate::fusion::features(current, guided, history, valid);
+                    let gate = |start: usize| {
+                        if config.fusion == crate::fusion::Mode::CandidateAware {
+                            let coefficients = std::array::from_fn(|f| {
+                                weights[((start + f * slots + slot) * tile + y) * tile + x]
+                            });
+                            crate::fusion::candidate_gate(coefficients, features)
+                        } else {
+                            let m = weights[((start + slot) * tile + y) * tile + x];
+                            m / (1.0 + m)
+                        }
+                    };
+                    crate::fusion::blend(
+                        current,
+                        guided,
+                        history,
+                        gate(slots * taps),
+                        valid * gate(slots * taps + guide_mix_ch),
+                    )
+                });
+                let reconstructed = fused.unwrap_or_else(|| {
+                    let guide_gate = if guide_mix_ch != 0 {
+                        let m = weights[((slots * taps + slot) * tile + y) * tile + x];
+                        m / (m + 1.0)
+                    } else {
+                        1.0
+                    };
+                    let history_gate = if history_mix_ch != 0 && extra.previous_output.is_some() {
+                        let channel = slots * taps + guide_mix_ch + slot;
+                        let m = weights[(channel * tile + y) * tile + x];
+                        let valid = extra.previous_validity.unwrap()[(slot * tile + y) * tile + x];
+                        valid * m / (m + 1.0)
+                    } else {
+                        0.0
+                    };
+                    std::array::from_fn(|c| {
+                        let mut gathered = sum[c] / total.max(KERNEL_FLOOR);
+                        if config.linear_kernel {
+                            gathered = transform::compress(gathered);
+                        }
+                        if let Some(guide) = extra.guide {
+                            let guided = guide[(c * slots + slot) * tile * tile + y * tile + x];
+                            gathered = (1.0 - guide_gate) * guided + guide_gate * gathered;
+                        }
+                        if let Some(prev) = extra.previous_output {
+                            gathered = (1.0 - history_gate) * gathered
+                                + history_gate
+                                    * prev[(c * slots + slot) * tile * tile + y * tile + x];
+                        }
+                        gathered
+                    })
+                });
                 for c in 0..3 {
-                    let mut gathered = sum[c] / total.max(KERNEL_FLOOR);
-                    if config.linear_kernel {
-                        gathered = transform::compress(gathered);
-                    }
-                    if let Some(guide) = extra.guide {
-                        let guided = guide[(c * slots + slot) * tile * tile + y * tile + x];
-                        gathered = (1.0 - guide_gate) * guided + guide_gate * gathered;
-                    }
-                    if let Some(prev) = extra.previous_output {
-                        gathered = (1.0 - history_gate) * gathered
-                            + history_gate * prev[(c * slots + slot) * tile * tile + y * tile + x];
-                    }
-                    let mut value = transform::decompress(gathered);
+                    let mut value = transform::decompress(reconstructed[c]);
                     if config.demodulate {
                         // Multiplying by the exact output-resolution albedo is
                         // what puts the texture back, at a resolution the
@@ -2940,6 +3038,56 @@ mod tests {
             counted < planes,
             "the occlusion has to reject something or this is just bilinear"
         );
+    }
+
+    #[test]
+    fn fractional_history_warp_averages_physical_radiance() {
+        const TILE: usize = 2;
+        const SCALE: usize = 2;
+        let width = TILE * SCALE;
+        let mut linear = vec![0.0; width * width * 3];
+        for y in 0..width {
+            for x in 0..width {
+                linear[(y * width + x) * 3..(y * width + x + 1) * 3].fill(if x % 2 == 0 {
+                    0.0
+                } else {
+                    4.0
+                });
+            }
+        }
+        let compressed: Vec<_> = linear.iter().copied().map(transform::compress).collect();
+        let planar = collect(&compressed, TILE, SCALE);
+        let surfaces = vec![flat_surface(1.0); width * width];
+        let motion: Vec<_> = (0..width * width).flat_map(|_| [0.5, 0.0]).collect();
+        let warp = crate::temporal::Reprojection {
+            motion: &motion,
+            current: &surfaces,
+            previous: &surfaces,
+            rejection: Default::default(),
+        };
+        for mode in [
+            crate::fusion::Mode::Legacy,
+            crate::fusion::Mode::Linear,
+            crate::fusion::Mode::CandidateAware,
+        ] {
+            let warped = warp_previous_output_for_fusion(&planar, warp, TILE, SCALE, mode);
+            assert_eq!(warped.validity[0], 1.0);
+            let expected = if mode.is_linear() {
+                2.0
+            } else {
+                // The native legacy texture quantizes compressed values.
+                transform::decompress(0.5 * f16::from_f32(transform::compress(4.0)).to_f32())
+            };
+            assert!(
+                (transform::decompress(warped.color[0]) - expected).abs() < 1.0e-5,
+                "{mode:?}: {} != {expected}",
+                transform::decompress(warped.color[0])
+            );
+            assert!(
+                warped.validity.contains(&0.0),
+                "right edge must reject out-of-frame history"
+            );
+        }
     }
 
     #[test]

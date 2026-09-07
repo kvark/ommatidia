@@ -204,6 +204,32 @@ mod tests {
     }
 
     #[test]
+    fn fusion_is_versioned_without_reinterpreting_linear_kernel_sidecars() {
+        let config = ModelConfig {
+            linear_kernel: true,
+            ..ModelConfig::default()
+        };
+        let text = ron::ser::to_string(&config).unwrap();
+        let old_text = text.replace(",fusion:Legacy", "");
+        assert_ne!(text, old_text);
+        let old: ModelConfig = ron::from_str(&old_text).unwrap();
+        assert!(old.linear_kernel);
+        assert_eq!(old.fusion, crate::fusion::Mode::Legacy);
+        for fusion in [
+            crate::fusion::Mode::Linear,
+            crate::fusion::Mode::CandidateAware,
+        ] {
+            let new = ModelConfig {
+                fusion,
+                ..config.clone()
+            };
+            let round_trip: ModelConfig =
+                ron::from_str(&ron::ser::to_string(&new).unwrap()).unwrap();
+            assert_eq!(round_trip.fusion, fusion);
+        }
+    }
+
+    #[test]
     fn a_missing_checkpoint_is_an_error_not_a_panic() {
         assert!(matches!(
             load_config("/nonexistent/ommatidia/checkpoint"),

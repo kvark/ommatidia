@@ -37,7 +37,7 @@ struct UnpackParams {
     rejection_normal_cosine: f32,
     rejection_albedo_delta2: f32,
     linear_kernel: u32,
-    _pad: u32,
+    fusion_mode: u32,
 }
 
 var<uniform> params: UnpackParams;
@@ -383,6 +383,9 @@ fn reproject_history(destination: vec2<u32>, source: vec2<i32>) -> vec4<f32> {
             if !surfaces_match(surface, previous_surface(texel)) {
                 continue;
             }
+            // Legacy stores compressed RGB; new fusion stores linear RGB in
+            // the same f16 texture, retaining HDR precision and averaging it
+            // before compression. Never reinterpret a legacy checkpoint.
             color += weight * textureLoad(t_history_output, texel, 0).xyz;
             total += weight;
         }
@@ -390,7 +393,11 @@ fn reproject_history(destination: vec2<u32>, source: vec2<i32>) -> vec4<f32> {
     if total == 0.0 {
         return vec4<f32>(0.0);
     }
-    return vec4<f32>(color / total, 1.0);
+    var value = color / total;
+    if params.fusion_mode != 0u {
+        value = vec3<f32>(compress(value.x), compress(value.y), compress(value.z));
+    }
+    return vec4<f32>(value, 1.0);
 }
 
 @compute @workgroup_size(8, 8, 1)
@@ -444,6 +451,20 @@ fn unpack(@builtin(global_invocation_id) id: vec3<u32>) {
     }
 }
 
+// Coefficients are feature-major then subpixel-major, matching the graph.
+fn fusion_gate(start: u32, slot: u32, plane_stride: u32, offset: u32, features: vec4<f32>) -> f32 {
+    let m = residual[(start + slot) * plane_stride + offset];
+    if params.fusion_mode != 2u {
+        return m / (1.0 + m);
+    }
+    let slots = params.scale * params.scale;
+    var score = m;
+    for (var feature = 1u; feature < 4u; feature += 1u) {
+        score += residual[(start + feature * slots + slot) * plane_stride + offset] * features[feature];
+    }
+    return 0.5 * tanh(0.5 * score) + 0.5;
+}
+
 @compute @workgroup_size(8, 8, 1)
 fn unpack_temporal(@builtin(global_invocation_id) id: vec3<u32>) {
     if id.x >= params.width || id.y >= params.height {
@@ -460,29 +481,46 @@ fn unpack_temporal(@builtin(global_invocation_id) id: vec3<u32>) {
             let slot = dy * params.scale + dx;
             let destination = id.xy * params.scale + vec2<u32>(dx, dy);
             let gathered = gather_kernel(source, slot, plane_stride, offset);
-            var current = gathered;
-            var history_offset = slots * taps;
-            if params.guide_mix != 0u {
-                let guided_linear = high_resolution_guided_base(destination);
-                let guided = vec3<f32>(
-                    compress(guided_linear.x),
-                    compress(guided_linear.y),
-                    compress(guided_linear.z),
-                );
-                let guide_mixture = residual[(history_offset + slot) * plane_stride + offset];
-                let gather_share = guide_mixture / (guide_mixture + 1.0);
-                current = mix(guided, gathered, gather_share);
-                history_offset += slots;
-            }
             let previous = reproject_history(destination, source);
-            let mixture = residual[(history_offset + slot) * plane_stride + offset];
-            let gate = previous.w * mixture / (mixture + 1.0);
-            let compressed = mix(current, previous.xyz, gate);
+            var compressed: vec3<f32>;
+            if params.fusion_mode == 0u {
+                var current = gathered;
+                var history_offset = slots * taps;
+                if params.guide_mix != 0u {
+                    let guided_linear = high_resolution_guided_base(destination);
+                    let guided = vec3<f32>(compress(guided_linear.x), compress(guided_linear.y), compress(guided_linear.z));
+                    let mixture = residual[(history_offset + slot) * plane_stride + offset];
+                    current = mix(guided, gathered, mixture / (mixture + 1.0));
+                    history_offset += slots;
+                }
+                let mixture = residual[(history_offset + slot) * plane_stride + offset];
+                let gate = previous.w * mixture / (mixture + 1.0);
+                compressed = mix(current, previous.xyz, gate);
+            } else {
+                let guided_linear = high_resolution_guided_base(destination);
+                let guided = vec3<f32>(compress(guided_linear.x), compress(guided_linear.y), compress(guided_linear.z));
+                let cg = gathered - guided;
+                let ch = gathered - previous.xyz;
+                let gh = guided - previous.xyz;
+                let features = vec4<f32>(1.0, dot(cg, cg) / 3.0, previous.w * dot(ch, ch) / 3.0, previous.w * dot(gh, gh) / 3.0);
+                let parameters = select(1u, 4u, params.fusion_mode == 2u);
+                let gather_share = fusion_gate(slots * taps, slot, plane_stride, offset, features);
+                let history_share = previous.w * fusion_gate(slots * (taps + parameters), slot, plane_stride, offset, features);
+                let c = vec3<f32>(decompress(gathered.x), decompress(gathered.y), decompress(gathered.z));
+                // Round-trip the guide like the CPU/training compressed guide input.
+                let g = vec3<f32>(decompress(guided.x), decompress(guided.y), decompress(guided.z));
+                let h = vec3<f32>(decompress(previous.x), decompress(previous.y), decompress(previous.z));
+                let physical = mix(mix(g, c, gather_share), h, history_share);
+                compressed = vec3<f32>(compress(physical.x), compress(physical.y), compress(physical.z));
+            }
 
-            // Store exactly the compressed, demodulated representation the CPU
-            // evaluator feeds back. The caller receives linear radiance after
-            // the current frame's exact albedo is restored.
-            textureStore(history_output, vec2<i32>(destination), vec4<f32>(compressed, 1.0));
+            // Physical modes keep linear demodulated HDR in the existing f16
+            // texture. Compression would squander half's exponent precision.
+            var stored = compressed;
+            if params.fusion_mode != 0u {
+                stored = vec3<f32>(decompress(compressed.x), decompress(compressed.y), decompress(compressed.z));
+            }
+            textureStore(history_output, vec2<i32>(destination), vec4<f32>(stored, 1.0));
             let surface = current_surface(destination);
             textureStore(
                 history_surface0,

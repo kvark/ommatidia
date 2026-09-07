@@ -1,5 +1,8 @@
 # Architecture decision: restore first, attend where evidence moves
 
+> Update: the [September reconstruction review](reconstruction-review-2026-09-06.md)
+> supersedes the immediate experiment order below; measured historical results remain unchanged.
+
 This note answers a narrower question than “are transformers better than
 U-Nets?” Ommatidia has to reconstruct linear HDR radiance from sparse paths,
 use motion history, upscale 2×, run on non-vendor-specific GPU kernels, and fit

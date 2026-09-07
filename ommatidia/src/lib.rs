@@ -20,6 +20,7 @@ pub mod batch;
 pub mod checkpoint;
 pub mod dataset;
 pub mod diffusion;
+pub mod fusion;
 pub mod gpu;
 pub mod metrics;
 pub mod model;

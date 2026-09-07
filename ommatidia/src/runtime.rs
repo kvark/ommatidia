@@ -153,7 +153,7 @@ struct UnpackParams {
     rejection_normal_cosine: f32,
     rejection_albedo_delta2: f32,
     linear_kernel: u32,
-    _pad: u32,
+    fusion_mode: u32,
 }
 
 /// The textures a frame is reconstructed from.
@@ -1057,7 +1057,7 @@ impl Upscaler {
             rejection_normal_cosine: rejection.normal_cosine,
             rejection_albedo_delta2: rejection.albedo_delta2,
             linear_kernel: self.config.linear_kernel as u32,
-            _pad: 0,
+            fusion_mode: self.config.fusion as u32,
         };
         let mut pass = encoder.compute("ommatidia-unpack");
         let mut commands = pass.with(&self.unpack_pipeline);
