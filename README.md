@@ -37,21 +37,23 @@ bash benchmarks/transport-lavapipe.sh
 ## Offline field experiment
 
 Posed RGB only; no G-buffer or velocity. The wider variant shares the image
-pyramid, predicts a density/radiance field, and receives synthetic light labels
-only through training losses. See [field.md](docs/field.md).
+pyramid and predicts a density/radiance field. Synthetic light and surface labels
+enter only training losses. See [field.md](docs/field.md) and
+[surface supervision](docs/surface.md).
 
 ```sh
 cargo +1.92.0 run -p ommatidia-train --bin field -- --help
-bash benchmarks/field-lavapipe.sh
+FIELD_UPDATES=2048 bash benchmarks/surface-lavapipe.sh
 ```
 
-The current field is still blurry. Below: one fixed held case (scene 10000,
-optimization seed 7), **16x16 native pixels enlarged**, 128 updates. Incident loss
-is not promoted; see [all four paired results](docs/results/incident-lavapipe-2026-09-07.md).
+One construction scene, separate validation camera, **64x64 native pixels
+enlarged**, 2048 updates. Surface supervision improves geometry and colour, but
+object detail remains poor. This is not an unseen-scene result or a production
+checkpoint. [Measured protocol and limitations](docs/results/surface-lavapipe-2026-09-07.md).
 
-| RGB/source supervision | + incident supervision | Reference |
+| RGB/source supervision | + surface termination | Reference |
 |---|---|---|
-| <img src="docs/field-preview/control.png" alt="Tiny field without incident loss; blurred scene structure" width="192" height="192"> | <img src="docs/field-preview/incident.png" alt="Same field with incident loss; scene structure remains blurred" width="192" height="192"> | <img src="docs/field-preview/reference.png" alt="Held scene 10000 reference at native 16 by 16 pixels" width="192" height="192"> |
+| <img src="docs/surface-preview/control.png" alt="Field without surface supervision; blurred construction scene" width="256" height="256"> | <img src="docs/surface-preview/surface.png" alt="Same field with target-only surface termination supervision" width="256" height="256"> | <img src="docs/surface-preview/reference.png" alt="Validation camera of the same construction scene at native 64 by 64 pixels" width="256" height="256"> |
 
 ## Quality and integration
 
