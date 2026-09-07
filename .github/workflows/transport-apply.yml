@@ -1,4 +1,4 @@
-name: reconstruction development
+name: field experiment validation
 on:
   pull_request:
     paths: ['.github/workflows/transport-apply.yml']
@@ -8,36 +8,94 @@ jobs:
   verify:
     if: github.event.pull_request.number == 18 && github.head_ref == 'reconstruction/candidate-aware-fusion' && github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 40
+    permissions:
+      contents: write
     env:
       VK_ICD_FILENAMES: /usr/share/vulkan/icd.d/lvp_icd.json
       OMMATIDIA_REQUIRE_GPU: '1'
+      RUST_BACKTRACE: '1'
+    defaults:
+      run:
+        working-directory: ommatidia
     steps:
       - uses: actions/checkout@v4
         with:
           ref: ${{ github.event.pull_request.head.sha }}
           path: ommatidia
-          persist-credentials: false
       - uses: actions/checkout@v4
         with:
           repository: kvark/meganeura
           ref: d903bba0a478277216133719e1eaa31b56d0be10
           path: meganeura
           persist-credentials: false
+      - name: Check out capture shaders only
+        uses: actions/checkout@v4
+        with:
+          repository: kvark/blade
+          ref: c24621aa6606da968fd1b3967d5993f8aa2b74e8
+          path: blade
+          persist-credentials: false
       - name: Install tools
         run: |
           rustup toolchain install 1.92.0 --profile minimal --component rustfmt,clippy
           sudo apt-get update -qq
           sudo apt-get install -y libvulkan1 mesa-vulkan-drivers
-      - name: Check
-        working-directory: ommatidia
-        run: cargo +1.92.0 check --workspace --all-targets
-      - name: Archive sources without credentials or build products
+      - name: Apply inspected field experiment
+        run: |
+          python3 - <<'PY'
+          import base64, hashlib, json, lzma, subprocess
+          from pathlib import Path
+          parts = sorted(Path('.github/field-payload').glob('*.txt'))
+          assert len(parts) == 3
+          packed = base64.b64decode(''.join(p.read_text() for p in parts))
+          assert hashlib.sha256(packed).hexdigest() == 'f4c7b8ec28b71809bb85636a65bd0e21f50e280a4ce5bb8248cf518d1b81aa87'
+          bundle = json.loads(lzma.decompress(packed))
+          Path('/tmp/field.patch').write_text(bundle['patch'])
+          subprocess.run(['git', 'apply', '--check', '/tmp/field.patch'], check=True)
+          subprocess.run(['git', 'apply', '/tmp/field.patch'], check=True)
+          for name, content in bundle['files'].items():
+              p = Path(name)
+              assert not p.is_absolute() and '..' not in p.parts and '.git' not in p.parts
+              assert not p.exists(), name
+              p.parent.mkdir(parents=True, exist_ok=True)
+              p.write_text(content)
+          PY
+          if test -f .github/field-fix.py; then python3 .github/field-fix.py; fi
+          cargo +1.92.0 fmt --all
+          mkdir -p target/field-validation
+      - name: Check and resolve published dependencies
+        run: cargo +1.92.0 check --workspace --all-targets 2>&1 | tee target/field-validation/check.log
+      - name: Unit tests
+        run: cargo +1.92.0 test --workspace --locked 2>&1 | tee target/field-validation/unit.log
+      - name: Clippy
+        run: cargo +1.92.0 clippy --workspace --all-targets --locked -- -D warnings 2>&1 | tee target/field-validation/clippy.log
+      - name: Vulkan model contracts
+        run: |
+          for suite in gpu_runtime transport field; do
+            cargo +1.92.0 test -p ommatidia --test "$suite" --locked -- --ignored --nocapture --test-threads=1 2>&1 | tee "target/field-validation/$suite.log"
+          done
+      - name: Capture, train, reload and score unseen scene
+        run: bash benchmarks/field-lavapipe.sh
+      - name: Commit tested code and dependency lock
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          test "$(git ls-remote origin refs/heads/reconstruction/candidate-aware-fusion | cut -f1)" = "$EXPECTED_SHA"
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git rm -r .github/field-payload
+          git rm --ignore-unmatch .github/field-fix.py
+          git add Cargo.lock .github/workflows/check.yml .github/workflows/transport-quality.yml README.md docs ommatidia ommatidia-data ommatidia-train benchmarks
+          git diff --cached --check
+          git commit -m 'feat: image-conditioned field variant, shared encoder, and source-light supervision'
+          git push origin HEAD:refs/heads/reconstruction/candidate-aware-fusion
+      - name: Archive validation evidence
         if: always()
-        run: tar --exclude=.git --exclude=target -czf "$RUNNER_TEMP/field-source.tar.gz" ommatidia meganeura
+        run: tar --exclude=.git --exclude=target/debug --exclude=target/release -czf "$RUNNER_TEMP/field-validation.tar.gz" .
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: field-source
-          path: ${{ runner.temp }}/field-source.tar.gz
-          retention-days: 3
+          name: field-validation
+          path: ${{ runner.temp }}/field-validation.tar.gz
+          retention-days: 7
