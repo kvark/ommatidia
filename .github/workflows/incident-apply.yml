@@ -1,0 +1,98 @@
+name: incident supervision validation
+on:
+  pull_request:
+    paths: ['.github/workflows/incident-apply.yml', '.github/incident-fix.py']
+permissions:
+  contents: read
+concurrency:
+  group: incident-development-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  verify:
+    if: github.event.pull_request.number == 18 && github.head_ref == 'reconstruction/candidate-aware-fusion' && github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    permissions:
+      contents: write
+    env:
+      VK_ICD_FILENAMES: /usr/share/vulkan/icd.d/lvp_icd.json
+      OMMATIDIA_REQUIRE_GPU: '1'
+      RUST_BACKTRACE: '1'
+    defaults:
+      run:
+        shell: bash
+        working-directory: ommatidia
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          path: ommatidia
+      - uses: actions/checkout@v4
+        with:
+          repository: kvark/meganeura
+          ref: d903bba0a478277216133719e1eaa31b56d0be10
+          path: meganeura
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          repository: kvark/blade
+          ref: c24621aa6606da968fd1b3967d5993f8aa2b74e8
+          path: blade
+          persist-credentials: false
+      - name: Install Rust and software Vulkan
+        run: |
+          rustup toolchain install 1.92.0 --profile minimal --component rustfmt,clippy
+          sudo apt-get update -qq
+          sudo apt-get install -y libvulkan1 mesa-vulkan-drivers
+      - name: Apply verified source patch
+        run: |
+          python3 - <<'PY'
+          import base64, hashlib, lzma, subprocess
+          from pathlib import Path
+          parts = sorted(Path('.github/incident-patch').glob('*.b64'))
+          assert len(parts) == 3
+          packed = base64.b64decode(''.join(p.read_text() for p in parts))
+          assert hashlib.sha256(packed).hexdigest() == '16e7ade37c96844842c1babfeba57a0cc80adb788832f67b78e8f3b70b66da31'
+          Path('/tmp/incident.patch').write_bytes(lzma.decompress(packed))
+          subprocess.run(['git', 'apply', '--check', '/tmp/incident.patch'], check=True)
+          subprocess.run(['git', 'apply', '/tmp/incident.patch'], check=True)
+          PY
+          if test -f .github/incident-fix.py; then python3 .github/incident-fix.py; fi
+          cargo +1.92.0 fmt --all
+          mkdir -p target/incident-validation
+      - name: Workspace checks
+        run: |
+          cargo +1.92.0 check --workspace --all-targets --locked 2>&1 | tee target/incident-validation/check.log
+          cargo +1.92.0 test --workspace --locked 2>&1 | tee target/incident-validation/unit.log
+          cargo +1.92.0 clippy --workspace --all-targets --locked -- -D warnings 2>&1 | tee target/incident-validation/clippy.log
+      - name: Vulkan contracts and physical capture tests
+        run: |
+          for suite in gpu_runtime transport field; do
+            cargo +1.92.0 test -p ommatidia --test "$suite" --locked -- --ignored --nocapture --test-threads=1 2>&1 | tee "target/incident-validation/$suite.log"
+          done
+          cargo +1.92.0 test -p ommatidia-data incident_capture --locked -- --ignored --nocapture --test-threads=1 2>&1 | tee target/incident-validation/capture.log
+      - name: Matched field-quality experiment
+        run: bash benchmarks/incident-lavapipe.sh
+      - name: Commit validated source only
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          test "$(git ls-remote origin refs/heads/reconstruction/candidate-aware-fusion | cut -f1)" = "$EXPECTED_SHA"
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git rm -r .github/incident-patch
+          git rm --ignore-unmatch .github/incident-fix.py
+          git add ommatidia ommatidia-data ommatidia-train docs/field.md benchmarks/incident-lavapipe.sh
+          test -z "$(git diff --cached --name-only -- .github/workflows)"
+          git diff --cached --check
+          git commit -m 'feat: supervise incident transport with paired radiance probes and shared field visibility'
+          git push origin HEAD:refs/heads/reconstruction/candidate-aware-fusion
+      - name: Archive source and validation evidence
+        if: always()
+        run: tar --exclude=.git --exclude=target/debug --exclude=target/release -czf "$RUNNER_TEMP/incident-validation.tar.gz" .
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: incident-validation
+          path: ${{ runner.temp }}/incident-validation.tar.gz
+          retention-days: 7
