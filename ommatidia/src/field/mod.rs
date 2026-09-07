@@ -2,6 +2,7 @@
 //! Light-source labels are a separate training contract, never observations.
 pub mod data;
 pub mod graph;
+pub mod incident;
 
 use serde::{Deserialize, Serialize};
 
@@ -215,6 +216,8 @@ pub struct SceneRecord {
     pub lighting_seed: Option<u64>,
     pub bounds: Bounds,
     pub lighting: Lighting,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub incident: Option<incident::Capture>,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -235,7 +238,7 @@ pub struct Manifest {
 }
 impl Manifest {
     pub fn validate(&self, records: usize) -> Result<(), String> {
-        if self.version != 1
+        if ![1, 2].contains(&self.version)
             || self.rgb_space != "scene-linear-renderer-units"
             || !self.static_scene
             || self.extent.contains(&0)
@@ -243,7 +246,7 @@ impl Manifest {
             || self.scenes.is_empty()
         {
             return Err(
-                "field capture needs static v1 scene-linear metadata and matching record count"
+                "field capture needs static v1/v2 scene-linear metadata and matching record count"
                     .into(),
             );
         }
@@ -255,6 +258,12 @@ impl Manifest {
         }
         for s in &self.scenes {
             s.bounds.validate()?;
+            if let Some(capture) = &s.incident {
+                if self.version < 2 {
+                    return Err("incident labels require manifest v2".into());
+                }
+                capture.validate()?;
+            }
             let good_rgb = |v: [f32; 3]| v.iter().all(|v| v.is_finite() && *v >= 0.0);
             if !good_rgb(s.lighting.environment) {
                 return Err("invalid environment label".into());

@@ -11,6 +11,7 @@
 mod catalog;
 mod field_capture;
 mod gbuffer;
+mod incident;
 mod radiance;
 mod render;
 mod scene;
@@ -27,6 +28,8 @@ struct Args {
     field_views: usize,
     scene_labels: bool,
     lighting_seed: Option<u64>,
+    incident_probes: usize,
+    incident_batches: u32,
     out: PathBuf,
     samples: usize,
     lr_width: u32,
@@ -73,6 +76,8 @@ impl Default for Args {
             field_views: 0,
             scene_labels: false,
             lighting_seed: None,
+            incident_probes: 0,
+            incident_batches: 8,
             out: PathBuf::from("data/train.omd"),
             samples: 64,
             lr_width: 128,
@@ -120,6 +125,8 @@ generate an ommatidia training set
 
 usage: ommatidia-data [options]
 
+  --incident-probes N       directional light targets per static scene [0]
+  --incident-batches N      independent four-path batches per probe [8, >=2]
   --field-views N           static posed-RGB orbit; write target-only .scene.json
   --scene-labels            annotate procedural static scenes and centered cameras
   --lighting-seed N         vary emitter RGB while preserving geometry/cameras
@@ -216,6 +223,16 @@ fn parse_args() -> Result<Args, String> {
                     .map_err(|e| format!("--field-views: {e}"))?
             }
             "--scene-labels" => args.scene_labels = true,
+            "--incident-probes" => {
+                args.incident_probes = value()?
+                    .parse()
+                    .map_err(|e| format!("--incident-probes: {e}"))?
+            }
+            "--incident-batches" => {
+                args.incident_batches = value()?
+                    .parse()
+                    .map_err(|e| format!("--incident-batches: {e}"))?
+            }
             "--lighting-seed" => {
                 args.lighting_seed = Some(
                     value()?
@@ -369,6 +386,14 @@ fn parse_args() -> Result<Args, String> {
     }
     if args.lighting_seed.is_some() && !args.scene_labels {
         return Err("--lighting-seed requires --scene-labels or --field-views".into());
+    }
+    if args.incident_probes > 0
+        && (!args.scene_labels
+            || args.incident_probes > 65536
+            || !(2..=4096).contains(&args.incident_batches)
+            || args.canonical_bounces > 64)
+    {
+        return Err("incident probes need static scene labels, <=65536 probes, 2..4096 batches and <=64 bounces".into());
     }
     if args.samples == 0 {
         return Err("--samples must be positive".into());
@@ -1000,6 +1025,8 @@ fn main() {
         || (args.hr_gbuffer && (!reference_has_hr_gbuffer || args.checkpoint.is_some()));
     let mut hr_renderer = need_hr_render.then(|| make_renderer(&harness, &mut encoder, hr_size));
     let lr_target = render::Target::new(&context, lr_size);
+    let mut incident_tracer =
+        (args.incident_probes > 0).then(|| incident::Tracer::new(&harness, &mut encoder));
     let hr_target = need_hr_render.then(|| render::Target::new(&context, hr_size));
     let neural_target = args
         .checkpoint
@@ -1122,7 +1149,7 @@ fn main() {
     let palette = TexturePalette::bake(&harness, args.seed);
 
     let mut field_manifest = ommatidia::field::Manifest {
-        version: 1,
+        version: if args.incident_probes > 0 { 2 } else { 1 },
         rgb_space: "scene-linear-renderer-units".into(),
         static_scene: true,
         extent: [hr_size.width, hr_size.height],
@@ -1142,6 +1169,7 @@ fn main() {
                 None => interior_pool.is_some() && (object_pool.is_none() || rng.uniform() < 0.5),
             };
             let mut objects = Vec::new();
+            let mut incident_queries = Vec::new();
             let mut record = catalog::SceneRecord {
                 index: scene_index,
                 ids: Vec::new(),
@@ -1206,6 +1234,10 @@ fn main() {
                 let scene_seed = args.seed ^ (scene_index as u64).wrapping_mul(0x9E37_79B9);
                 let lighting_seed = args.lighting_seed.map(|seed| seed ^ scene_seed);
                 field_capture::relight(&mut geometries, lighting_seed);
+                if args.incident_probes > 0 {
+                    incident_queries =
+                        incident::queries(&geometries, args.incident_probes, scene_seed);
+                }
                 if args.scene_labels {
                     field_manifest.scenes.push(field_capture::labels(
                         &geometries,
@@ -1270,6 +1302,24 @@ fn main() {
             }
             if catalog.is_some() {
                 scene_records.push(record);
+            }
+            if let Some(tracer) = &mut incident_tracer {
+                let capture = tracer
+                    .capture(
+                        &harness,
+                        &mut encoder,
+                        &mut objects,
+                        &incident_queries,
+                        args.canonical_bounces,
+                        args.incident_batches,
+                    )
+                    .expect("incident-radiance capture failed");
+                println!(
+                    "captured {} incident probes × {} independent four-path batches",
+                    capture.probes.len(),
+                    capture.batches
+                );
+                field_manifest.scenes.last_mut().unwrap().incident = Some(capture);
             }
             active_sequence = Some(ActiveSequence {
                 base_transforms: objects.iter().map(|o| o.transform).collect(),
@@ -1665,6 +1715,9 @@ fn main() {
     lr_target.destroy(&context);
     if let Some(target) = hr_target {
         target.destroy(&context);
+    }
+    if let Some(tracer) = incident_tracer {
+        tracer.destroy(&context);
     }
     lr_renderer.destroy(&context);
     if let Some(mut renderer) = hr_renderer {
