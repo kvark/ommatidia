@@ -58,6 +58,84 @@ fn bias(b: &mut Builder, name: &str, value: f32) {
         .unwrap();
     p.kind = crate::model::InitKind::Values(vec![value; p.len]);
 }
+struct ViewEvidence {
+    features: NodeId,
+    rgb: NodeId,
+    direction: NodeId,
+    valid: NodeId,
+}
+
+/// Late appearance fusion, not an occlusion oracle. Keep each source until a
+/// shared scoring MLP chooses its contribution. No target-direction-dependent
+/// geometry, and missing source coverage falls back exactly.
+fn source_fusion(
+    b: &mut Builder,
+    c: &Config,
+    q: usize,
+    views: &[ViewEvidence],
+    inputs: [NodeId; 6],
+) -> NodeId {
+    let [mean, var, latent, direction, emission, fallback] = inputs;
+    let ch = c.channels as usize;
+    let mut rgb_sum = None;
+    let mut weight_sum = None;
+    for view in views {
+        let mut feature = columns(&mut b.g, view.features, mean, q, ch, ch);
+        feature = columns(&mut b.g, feature, var, q, 2 * ch, ch);
+        feature = columns(&mut b.g, feature, latent, q, 3 * ch, c.hidden as usize);
+        let exposed = scaled(&mut b.g, view.rgb, c.exposure);
+        let one = constant(&mut b.g, exposed, 1.0);
+        let den = b.g.add(exposed, one);
+        let encoded = b.g.div(exposed, den);
+        let dim = 3 * ch + c.hidden as usize;
+        feature = columns(&mut b.g, feature, encoded, q, dim, 3);
+        feature = columns(&mut b.g, feature, view.direction, q, dim + 3, 3);
+        feature = columns(&mut b.g, feature, direction, q, dim + 6, 3);
+        let score = b.linear(feature, "field.source.score.in", (dim + 9) as u32, c.hidden);
+        let score = b.g.silu(score);
+        let score = b.linear(score, "field.source.score.out", c.hidden, 1);
+        let score = b.g.softplus(score, 1.0);
+        let weight = b.g.mul(score, view.valid);
+        weight_sum = add(&mut b.g, weight_sum, weight);
+        let weight = b.g.broadcast_inner(weight, 3);
+        let part = b.g.mul(view.rgb, weight);
+        rgb_sum = add(&mut b.g, rgb_sum, part);
+    }
+    for p in &mut b.params {
+        if p.name == "field.source.score.out.weight" {
+            p.kind = crate::model::InitKind::Zeros;
+        }
+    }
+    let weights = weight_sum.unwrap();
+    let eps = constant(&mut b.g, weights, 1e-8);
+    let den = b.g.add(weights, eps);
+    let support = b.g.div(weights, den);
+    let den = b.g.broadcast_inner(den, 3);
+    let color = b.g.div(rgb_sum.unwrap(), den);
+    // Source RGB already contains emission. Subtract before mixing scattered
+    // light, since volume rendering adds the supervised emission exactly once.
+    let negative = b.g.neg(emission);
+    let color = b.g.add(color, negative);
+    let color = b.g.relu(color);
+    let gate_input = columns(&mut b.g, latent, direction, q, c.hidden as usize, 3);
+    let gate = b.linear(gate_input, "field.source.gate", c.hidden + 3, 1);
+    bias(b, "field.source.gate", -2.0);
+    for p in &mut b.params {
+        if p.name == "field.source.gate.weight" {
+            p.kind = crate::model::InitKind::Zeros;
+        }
+    }
+    let gate = b.g.sigmoid(gate);
+    let gate = b.g.mul(gate, support);
+    let gate = b.g.broadcast_inner(gate, 3);
+    let one = constant(&mut b.g, gate, 1.0);
+    let negative = b.g.neg(gate);
+    let rest = b.g.add(one, negative);
+    let fallback = b.g.mul(fallback, rest);
+    let source = b.g.mul(color, gate);
+    b.g.add(fallback, source)
+}
+
 struct Field {
     density: NodeId,
     radiance: NodeId,
@@ -72,6 +150,7 @@ fn field(b: &mut Builder, c: &Config, q: usize) -> Field {
     let mut sum = None;
     let mut squared = None;
     let mut global = None;
+    let mut views = Vec::new();
     for v in 0..c.views {
         let image = b.g.input(&format!("view{v}.rgb_rays"), &[9 * n]);
         let features = b.encode(image, "adapter.rgb_rays", 9, c.extent, c.channels);
@@ -81,15 +160,33 @@ fn field(b: &mut Builder, c: &Config, q: usize) -> Field {
         global = add(&mut b.g, global, pooled);
         let table = b.g.transpose(matrix);
         let mut projected = None;
+        let mut color = None;
+        let rgb = (c.view_fusion == super::ViewFusion::LateRgb)
+            .then(|| b.g.input(&format!("view{v}.linear_rgb"), &[n, 3]));
         for k in 0..4 {
             let indices = b.g.input_u32(&format!("view{v}.index{k}"), &[q]);
             let weight = b.g.input(&format!("view{v}.weight{k}"), &[q, 1]);
+            let scalar_weight = weight;
             let weight = b.g.broadcast_inner(weight, ch);
             let feature = b.g.embedding(indices, table);
             let feature = b.g.mul(feature, weight);
             projected = add(&mut b.g, projected, feature);
+            if let Some(table) = rgb {
+                let tap = b.g.embedding(indices, table);
+                let weight = b.g.broadcast_inner(scalar_weight, 3);
+                let tap = b.g.mul(tap, weight);
+                color = add(&mut b.g, color, tap);
+            }
         }
         let projected = projected.unwrap();
+        if let Some(rgb) = color {
+            views.push(ViewEvidence {
+                features: projected,
+                rgb,
+                direction: b.g.input(&format!("view{v}.source_direction"), &[q, 3]),
+                valid: b.g.input(&format!("view{v}.valid"), &[q, 1]),
+            });
+        }
         let sq = b.g.mul(projected, projected);
         sum = add(&mut b.g, sum, projected);
         squared = add(&mut b.g, squared, sq);
@@ -138,10 +235,26 @@ fn field(b: &mut Builder, c: &Config, q: usize) -> Field {
     bias(b, "field.appearance.out", -1.0);
     let radiance = b.g.softplus(radiance, 1.0);
     let scattered = radiance;
-    let radiance = b.g.add(scattered, emission);
+    let mut radiance = b.g.add(scattered, emission);
     let pooled = b.g.reshape(global.unwrap(), &[1, ch]);
     let environment = b.linear(pooled, "field.environment", c.channels, 3);
     let environment = b.g.softplus(environment, 1.0);
+    // Append parameters after all historical parameters so paired common
+    // encoder/geometry/fallback initializations stay identical at the same seed.
+    let scattered = if views.is_empty() {
+        scattered
+    } else {
+        source_fusion(
+            b,
+            c,
+            q,
+            &views,
+            [mean, var, latent, direction, emission, scattered],
+        )
+    };
+    if !views.is_empty() {
+        radiance = b.g.add(scattered, emission);
+    }
     Field {
         density,
         radiance,
