@@ -41,6 +41,8 @@ untouched. The full physical/low-frequency objective remains active in all arms.
 ## Reproduce
 
 ```
+QUALITY_CAPTURE_ONLY=1 bash benchmarks/quality-controls.sh field-midpoint
+QUALITY_CAPTURE_ONLY=1 bash benchmarks/quality-controls.sh transport-control
 for arm in field-midpoint field-stratified field-fine field-wide \
            transport-control transport-no-compressed transport-no-confidence transport-no-temporal; do
   bash benchmarks/quality-controls.sh "$arm"
@@ -49,15 +51,30 @@ python3 benchmarks/report-controls.py target/quality-controls
 ```
 
 `QUALITY_DATA`, `QUALITY_RESULTS`, `QUALITY_UPDATES` and `QUALITY_SEED` override
-paths/budgets. For identical capture hashes across both tracks, first run both
-`field-midpoint` and `transport-control` with `QUALITY_CAPTURE_ONLY=1`. The manual
-`controlled reconstruction study` workflow performs that preparation once,
-distributes the exact captures to all eight arms, then verifies the reports.
+paths/budgets. The manual `controlled reconstruction study` workflow captures
+once, distributes the exact bytes to all eight arms, then verifies the reports.
 Delete or rename an old data directory deliberately before changing capture
 options: existing files are reused, never silently overwritten.
 
 All checkpoints reload before scoring. Recipes contain capture hashes and exact
 commands. Reports include parameter/query counts, fitting and validation quality,
 geometry and source-image ablations. The summary refuses mixed capture hashes
-or different deterministic transport baselines. Use each arm's full images and
-per-sequence scores as well as means. No automatic checkpoint promotion occurs.
+within either track or different deterministic transport baselines. Use each
+arm's full images and per-sequence scores as well as means. No automatic
+checkpoint promotion occurs.
+
+## Capture cache regression
+
+Procedural textures now use names derived from their PNG content. Former names
+such as `noise0.png` omitted the seed, allowing Blade's inline-asset disk cache
+to replace a palette with one cooked by an earlier capture. Seed and command
+alone therefore did not establish texture reproducibility for old datasets.
+Archived comparisons still refer to their recorded OMD bytes; do not relabel
+or silently overwrite those captures.
+
+`bash benchmarks/cache-lavapipe.sh` checks that a seed7 capture is byte-identical
+with a cold cache and with one primed by a different seed. The test uses private
+cache directories, refuses existing output, and leaves the default cache alone.
+`OMMATIDIA_ASSET_CACHE` overrides the cache path for such isolation. Cache names
+are non-cryptographic local identities; recorded dataset SHA256 remains the
+provenance check. All textured controls must be regenerated after this fix.

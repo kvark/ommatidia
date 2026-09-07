@@ -84,6 +84,11 @@ jobs:
       - name: Format
         working-directory: ommatidia
         run: cargo +1.92.0 fmt --all -- --check
+      - name: Check quality harness syntax
+        working-directory: ommatidia
+        run: |
+          python3 -m py_compile benchmarks/report-controls.py
+          bash -n benchmarks/quality-controls.sh benchmarks/cache-lavapipe.sh
       - name: Clippy
         working-directory: ommatidia
         run: cargo +1.92.0 clippy --workspace --all-targets --locked -- -D warnings
@@ -135,6 +140,11 @@ jobs:
           cargo +1.92.0 test -p ommatidia --test field --locked -- --ignored --nocapture --test-threads=1
           cargo +1.92.0 test -p ommatidia --test quality_controls --locked -- --ignored --nocapture --test-threads=1
           cargo +1.92.0 test -p ommatidia-data incident_capture --locked -- --ignored --nocapture --test-threads=1
+      - name: Check capture independence from cached textures
+        working-directory: ommatidia
+        env:
+          CACHE_RESULTS: target/cache-regression
+        run: bash benchmarks/cache-lavapipe.sh
       - name: Capture moving, jittered geometry and lighting
         working-directory: ommatidia
         run: |
@@ -170,6 +180,7 @@ jobs:
           path: |
             ommatidia/target/field-quality
             ommatidia/target/surface-smoke
+            ommatidia/target/cache-regression/comparison.json
           retention-days: 7
       - name: Upload changed image
         if: failure()

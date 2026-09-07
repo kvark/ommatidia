@@ -19,23 +19,25 @@ def read(root: Path, arm: str) -> tuple[dict, Path]:
     return report, directory
 
 
-def capture_hashes(directory: Path) -> dict[str, str]:
+def capture_hashes(directory: Path, track: str) -> dict[str, str]:
     result = {}
     for line in (directory / "recipe.txt").read_text().splitlines():
         bits = line.split(maxsplit=1)
         if len(bits) == 2 and len(bits[0]) == 64 and all(c in "0123456789abcdef" for c in bits[0]):
             result[Path(bits[1]).name] = bits[0]
-    if not result:
-        raise ValueError(f"{directory}: missing capture hashes")
-    return result
+    names = ("field.omd", "field.scene.json", "field.transport.json") if track == "field" else (
+        "train.omd", "train.transport.json", "validation.omd", "validation.transport.json")
+    if any(name not in result for name in names):
+        raise ValueError(f"{directory}: missing {track} capture hashes")
+    return {name: result[name] for name in names}
 
 
 def summarize(root: Path) -> dict:
     result = {"role": "construction controls; not promotion or an unseen-scene audit", "field": [], "transport": []}
-    fingerprints = []
+    fingerprints = {"field": [], "transport": []}
     for arm in FIELD:
         q, directory = read(root, arm)
-        fingerprints.append(capture_hashes(directory))
+        fingerprints["field"].append(capture_hashes(directory, "field"))
         if len(q["scores"]) != 1:
             raise ValueError("field control expects one construction scene")
         s = q["scores"][0]
@@ -55,7 +57,7 @@ def summarize(root: Path) -> dict:
     baseline = None
     for arm in TRANSPORT:
         q, directory = read(root, arm)
-        fingerprints.append(capture_hashes(directory))
+        fingerprints["transport"].append(capture_hashes(directory, "transport"))
         if baseline is None:
             baseline = q["baseline"]
         elif q["baseline"] != baseline:
@@ -64,9 +66,10 @@ def summarize(root: Path) -> dict:
         result["transport"].append({"arm": arm, "steps": t["steps"], "seed": t["seed"],
             "loss_weights": t["loss_weights"], **q["learned"],
             "checkpoint_sha256": hashlib.sha256((directory / "model.safetensors").read_bytes()).hexdigest()})
-    if any(f != fingerprints[0] for f in fingerprints):
-        raise ValueError("study arms did not use identical capture bytes")
-    result["capture_hashes"] = fingerprints[0]
+    for track, values in fingerprints.items():
+        if any(f != values[0] for f in values):
+            raise ValueError(f"{track} arms did not use identical capture bytes")
+    result["capture_hashes"] = {track: values[0] for track, values in fingerprints.items()}
     result["deterministic"] = baseline
     return result
 
