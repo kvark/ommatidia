@@ -100,7 +100,7 @@ version = "0.38.0+1.3.281"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0bb44936d800fea8f016d7f2311c6a4f97aebd5dc86f09906139ec848cf3a46f"
 dependencies = [
- "libloading",
+ "libloading 0.8.9",
 ]
 
 [[package]]
@@ -125,6 +125,12 @@ name = "base64"
 version = "0.21.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9d297deb1925b89f2ccc13d7635fa0714f12c87adce1c75356b39ca9b7178567"
+
+[[package]]
+name = "base64"
+version = "0.22.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "72b3254f16251a8381aa12e40e3c4d2f0199f8c6508fbecb9d91f575e0fbb8c6"
 
 [[package]]
 name = "bevy_mikktspace"
@@ -182,9 +188,11 @@ dependencies = [
 
 [[package]]
 name = "blade-asset"
-version = "0.2.1"
+version = "0.2.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1fd94d6d7236c487cacb8e5b769c7adc10e7306814b21ff63c4dbe3a609fbb82"
 dependencies = [
- "base64",
+ "base64 0.22.1",
  "bytemuck",
  "choir",
  "log",
@@ -193,7 +201,9 @@ dependencies = [
 
 [[package]]
 name = "blade-graphics"
-version = "0.8.4"
+version = "0.9.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6f50161de1b828487e321d0df36cba06666e624a6a943293485f0dd0e97ef6ea"
 dependencies = [
  "ash",
  "ash-window",
@@ -207,7 +217,7 @@ dependencies = [
  "js-sys",
  "khronos-egl",
  "libc",
- "libloading",
+ "libloading 0.9.0",
  "log",
  "mint",
  "naga",
@@ -229,15 +239,6 @@ dependencies = [
 [[package]]
 name = "blade-macros"
 version = "0.3.0"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn 2.0.119",
-]
-
-[[package]]
-name = "blade-macros"
-version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "27142319e2f4c264581067eaccb9f80acccdde60d8b4bf57cc50cd3152f109ca"
 dependencies = [
@@ -247,30 +248,22 @@ dependencies = [
 ]
 
 [[package]]
-name = "blade-macros"
-version = "0.3.0"
-source = "git+https://github.com/kvark/blade?rev=b208f3b1f97196c2971436b5726e61e71b149c37#b208f3b1f97196c2971436b5726e61e71b149c37"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn 2.0.119",
-]
-
-[[package]]
 name = "blade-render"
-version = "0.5.0"
+version = "0.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5154cd4b75ee0d1310873e853d9ef191b1d267b0ad3cf8e3bc097075eddbb94d"
 dependencies = [
- "base64",
+ "base64 0.22.1",
  "bevy_mikktspace",
  "bitflags 2.13.1",
  "blade-asset",
  "blade-graphics",
- "blade-macros 0.3.0",
+ "blade-macros",
  "bytemuck",
  "choir",
  "exr",
  "getrandom 0.2.17",
- "glam 0.30.10",
+ "glam 0.32.1",
  "gltf",
  "log",
  "mint",
@@ -969,18 +962,18 @@ checksum = "8babf46d4c1c9d92deac9f7be466f76dfc4482b6452fc5024b5e8daf6ffeb3ee"
 
 [[package]]
 name = "glam"
-version = "0.30.10"
+version = "0.32.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "19fc433e8437a212d1b6f1e68c7824af3aed907da60afa994e7f542d18d12aa9"
+checksum = "f70749695b063ecbf6b62949ccccde2e733ec3ecbbd71d467dca4e5c6c97cca0"
 dependencies = [
  "mint",
 ]
 
 [[package]]
 name = "glow"
-version = "0.16.0"
+version = "0.17.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c5e5ea60d70410161c8bf5da3fdfeaa1c72ed2c15f8bbb9d19fe3a4fad085f08"
+checksum = "29038e1c483364cc6bb3cf78feee1816002e127c331a1eec55a4d202b9e1adb5"
 dependencies = [
  "js-sys",
  "slotmap",
@@ -1219,7 +1212,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6aae1df220ece3c0ada96b8153459b67eebe9ae9212258bb0134ae60416fdf76"
 dependencies = [
  "libc",
- "libloading",
+ "libloading 0.8.9",
 ]
 
 [[package]]
@@ -1245,6 +1238,16 @@ name = "libloading"
 version = "0.8.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d7c4b02199fee7c5d21a5ae7d8cfa79a6ef5bb2fc834d6e9058e89c825efdc55"
+dependencies = [
+ "cfg-if",
+ "windows-link",
+]
+
+[[package]]
+name = "libloading"
+version = "0.9.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "754ca22de805bb5744484a5b151a9e1a8e837d5dc232c2d7d8c2e3492edc8b60"
 dependencies = [
  "cfg-if",
  "windows-link",
@@ -1285,7 +1288,7 @@ name = "meganeura"
 version = "0.2.0"
 dependencies = [
  "blade-graphics",
- "blade-macros 0.3.0 (git+https://github.com/kvark/blade?rev=b208f3b1f97196c2971436b5726e61e71b149c37)",
+ "blade-macros",
  "bytemuck",
  "egglog",
  "flate2",
@@ -1325,8 +1328,9 @@ checksum = "e53debba6bda7a793e5f99b8dacf19e626084f525f7829104ba9898f367d85ff"
 
 [[package]]
 name = "naga"
-version = "29.0.0"
-source = "git+https://github.com/gfx-rs/wgpu?rev=cefd48f6cff61d64abe1cdb4002c4e39bfc2c728#cefd48f6cff61d64abe1cdb4002c4e39bfc2c728"
+version = "30.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a616d2fb8c89516ac2723a581f69d6c18576046bed761bd6b305e5618e6ae130"
 dependencies = [
  "arrayvec",
  "bit-set",
@@ -1335,16 +1339,29 @@ dependencies = [
  "cfg_aliases",
  "codespan-reporting",
  "half",
- "hashbrown 0.16.1",
+ "hashbrown 0.17.1",
  "indexmap",
  "libm",
  "log",
+ "naga-types",
  "num-traits",
  "once_cell",
  "rustc-hash 1.1.0",
  "spirv",
  "thiserror",
  "unicode-ident",
+]
+
+[[package]]
+name = "naga-types"
+version = "30.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "590afbf58a6f4f62873cd5cff4468061844bafa1cdf399cc954537c22d768d49"
+dependencies = [
+ "hashbrown 0.17.1",
+ "indexmap",
+ "rustc-hash 1.1.0",
+ "thiserror",
 ]
 
 [[package]]
@@ -1529,7 +1546,7 @@ name = "ommatidia"
 version = "0.1.0"
 dependencies = [
  "blade-graphics",
- "blade-macros 0.3.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "blade-macros",
  "blade-render",
  "bytemuck",
  "half",
@@ -1555,7 +1572,7 @@ version = "0.1.0"
 dependencies = [
  "blade-asset",
  "blade-graphics",
- "blade-macros 0.3.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "blade-macros",
  "blade-render",
  "bytemuck",
  "choir",
@@ -1599,21 +1616,21 @@ checksum = "384b8ab6d37215f3c5301a95a4accb5d64aa607f1fcb26a11b5303878451b4fe"
 
 [[package]]
 name = "openxr"
-version = "0.19.0"
+version = "0.21.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2a2d6934d2508f94fd4cbda6c2a326f111f60ce59fd9136df6d478564397dd40"
+checksum = "2c2f814a47d257c79c762bc64042859661b6aa2f57cfa1f0ad4d778f419aeb0e"
 dependencies = [
  "libc",
- "libloading",
+ "libloading 0.9.0",
  "ndk-context",
  "openxr-sys",
 ]
 
 [[package]]
 name = "openxr-sys"
-version = "0.11.0"
+version = "0.13.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f10e7e38c47f2175fc39363713b656db899fa0b4a14341029702cbdfa6f44d05"
+checksum = "4b8d66081de28c2fa40216182a37292fe38aeea20bc184612504d5e64daf5359"
 dependencies = [
  "libc",
 ]
@@ -1930,7 +1947,7 @@ version = "0.8.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b91f7eff05f748767f183df4320a63d6936e9c6107d97c9e6bdd9784f4289c94"
 dependencies = [
- "base64",
+ "base64 0.21.7",
  "bitflags 2.13.1",
  "serde",
  "serde_derive",
@@ -2073,18 +2090,18 @@ checksum = "7da8b5736845d9f2fcb837ea5d9e2628564b3b043a70948a3f0b778838c5fb4f"
 
 [[package]]
 name = "strum"
-version = "0.27.2"
+version = "0.28.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "af23d6f6c1a224baef9d3f61e287d2761385a5b88fdab4eb4c6f11aeb54c4bcf"
+checksum = "9628de9b8791db39ceda2b119bbe13134770b56c138ec1d3af810d045c04f9bd"
 dependencies = [
  "strum_macros",
 ]
 
 [[package]]
 name = "strum_macros"
-version = "0.27.2"
+version = "0.28.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7695ce3845ea4b33927c055a39dc438a45b059f7c1b3d91d38d10355fb8cbca7"
+checksum = "ab85eea0270ee17587ed4156089e10b9e6880ee688791d45a905f5b1ca36f664"
 dependencies = [
  "heck",
  "proc-macro2",

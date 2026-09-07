@@ -13,14 +13,26 @@ The published v0.3.1 checkpoint remains supported by the legacy runtime.
 
 ## Build
 
-Place `ommatidia`, `blade` and `meganeura` in sibling directories. Use the pins
-in `.github/workflows/check.yml`: Blade `b208f3b` and Meganeura `230cab0`.
-Blade 0.9 is intentionally not mixed with Meganeura's 0.8 graphics ABI.
+Place `ommatidia` and `meganeura` in sibling directories. CI pins Meganeura
+`d903bba`; Blade 0.9 and Naga 30 come from crates.io and Cargo.lock. The data
+generator additionally reads Blade's WGSL from `../blade/blade-render/code`
+(or `--shader-dir`); CI uses the matching `c24621a` source checkout.
 
 ```sh
 cargo +1.92.0 test --workspace --locked
 cargo +1.92.0 run -p ommatidia-train --bin transport -- --help
 bash benchmarks/transport-lavapipe.sh
+```
+
+## Offline field experiment
+
+Posed RGB only; no G-buffer or velocity. The wider variant shares the image
+pyramid, predicts a density/radiance field, and receives synthetic light labels
+only through training losses. See [field.md](docs/field.md).
+
+```sh
+cargo +1.92.0 run -p ommatidia-train --bin field -- --help
+bash benchmarks/field-lavapipe.sh
 ```
 
 ## Quality and integration

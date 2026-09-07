@@ -35,3 +35,6 @@ pub use model::{Model, ModelConfig, Objective, Prediction, ReconstructionBase};
 pub use runtime::{FrameInputs, Upscaler, UpscalerError};
 
 pub mod transport;
+
+pub mod field;
+mod neural;
