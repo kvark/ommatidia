@@ -89,11 +89,20 @@ fn readme_keeps_decodable_comparisons_at_equal_display_extents() {
     ] {
         let decoder = png::Decoder::new(BufReader::new(File::open(root.join(relative)).unwrap()));
         let mut reader = decoder.read_info().unwrap();
-        assert_eq!((reader.info().width, reader.info().height), (extent, extent));
+        assert_eq!(
+            (reader.info().width, reader.info().height),
+            (extent, extent)
+        );
         let mut bytes = vec![0; reader.output_buffer_size().unwrap()];
         reader.next_frame(&mut bytes).unwrap();
         let needle = format!(r#"<img src="{relative}""#);
-        let tag = text.split_once(&needle).unwrap().1.split_once('>').unwrap().0;
+        let tag = text
+            .split_once(&needle)
+            .unwrap()
+            .1
+            .split_once('>')
+            .unwrap()
+            .0;
         assert!(tag.contains(r#"width="256""#) && tag.contains(r#"height="256""#));
     }
 }
