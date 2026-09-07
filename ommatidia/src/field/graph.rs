@@ -61,6 +61,7 @@ fn bias(b: &mut Builder, name: &str, value: f32) {
 struct Field {
     density: NodeId,
     radiance: NodeId,
+    scattered: NodeId,
     emission: NodeId,
     environment: NodeId,
 }
@@ -136,13 +137,15 @@ fn field(b: &mut Builder, c: &Config, q: usize) -> Field {
     let radiance = b.linear(directional, "field.appearance.out", c.hidden, 3);
     bias(b, "field.appearance.out", -1.0);
     let radiance = b.g.softplus(radiance, 1.0);
-    let radiance = b.g.add(radiance, emission);
+    let scattered = radiance;
+    let radiance = b.g.add(scattered, emission);
     let pooled = b.g.reshape(global.unwrap(), &[1, ch]);
     let environment = b.linear(pooled, "field.environment", c.channels, 3);
     let environment = b.g.softplus(environment, 1.0);
     Field {
         density,
         radiance,
+        scattered,
         emission,
         environment,
     }
@@ -162,10 +165,16 @@ pub fn build_points(c: &Config, queries: usize) -> Result<Network, String> {
         params: b.params,
     })
 }
-fn render(g: &mut Graph, f: &Field, shape: RenderShape) -> NodeId {
+struct Rendered {
+    total: NodeId,
+    direct: NodeId,
+    indirect: NodeId,
+}
+fn render(g: &mut Graph, f: &Field, shape: RenderShape) -> Rendered {
     let n = shape.rays;
     let mut trans = g.constant(vec![1.0; n], &[n, 1]);
-    let mut result = g.constant(vec![0.0; 3 * n], &[n, 3]);
+    let mut direct = g.constant(vec![0.0; 3 * n], &[n, 3]);
+    let mut indirect = g.constant(vec![0.0; 3 * n], &[n, 3]);
     let deltas = g.input("ray.deltas", &[shape.steps * n, 1]);
     for s in 0..shape.steps {
         let sigma = rows(g, f.density, s * n, n, 1);
@@ -178,16 +187,42 @@ fn render(g: &mut Graph, f: &Field, shape: RenderShape) -> NodeId {
         let alpha = g.add(one, neg);
         let weight = g.mul(trans, alpha);
         let weight = g.broadcast_inner(weight, 3);
-        let radiance = rows(g, f.radiance, s * n, n, 3);
-        let part = g.mul(weight, radiance);
-        result = g.add(result, part);
+        let emission = rows(g, f.emission, s * n, n, 3);
+        let part = g.mul(weight, emission);
+        direct = g.add(direct, part);
+        let scattered = rows(g, f.scattered, s * n, n, 3);
+        let part = g.mul(weight, scattered);
+        indirect = g.add(indirect, part);
         trans = g.mul(trans, keep);
     }
     let one = g.constant(vec![1.0; n], &[n, 1]);
     let background = g.matmul(one, f.environment);
     let trans = g.broadcast_inner(trans, 3);
     let background = g.mul(trans, background);
-    g.add(result, background)
+    let direct = g.add(direct, background);
+    Rendered {
+        total: g.add(direct, indirect),
+        direct,
+        indirect,
+    }
+}
+/// Angular incident radiance along arbitrary rays. Outputs are total, direct,
+/// indirect [R,3]. Same field/weights as image rendering; no independent head
+/// that can explain labels without learning occlusion or scene appearance.
+pub fn build_incident(c: &Config, shape: RenderShape) -> Result<Network, String> {
+    c.validate()?;
+    let q = shape.queries()?;
+    if shape.probes != 0 {
+        return Err("incident inference does not use surface probes".into());
+    }
+    let mut b = Builder::new();
+    let f = field(&mut b, c, q);
+    let image = render(&mut b.g, &f, shape);
+    b.g.set_outputs(vec![image.total, image.direct, image.indirect]);
+    Ok(Network {
+        graph: b.g,
+        params: b.params,
+    })
 }
 fn log_radiance(g: &mut Graph, x: NodeId, exposure: f32) -> NodeId {
     let x = scaled(g, x, exposure);
@@ -205,13 +240,37 @@ fn masked_loss(g: &mut Graph, a: NodeId, b: NodeId, mask: NodeId, e: f32) -> Nod
 /// Training uses volume-rendered RGB plus separately masked source-emission and environment losses.
 /// Inference output is [rendered RGB, density, radiance, emission, environment].
 pub fn build_render(c: &Config, shape: RenderShape, training: bool) -> Result<Network, String> {
+    build(c, shape, training, 0)
+}
+/// Last `incident_rays` in each ray-sample block supervise incident light;
+/// preceding rays supervise camera RGB. They share density, visibility,
+/// emission and scattered radiance. The loss weight is a training parameter,
+/// not a runtime config change. Scale target masks for loss-weight ablations.
+pub fn build_training(
+    c: &Config,
+    shape: RenderShape,
+    incident_rays: usize,
+) -> Result<Network, String> {
+    if incident_rays >= shape.rays {
+        return Err("incident training must retain at least one image ray".into());
+    }
+    build(c, shape, true, incident_rays)
+}
+fn build(
+    c: &Config,
+    shape: RenderShape,
+    training: bool,
+    incident_rays: usize,
+) -> Result<Network, String> {
     c.validate()?;
     let q = shape.queries()?;
     let mut b = Builder::new();
     let f = field(&mut b, c, q);
-    let rgb = render(&mut b.g, &f, shape);
+    let rendered = render(&mut b.g, &f, shape);
     if training {
-        let target = b.g.input("target.rgb", &[shape.rays, 3]);
+        let image_rays = shape.rays - incident_rays;
+        let rgb = rows(&mut b.g, rendered.total, 0, image_rays, 3);
+        let target = b.g.input("target.rgb", &[image_rays, 3]);
         let a = log_radiance(&mut b.g, rgb, c.exposure);
         let target = log_radiance(&mut b.g, target, c.exposure);
         let mut loss = b.g.mse_loss(a, target);
@@ -225,9 +284,28 @@ pub fn build_render(c: &Config, shape: RenderShape, training: bool) -> Result<Ne
         let auxiliary = masked_loss(&mut b.g, f.environment, target, mask, c.exposure);
         let auxiliary = scaled(&mut b.g, auxiliary, 0.05);
         loss = b.g.add(loss, auxiliary);
+        if incident_rays != 0 {
+            for (name, prediction) in [("direct", rendered.direct), ("indirect", rendered.indirect)]
+            {
+                let prediction = rows(&mut b.g, prediction, image_rays, incident_rays, 3);
+                let target =
+                    b.g.input(&format!("target.incident_{name}"), &[incident_rays, 3]);
+                let mask =
+                    b.g.input(&format!("target.incident_{name}_mask"), &[incident_rays, 3]);
+                let auxiliary = masked_loss(&mut b.g, prediction, target, mask, c.exposure);
+                let auxiliary = scaled(&mut b.g, auxiliary, 0.5);
+                loss = b.g.add(loss, auxiliary);
+            }
+        }
         b.g.set_outputs(vec![loss]);
     } else {
-        b.g.set_outputs(vec![rgb, f.density, f.radiance, f.emission, f.environment]);
+        b.g.set_outputs(vec![
+            rendered.total,
+            f.density,
+            f.radiance,
+            f.emission,
+            f.environment,
+        ]);
     }
     Ok(Network {
         graph: b.g,

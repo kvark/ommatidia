@@ -4,7 +4,7 @@ use ommatidia::{
     field::{
         self, Config, Manifest, Observations, View,
         data::{self, Prepared, RenderShape, Targets},
-        graph,
+        graph, incident,
     },
     rng::Rng,
 };
@@ -141,6 +141,59 @@ fn render(
     }
     Ok(result)
 }
+/// Labels specify evaluator rays, never inference observations. No held score
+/// participates in optimization or checkpoint selection.
+fn score_incident(
+    session: &mut meganeura::Session,
+    c: &Config,
+    shape: RenderShape,
+    example: &Example,
+) -> Result<serde_json::Value> {
+    let Some(capture) = &example.record.incident else {
+        return Ok(serde_json::Value::Null);
+    };
+    let mut direct = Vec::new();
+    let mut indirect = Vec::new();
+    for batch in capture.probes.chunks(shape.rays) {
+        let rays: Vec<_> = (0..shape.rays)
+            .map(|i| batch[i.min(batch.len() - 1)].ray())
+            .collect();
+        let (q, dt) = data::ray_queries(example.observations.bounds, &rays, shape.steps)?;
+        Prepared::new(&example.observations, c, &q)?.feed(session);
+        session.set_input("ray.deltas", &dt);
+        session.step();
+        session.wait();
+        let mut d = vec![0.0; shape.rays * 3];
+        let mut b = d.clone();
+        session.read_output_by_index(1, &mut d);
+        session.read_output_by_index(2, &mut b);
+        if d.iter().chain(&b).any(|v| !v.is_finite() || *v < 0.0) {
+            return Err("invalid incident prediction".into());
+        }
+        direct.extend_from_slice(&d[..3 * batch.len()]);
+        indirect.extend_from_slice(&b[..3 * batch.len()]);
+    }
+    let total: Vec<_> = direct.iter().zip(&indirect).map(|(a, b)| a + b).collect();
+    let truth_d: Vec<_> = capture.probes.iter().flat_map(|p| p.direct.mean).collect();
+    let truth_i: Vec<_> = capture
+        .probes
+        .iter()
+        .flat_map(|p| p.indirect.mean)
+        .collect();
+    let truth_t: Vec<_> = capture.probes.iter().flat_map(|p| p.total()).collect();
+    let mean_variance = capture
+        .probes
+        .iter()
+        .flat_map(|p| p.total_variance_of_mean)
+        .map(|v| v as f64)
+        .sum::<f64>()
+        / truth_t.len() as f64;
+    Ok(
+        serde_json::json!({"probes":capture.probes.len(),"direct":score(&direct,&truth_d),
+        "indirect":score(&indirect,&truth_i),"total":score(&total,&truth_t),
+        "target_mean_variance":mean_variance,"target_paths_per_probe":capture.paths_per_batch*capture.batches}),
+    )
+}
 fn score(a: &[f32], b: &[f32]) -> serde_json::Value {
     let log_mse = a
         .iter()
@@ -189,11 +242,13 @@ fn main() -> Result<()> {
         probes: 16,
     };
     let mut rate = 1e-3;
+    let mut incident_rays = 0usize;
+    let mut incident_weight = 0.1f32;
     let mut argv = std::env::args().skip(1);
     while let Some(flag) = argv.next() {
         if flag == "--help" || flag == "-h" {
             println!(
-                "field --data CAPTURE.omd [--data OTHER.omd] [--eval-data UNSEEN.omd]\n  --out DIR --steps N --seed N --image N --views N --channels N --hidden N\n  --rays N --samples N --probes N --rate F\nPosed RGB only. Final camera is held; light labels supervise separate heads.\nOutput: weights/config, RGB contexts, fixed-budget held-camera quality, PNGs."
+                "field --data CAPTURE.omd [--data OTHER.omd] [--eval-data UNSEEN.omd]\n  --out DIR --steps N --seed N --image N --views N --channels N --hidden N\n  --rays N --samples N --probes N --rate F\n  --incident-rays N [0] --incident-weight F [0.1 when incident rays enabled]\nPosed RGB only. Final camera is held; light labels supervise separate heads.\nOutput: weights/config, RGB contexts, fixed-budget held-camera quality, PNGs."
             );
             return Ok(());
         }
@@ -215,11 +270,27 @@ fn main() -> Result<()> {
             "--samples" => shape.steps = v.parse()?,
             "--probes" => shape.probes = v.parse()?,
             "--rate" => rate = v.parse()?,
+            "--incident-rays" => incident_rays = v.parse()?,
+            "--incident-weight" => incident_weight = v.parse()?,
             _ => return Err(format!("unknown option {flag}").into()),
         }
     }
     c.validate()?;
     shape.queries()?;
+    let training_shape = RenderShape {
+        rays: shape
+            .rays
+            .checked_add(incident_rays)
+            .ok_or("too many rays")?,
+        ..shape
+    };
+    training_shape.queries()?;
+    if !incident_weight.is_finite() || incident_weight < 0.0 {
+        return Err("incident weight must be finite and nonnegative".into());
+    }
+    if incident_rays == 0 {
+        incident_weight = 0.0;
+    }
     if data_files.is_empty() || steps == 0 || !f32::is_finite(rate) || rate <= 0.0 {
         return Err("need data, positive updates and finite positive rate".into());
     }
@@ -229,6 +300,11 @@ fn main() -> Result<()> {
     }
     if train.is_empty() {
         return Err("empty corpus".into());
+    }
+    if incident_rays > 0 && train.iter().any(|e| e.record.incident.is_none()) {
+        return Err(
+            "incident training requires --incident-probes captures for every fitting scene".into(),
+        );
     }
     let held = eval.as_ref().map(|p| load(p, &c)).transpose()?;
     if held.as_ref().is_some_and(|held| {
@@ -247,7 +323,7 @@ fn main() -> Result<()> {
     let context = ommatidia::gpu::create_context(None, false);
     let backend = context.device_information().device_name.clone();
     println!("field backend {backend}; quality only");
-    let model = graph::build_render(&c, shape, true)?;
+    let model = graph::build_training(&c, training_shape, incident_rays)?;
     let mut session = ommatidia::gpu::training_session(&model.graph, Arc::clone(&context));
     model.initialize(&mut session, seed);
     let inference = graph::build_render(&c, shape, false)?;
@@ -265,7 +341,7 @@ fn main() -> Result<()> {
         let pixels: Vec<_> = (0..shape.rays)
             .map(|_| rng.below(n as u32) as usize)
             .collect();
-        let rays: Vec<_> = pixels
+        let mut rays: Vec<_> = pixels
             .iter()
             .map(|p| {
                 target.camera.ray(
@@ -277,6 +353,16 @@ fn main() -> Result<()> {
                 )
             })
             .collect();
+        // Separate RNG keeps camera pixels and emission probes identical in
+        // incident-loss ablations, including the weight-zero arm.
+        let mut probe_rng = Rng::new(seed ^ (step as u64).wrapping_mul(0xD1B5_4A32_D192_ED03));
+        let chosen: Vec<_> = (0..incident_rays)
+            .map(|_| {
+                let probes = &example.record.incident.as_ref().unwrap().probes;
+                &probes[probe_rng.below(probes.len() as u32) as usize]
+            })
+            .collect();
+        rays.extend(chosen.iter().map(|p| p.ray()));
         let (mut queries, deltas) =
             data::ray_queries(example.observations.bounds, &rays, shape.steps)?;
         let (emission, emission_mask) = data::append_probes(
@@ -298,6 +384,11 @@ fn main() -> Result<()> {
         Prepared::new(&example.observations, &c, &queries)?.feed(&mut session);
         session.set_input("ray.deltas", &deltas);
         targets.feed(&mut session);
+        if !chosen.is_empty() {
+            incident::Targets::new(&chosen, c.exposure)?
+                .weighted(incident_weight)?
+                .feed(&mut session);
+        }
         session.set_adam(rate, 0.9, 0.999, 1e-8);
         session.step();
         session.wait();
@@ -316,8 +407,17 @@ fn main() -> Result<()> {
     session.save_checkpoint(&out.join("model.safetensors"))?;
     std::fs::write(out.join("model.field.json"), serde_json::to_vec_pretty(&c)?)?;
     // Reload before any held-camera evaluation. No metric-based checkpoint selection.
-    let mut learned = ommatidia::gpu::inference_session(&inference.graph, context);
+    let mut learned = ommatidia::gpu::inference_session(&inference.graph, Arc::clone(&context));
     learned.load_checkpoint(&out.join("model.safetensors"))?;
+    let incident_shape = RenderShape {
+        rays: shape.rays,
+        steps: shape.steps,
+        probes: 0,
+    };
+    let incident_model = graph::build_incident(&c, incident_shape)?;
+    let mut incident_session =
+        ommatidia::gpu::inference_session(&incident_model.graph, Arc::clone(&context));
+    incident_session.load_checkpoint(&out.join("model.safetensors"))?;
     let examples = held.as_ref().unwrap_or(&train);
     let mut scores = Vec::new();
     for (i, example) in examples.iter().enumerate() {
@@ -353,10 +453,11 @@ fn main() -> Result<()> {
             serde_json::to_vec(&example.observations)?,
         )?;
         scores.push(serde_json::json!({"scene_seed":example.record.scene_seed,"learned":score(&prediction,&example.held.rgb),
-            "untrained":score(&initial,&example.held.rgb),"context_mean":score(&constant,&example.held.rgb),"black":score(&vec![0.0;3*n],&example.held.rgb)}));
+            "untrained":score(&initial,&example.held.rgb),"context_mean":score(&constant,&example.held.rgb),"black":score(&vec![0.0;3*n],&example.held.rgb),
+            "incident":score_incident(&mut incident_session,&c,incident_shape,example)?}));
     }
     let report = serde_json::json!({"backend":backend,"quality_only":true,"steps":steps,"seed":seed,"first_loss":first,"last_loss":last,
-        "rays":shape.rays,"samples":shape.steps,"probes":shape.probes,"training_files":data_files,
+        "rays":shape.rays,"samples":shape.steps,"probes":shape.probes,"incident_rays":incident_rays,"incident_weight":incident_weight,"training_files":data_files,
         "evaluation":if held.is_some(){"unseen scenes and held cameras"}else{"held cameras of fitting scenes"},"scores":scores});
     std::fs::write(
         out.join("quality.json"),
