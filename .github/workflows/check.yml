@@ -16,10 +16,10 @@ concurrency:
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
-  # Path dependencies live in sibling checkouts, so pin their exact commits
-  # just as Cargo.lock pins registry and Git dependencies.
-  BLADE_REV: 3d7a3977a047fa4f728ab62b6df1663f5a4f9627
-  MEGANEURA_REV: bf72c42c8639ae8b326361754fc43a478ff837d4
+  # Path dependencies are pinned like Cargo.lock; Blade 0.9 is not compatible
+  # with this Meganeura revision's graphics/OpenXR dependency contract.
+  BLADE_REV: b208f3b1f97196c2971436b5726e61e71b149c37
+  MEGANEURA_REV: 230cab004a898d0494e0a327ef695652a98a10cc
 
 jobs:
   platform:
@@ -37,7 +37,7 @@ jobs:
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     steps:
-      - name: Check out Ommatidium
+      - name: Check out Ommatidia
         uses: actions/checkout@v4
         with:
           path: ommatidia
@@ -64,7 +64,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - name: Check out Ommatidium
+      - name: Check out Ommatidia
         uses: actions/checkout@v4
         with:
           path: ommatidia
@@ -104,7 +104,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - name: Check out Ommatidium
+      - name: Check out Ommatidia
         uses: actions/checkout@v4
         with:
           path: ommatidia
@@ -125,13 +125,15 @@ jobs:
           rustup toolchain install 1.92.0 --profile minimal
           sudo apt-get update
           sudo apt-get install -y libvulkan1 mesa-vulkan-drivers
-      - name: Run GPU contract and image tests
+      - name: Run GPU contract, recurrence, training and image tests
         working-directory: ommatidia
         env:
           VK_ICD_FILENAMES: /usr/share/vulkan/icd.d/lvp_icd.json
           OMMATIDIA_REQUIRE_GPU: 1
-        run: cargo +1.92.0 test -p ommatidia --test gpu_runtime --locked -- --ignored --nocapture --test-threads=1
-      - name: Capture a moving, jittered catalog sequence
+        run: |
+          cargo +1.92.0 test -p ommatidia --test gpu_runtime --locked -- --ignored --nocapture --test-threads=1
+          cargo +1.92.0 test -p ommatidia --test transport --locked -- --ignored --nocapture --test-threads=1
+      - name: Capture moving, jittered geometry and lighting
         working-directory: ommatidia
         env:
           VK_ICD_FILENAMES: /usr/share/vulkan/icd.d/lvp_icd.json
@@ -140,10 +142,11 @@ jobs:
             --out target/catalog-smoke.omd --samples 1 --lr 16x16 \
             --canonical-frames 2 --catalog ommatidia-data/tests/fixtures/catalog.json \
             --catalog-kind object --catalog-split train --catalog-objects 1 \
-            --sequence-frames 2 --random-camera-motion 0.05 \
-            --projection-jitter --hr-gbuffer
+            --sequence-frames 2 --random-camera-motion 0.05 --light-motion 0.03 \
+            --projection-jitter --hr-gbuffer --split-radiance
           test -s target/catalog-smoke.omd
           test "$(jq -r '.scenes[0].families[0]' target/catalog-smoke.catalog.json)" = fixture-plane
+          test "$(jq -r '.matching_path_depth' target/catalog-smoke.transport.json)" = true
           cargo +1.92.0 run -p ommatidia-data --locked -- \
             --out target/restir-motion-smoke.omd --samples 1 --lr 16x16 \
             --canonical-frames 1 --sequence-frames 2 \
