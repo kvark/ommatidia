@@ -1,0 +1,43 @@
+name: transport quality (LavaPipe)
+on:
+  workflow_dispatch:
+  push:
+    branches: [reconstruction/candidate-aware-fusion]
+    paths: ['.github/workflows/transport-quality.yml']
+permissions:
+  contents: read
+jobs:
+  quality:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: ommatidia
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          repository: kvark/blade
+          ref: b208f3b1f97196c2971436b5726e61e71b149c37
+          path: blade
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          repository: kvark/meganeura
+          ref: 230cab004a898d0494e0a327ef695652a98a10cc
+          path: meganeura
+          persist-credentials: false
+      - name: Setup
+        run: |
+          rustup toolchain install 1.92.0 --profile minimal
+          sudo apt-get update -qq
+          sudo apt-get install -y libvulkan1 mesa-vulkan-drivers
+      - name: Render, train, reload and evaluate
+        working-directory: ommatidia
+        run: bash benchmarks/transport-lavapipe.sh
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: transport-lavapipe-quality
+          path: ommatidia/target/transport-quality
+          retention-days: 7
