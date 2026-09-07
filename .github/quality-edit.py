@@ -38,7 +38,8 @@ edit('ommatidia-train/src/bin/field.rs', r'  --rays N --samples N --probes N --r
 edit('ommatidia-train/src/bin/field.rs', '''        let (mut queries, deltas) =
             data::ray_queries(example.observations.bounds, &rays, shape.steps)?;''', '''        // Independent stream: changing sample count/mode must not change
         // fitting camera pixels or emission/incident-probe choices.
-        let sample_seed = seed ^ (step as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15);
+        let sample_seed = seed ^ 0xA24B_AED4_963E_E407
+            ^ (step as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15);
         let (mut queries, deltas) = if stratified {
             data::stratified_ray_queries(example.observations.bounds, &rays, shape.steps, sample_seed)?
         } else {
@@ -83,14 +84,14 @@ impl LossWeights {
 
 fn filled(g: &mut Graph, x: NodeId, value: f32) -> NodeId {''')
 edit('ommatidia/src/transport/graph.rs', '    let mut b = Builder::new();', '''    let mut b = Builder::new();
-    let weights: Option<[NodeId; 5]> = (unroll > 0).then(|| {
+    let objective_weights: Option<[NodeId; 5]> = (unroll > 0).then(|| {
         let input = b.g.input("loss.weights", &[5]);
         split(&mut b.g, input, 5, 1, 1).try_into().unwrap()
     });''')
 edit('ommatidia/src/transport/graph.rs', '''        let mut loss = b.g.mse_loss(encoded, encoded_target);
         let physical = scaled_mse(&mut b.g, image, target, scale);
         let weight = b.g.scalar(0.1);
-        let physical = b.g.mul(physical, weight);''', '''        let [compressed_weight, physical_weight, low_frequency_weight, confidence_weight, temporal_weight] = weights.unwrap();
+        let physical = b.g.mul(physical, weight);''', '''        let [compressed_weight, physical_weight, low_frequency_weight, confidence_weight, temporal_weight] = objective_weights.unwrap();
         let loss = b.g.mse_loss(encoded, encoded_target);
         let mut loss = b.g.mul(loss, compressed_weight);
         let physical = scaled_mse(&mut b.g, image, target, scale);
