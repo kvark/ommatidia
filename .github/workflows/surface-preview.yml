@@ -1,0 +1,55 @@
+name: retain measured surface preview
+on:
+  pull_request:
+    paths: ['.github/workflows/surface-preview.yml']
+permissions:
+  contents: read
+jobs:
+  retain:
+    if: github.event.pull_request.number == 19 && github.head_ref == 'docs/visual-quality-roadmap' && github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+      actions: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+      - uses: actions/download-artifact@v4
+        with:
+          name: surface-lavapipe-long
+          run-id: 34146682487
+          github-token: ${{ github.token }}
+          path: evidence
+      - name: Verify the inspected image bytes
+        run: |
+          python3 - <<'PY'
+          import hashlib, shutil, struct
+          from pathlib import Path
+          images = [
+            ('weight-0/0-prediction.png', 'control.png', '73202431df92f695656139ee68c6fe53cbd7fcaa1e7e00b4055ef08d2449a86e'),
+            ('weight-0.05/0-prediction.png', 'surface.png', 'ec947c6f89708285861c84848d91e5ae7556349e184c2245908477125f45d4f8'),
+            ('weight-0.05/0-reference.png', 'reference.png', 'b46ad63e1aa0e6a854b33f13a9e94071d934d7e137dce02ab5629f9715eca619'),
+          ]
+          dst = Path('docs/surface-preview')
+          dst.mkdir(parents=True, exist_ok=True)
+          for source, name, expected in images:
+              p = Path('evidence') / source
+              data = p.read_bytes()
+              assert hashlib.sha256(data).hexdigest() == expected
+              assert data[:8] == b'\x89PNG\r\n\x1a\n' and struct.unpack('>II', data[16:24]) == (64, 64)
+              shutil.copyfile(p, dst / name)
+          PY
+      - name: Commit only the three verified PNGs
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          test "$(git ls-remote origin refs/heads/docs/visual-quality-roadmap | cut -f1)" = "$EXPECTED_SHA"
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add docs/surface-preview
+          if ! git diff --cached --quiet; then
+            git commit -m 'docs: archive validated 64-pixel field comparison without retouching'
+            git push origin HEAD:refs/heads/docs/visual-quality-roadmap
+          fi
