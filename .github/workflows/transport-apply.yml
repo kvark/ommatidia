@@ -17,6 +17,7 @@ jobs:
       RUST_BACKTRACE: '1'
     defaults:
       run:
+        shell: bash
         working-directory: ommatidia
     steps:
       - uses: actions/checkout@v4
