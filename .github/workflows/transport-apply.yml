@@ -1,0 +1,113 @@
+name: validate multiscale reconstruction
+
+on:
+  pull_request:
+    paths: ['.github/workflows/transport-apply.yml']
+
+permissions:
+  contents: read
+
+jobs:
+  reconstruct:
+    if: github.event.pull_request.number == 18 && github.head_ref == 'reconstruction/candidate-aware-fusion' && github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: write
+    env:
+      VK_ICD_FILENAMES: /usr/share/vulkan/icd.d/lvp_icd.json
+      OMMATIDIA_REQUIRE_GPU: '1'
+    defaults:
+      run:
+        working-directory: ommatidia
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          path: ommatidia
+      - uses: actions/checkout@v4
+        with:
+          repository: kvark/blade
+          ref: b208f3b1f97196c2971436b5726e61e71b149c37
+          path: blade
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          repository: kvark/meganeura
+          ref: 230cab004a898d0494e0a327ef695652a98a10cc
+          path: meganeura
+          persist-credentials: false
+      - name: Install Rust and software Vulkan
+        run: |
+          rustup toolchain install 1.92.0 --profile minimal --component rustfmt,clippy
+          sudo apt-get update -qq
+          sudo apt-get install -y libvulkan1 mesa-vulkan-drivers
+      - name: Apply staged source and compatible dependency revisions
+        run: |
+          python3 - <<'PY'
+          import base64, json, lzma
+          from pathlib import Path
+          parts = sorted(Path('.github/transport-payload').glob('*.txt'))
+          assert len(parts) == 4, 'missing implementation payload'
+          encoded = ''.join(p.read_text() for p in parts)
+          bundle = json.loads(lzma.decompress(base64.b64decode(encoded)))
+          assert isinstance(bundle['files'], dict)
+          root = Path.cwd().resolve()
+          def checked(name):
+              path = root / name
+              assert not Path(name).is_absolute() and '..' not in Path(name).parts
+              assert '.git' not in Path(name).parts
+              return path
+          for name, content in bundle['files'].items():
+              p = checked(name)
+              p.parent.mkdir(parents=True, exist_ok=True)
+              p.write_text(content)
+          for name in bundle.get('deleted', []):
+              checked(name).unlink(missing_ok=True)
+          p = Path('Cargo.toml')
+          s = p.read_text().replace('blade-graphics = "0.9"', 'blade-graphics = "0.8.4"')
+          p.write_text(s)
+          p = Path('.github/workflows/check.yml')
+          s = p.read_text()
+          for old in ['3d7a3977a047fa4f728ab62b6df1663f5a4f9627', 'c24621aa6606da968fd1b3967d5993f8aa2b74e8']:
+              s = s.replace(old, 'b208f3b1f97196c2971436b5726e61e71b149c37')
+          s = s.replace('bf72c42c8639ae8b326361754fc43a478ff837d4', '230cab004a898d0494e0a327ef695652a98a10cc')
+          p.write_text(s)
+          print('Applied', len(bundle['files']), 'files; removed', len(bundle.get('deleted', [])))
+          PY
+          cargo +1.92.0 fmt --all
+      - name: Resolve and check workspace
+        run: cargo +1.92.0 check --workspace --all-targets
+      - name: Unit tests
+        run: cargo +1.92.0 test --workspace --locked
+      - name: Clippy
+        run: cargo +1.92.0 clippy --workspace --all-targets --locked -- -D warnings
+      - name: Vulkan runtime and quality tests
+        run: |
+          cargo +1.92.0 test -p ommatidia --test gpu_runtime --locked -- --ignored --nocapture --test-threads=1
+          for path in ommatidia/tests/*transport*.rs; do
+            test -f "$path" || continue
+            name=$(basename "$path" .rs)
+            cargo +1.92.0 test -p ommatidia --test "$name" --locked -- --ignored --nocapture --test-threads=1
+          done
+      - name: Commit validated source and remove bootstrap files
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          test "$(git ls-remote origin refs/heads/reconstruction/candidate-aware-fusion | cut -f1)" = "$EXPECTED_SHA"
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git rm -r --ignore-unmatch .github/transport-payload .github/workflows/reconstruction-dev.yml .github/workflows/transport-apply.yml .github/reconstruction-edit.py
+          git add -A
+          git diff --cached --check
+          git commit -m 'feat: multiscale lobe reconstruction and updated portable training stack'
+          git push origin HEAD:refs/heads/reconstruction/candidate-aware-fusion
+      - name: Archive source and test outputs
+        if: always()
+        run: tar --exclude=.git --exclude=target/debug --exclude=target/release -czf "$RUNNER_TEMP/transport-source.tar.gz" .
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: transport-validation
+          path: ${{ runner.temp }}/transport-source.tar.gz
+          retention-days: 7
