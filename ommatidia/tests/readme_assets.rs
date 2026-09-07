@@ -71,3 +71,29 @@ fn archived_comparisons_share_the_output_extent_and_display_size() {
         check(relative);
     }
 }
+
+#[test]
+fn readme_keeps_decodable_comparisons_at_equal_display_extents() {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("..");
+    if !root.join("docs").exists() {
+        return;
+    }
+    let text = fs::read_to_string(root.join("README.md")).unwrap();
+    for (relative, extent) in [
+        ("docs/comparison-suite/local-light/bilinear.png", 256),
+        ("docs/comparison-suite/local-light/ommatidium.png", 256),
+        ("docs/comparison-suite/local-light/canonical.png", 256),
+        ("docs/surface-preview/control.png", 64),
+        ("docs/surface-preview/surface.png", 64),
+        ("docs/surface-preview/reference.png", 64),
+    ] {
+        let decoder = png::Decoder::new(BufReader::new(File::open(root.join(relative)).unwrap()));
+        let mut reader = decoder.read_info().unwrap();
+        assert_eq!((reader.info().width, reader.info().height), (extent, extent));
+        let mut bytes = vec![0; reader.output_buffer_size().unwrap()];
+        reader.next_frame(&mut bytes).unwrap();
+        let needle = format!(r#"<img src="{relative}""#);
+        let tag = text.split_once(&needle).unwrap().1.split_once('>').unwrap().0;
+        assert!(tag.contains(r#"width="256""#) && tag.contains(r#"height="256""#));
+    }
+}

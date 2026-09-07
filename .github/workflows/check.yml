@@ -154,12 +154,21 @@ jobs:
       - name: Train and reload a field on held-scene RGB
         working-directory: ommatidia
         run: bash benchmarks/field-lavapipe.sh
+      - name: Capture and train centre-ray surface labels
+        working-directory: ommatidia
+        env:
+          FIELD_IMAGE: '16'
+          FIELD_UPDATES: '8'
+          SURFACE_RESULTS: target/surface-smoke
+        run: bash benchmarks/surface-lavapipe.sh
       - name: Upload field quality evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: field-lavapipe-quality
-          path: ommatidia/target/field-quality
+          path: |
+            ommatidia/target/field-quality
+            ommatidia/target/surface-smoke
           retention-days: 7
       - name: Upload changed image
         if: failure()
