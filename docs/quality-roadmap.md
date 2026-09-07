@@ -1,108 +1,95 @@
 # Quality roadmap
 
-## Status after the September 7 architecture change
+Two quality tracks: realtime denoising and posed-RGB field reconstruction.
+Shared code is not yet successful weight transfer. Neither new path has a
+promoted checkpoint. Keep [representative images](../README.md) visible and
+[historical results](results-overview.md) separate from new measurements.
 
-The native multiscale denoiser, posed-RGB field, and incident-light supervision
-are implemented. Contract tests pass; neither new path has a promoted quality
-checkpoint. Keep realtime denoising and offline reconstruction as separate
-quality tracks. Shared code is not yet successful weight transfer.
+## Completed: surface targets and meaningful construction diagnostics
 
-The field's latest [paired ablation](results/incident-lavapipe-2026-09-07.md)
-used 16x16 images, a four-channel core and 128 updates. Incident supervision
-reduced total incident log-error 1.29%, but image PSNR fell 0.13 dB and indirect
-error rose 3.58%. Both outputs remain blurry. Keep that loss opt-in; diagnose
-geometry, sampling and learning capacity before adding another lighting loss.
+[Surface supervision](surface.md) now trains the existing field density through
+first-hit termination and certified misses. Exact emitter support, centre-ray
+RGB/depth agreement, zero/reassigned-RGB controls, geometry metrics, reload and
+GPU tests are implemented. All surface/light truth stays out of inference and
+sample placement; a hit does not label occluded space behind it empty.
 
-Historical measurements remain in [results-overview.md](results-overview.md).
-This roadmap replaces the older immediate experiment order; negative tests of
-old models are not blanket rejections of new architectures.
+The [64x64 paired construction run](results/surface-lavapipe-2026-09-07.md) used
+2048 updates, an 8-channel core and 32-wide query network. Surface weight 0.05
+raised validation-camera PSNR 17.15 -> 18.08 dB, reduced linear RGB MSE 55.8%,
+and depth MAE 48.9%. This is one construction scene, not an unseen-scene result.
+Fitting cameras still lack sharp boundaries, and the larger default is untested.
+Keep surface supervision opt-in while evaluating more scenes and schedules.
 
-## Field track: recover structure before richer transport
+A post-fit CPU diagnostic matched the saved GPU images. Denser inference alone
+(32 -> 128 samples) did not consistently help. A nondeployable true-surface
+oracle still had substantial appearance error. These point to unresolved
+sampling/appearance/correspondence, not a reason to add another lighting loss.
+The earlier [incident ablation](results/incident-lavapipe-2026-09-07.md) was mixed;
+incident supervision also remains opt-in.
 
-### 1. Establish a useful fit, not another tiny smoke result
+## Next field experiments
 
-Use a construction-only scene with visible emitters, occlusion and texture.
-Start at 64x64, then 128x128, with several overlapping posed source views. Run
-fixed-budget controls for a wider model and denser ray sampling, changing one
-factor at a time. Log image rays/pixels seen, steps, gradient norms and separate
-image/emission/incident losses. The 64-channel/128-hidden default has not yet
-been evaluated by the tiny ablations.
+**1. Reach a sharp fitting result.** Independently increase training exposure,
+core/query capacity and training sample density at 64 pixels before moving to
+128. Use stratified ray intervals or a properly evaluated coarse-to-fine sampler
+to avoid fitting only a fixed midpoint grid. Denser inference on a checkpoint
+trained with coarse quadrature is not that experiment. Never use target depth
+to position queries. Log ray/pixel exposure and separate loss terms.
 
-First require a sharp fit to fitting cameras. Then test distinct validation
-cameras. Shuffle/zero source images to check whether predictions actually depend
-on the scene evidence rather than a spatial average. If fitting fails, use an
-explicitly oracle-only true-surface rendering diagnostic to distinguish decoder,
-geometry and sampling failures. Never count that oracle as the RGB-only model.
-Do not inspect the next untouched audit set while making these decisions.
+**2. Preserve multiview evidence until correspondence is resolved.** Compare
+per-view visibility-weighted aggregation or a small depth-hypothesis volume
+against unconditional feature mean/variance pooling. Frustum membership is not
+occlusion visibility. Use exact-surface, fit-camera and RGB-permutation controls
+to separate geometry from appearance failure; no oracle is a deployable result.
+[MVSNeRF](https://apchenstu.github.io/mvsnerf/) is a correspondence-volume baseline;
+[DS-NeRF](https://www.cs.cmu.edu/~dsnerf/) is prior work on termination supervision.
 
-### 2. Supervise geometry without providing it at inference
+**3. Generalize, then enrich transport.** Evaluate independent geometry families,
+source/target camera layouts and lighting seeds. Re-run the incident-loss ablation
+only after recognizable structure and emitters emerge. Expand directional
+environments and material/lighting diversity. Arbitrary relighting still needs
+material/visibility/illumination factorization; an appearance field under captured
+illumination is not automatically a transport solver.
 
-Add training-only first-hit distance, hit/miss, and geometric-surface records to
-synthetic captures. Supervise the ray-termination distribution around the true
-surface, free space before it, and transmittance of miss rays. Do not mark
-occluded space behind the first hit as empty or assign an arbitrary ground-truth
-volume density to a triangle surface. Treat transparent materials separately.
+## Realtime: remove energy loss, then beat the fixed reconstruction
 
-Tie emitter supervision to occupied surface support as well as emitted radiance;
-an emission value at a point alone does not establish an opaque light source.
-Keep all labels out of runtime contexts and ray sampling. The inference contract
-remains posed RGB plus declared bounds. Measure depth, silhouette and emitter
-localization in addition to RGB, so incorrect geometry cannot hide behind colour.
-[DS-NeRF](https://www.cs.cmu.edu/~dsnerf/) is a primary reference for supervising
-ray termination rather than relying on RGB alone.
+The [expanded native run](results/transport-lavapipe-2026-09-07.md) completed on
+LavaPipe: eight fitting scenes, four fitting-disjoint sequences, 512 updates,
+1-spp input, 32x32 -> 64x64. Temporal error fell 37%, but energy ratio fell
+1.007 -> 0.969 and low-frequency PSNR fell 34.86 -> 32.45 dB. Do not promote it.
+The deterministic candidate mixture is the baseline here, not SVGF.
 
-### 3. Improve correspondence and ray coverage where controls justify it
+The physical/low-frequency/temporal loss scales were target-dependent relative
+weights. `--fixed-exposure-loss` isolates replacing only those scales, retaining
+the graph, initialization, primary compressed loss and confidence term. The
+[paired normalization recipe](../benchmarks/normalization-lavapipe.sh) uses fresh
+evaluation seeds rather than selecting on the inspected first study. This is
+an ablation, not a claim that every source of compressed-loss bias is removed.
 
-Compare denser uniform samples against coarse-to-fine sampling driven by predicted
-weights, never target depth. Test thin surfaces and small emitters explicitly.
-If useful surface structure still fails despite a good fitting-camera result,
-replace unconditional multiview mean/variance pooling with a small plane-swept
-correspondence volume or learned visibility-weighted aggregation. Camera-frustum
-membership is not occlusion visibility. Preserve per-view evidence until the
-model can resolve disagreements. [MVSNeRF](https://apchenstu.github.io/mvsnerf/)
-provides a concrete correspondence-volume baseline, not a novelty claim.
+After an energy-preserving result, isolate scale selection, confidence and BPTT.
+Include real meshes from initialization, longer trajectories, cuts, disocclusions,
+thin geometry and moving glossy reflections. Check expected previous-view depth
+under camera translation before loosening rejection thresholds. Require broad
+lighting and temporal gains without darkening, blur or ghosting.
 
-Only after this control recovers boundaries and sources should incident
-supervision be rerun against the same stronger model. Next extend directional
-environments and lighting diversity; arbitrary relighting additionally requires
-a material/visibility/illumination factorization, not just a radiance head.
+Compare with matched-input SVGF before DLSS Ray Reconstruction. ReSTIR+SVGF is
+a separate pipeline comparison. Software Vulkan is for quality and correctness;
+production-GPU speed and memory are separate later gates.
 
-## Realtime track: beat the deterministic reconstruction
+## Shared weights: only after useful standalone models
 
-Do not let field experiments displace the original denoising goal. Run the new
-native path on fresh matched-depth captures, comparing its fixed candidate
-mixture against learned multiscale lobe selection and confidence/BPTT ablations.
-Use identical noisy frames, scene families and ray budgets. The
-[existing LavaPipe recipe](../benchmarks/transport-lavapipe.sh) is a starting
-harness, not a broad quality study.
+Compare independent training, field-pretrained initialization and joint training
+at controlled budgets. Keep supplied realtime geometry authoritative. Group all
+views/lighting variants of a geometry into one split; changed illumination must
+not be forced into an invariant radiance representation. Retain shared weights
+only if both task-specific audits improve without negative transfer. OLATverse
+and blade-volume integration are not prerequisites.
 
-Include real meshes from initialization and longer causal sequences with camera,
-object and light motion, cuts, disocclusions, thin geometry and glossy reflections.
-Check expected previous-view depth under camera translation before tuning
-rejection thresholds. Preserve actual linear HDR energy, exact albedo/emission
-and separate lobe histories. Require gains in broad lighting error and temporal
-stability without ghosting, darkening or lost detail.
+## Evidence rules
 
-Compare with matched-input SVGF before DLSS Ray Reconstruction. ReSTIR+SVGF is a
-separate pipeline control, not a same-input denoiser comparison. Use LavaPipe to
-render, train and judge quality; production GPU timing is a later, separate gate.
-
-## Shared-core experiment comes after useful standalone models
-
-At equal architecture and budget, compare independent training, field-pretrained
-core initialization, and joint training. Keep geometry/material inference in the
-field adapter and supplied surface data authoritative in the realtime path.
-Light changes should preserve geometry, not force radiance features to be
-invariant. Group all views and lighting variants of a geometry into one split.
-Retain shared weights only if fresh task-specific evaluations improve without
-negative transfer. OLATverse and blade-volume integration are not prerequisites.
-
-## Evidence for every quality decision
-
-Use fitting data for optimization, validation for choices, and fresh scene/family
-holdouts for the final audit. Retire an opened audit set into development rather
-than repeatedly calling it untouched. Measure reference convergence separately.
-Publish full frames, fixed crops, motion sequences, per-scene tails, named RGB
-transforms, linear energy and structural/temporal metrics beside means. Promote
-only after repeat seeds and a larger independent scene/camera/light evaluation;
-no LavaPipe timings or tiny smoke gains are product claims.
+Construction data diagnoses implementation; validation selects designs; fresh
+family-disjoint audits test final claims. Retire an opened audit into development.
+Report full frames, depth/opacity, energy, detail, temporal error and per-case tails
+alongside means. Name the RGB transform and block extent; quantify reference
+noise independently. Checkpoints must reload before scoring. Repeat optimization
+seeds and use larger independent scene/camera/light sets before promotion.
