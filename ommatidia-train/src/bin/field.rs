@@ -1,0 +1,367 @@
+//! Offline image-conditioned field experiment; no blade-volume integration.
+use ommatidia::{
+    dataset::{Plane, Reader},
+    field::{
+        self, Config, Manifest, Observations, View,
+        data::{self, Prepared, RenderShape, Targets},
+        graph,
+    },
+    rng::Rng,
+};
+use std::{
+    io::Write,
+    path::{Path, PathBuf},
+    sync::Arc,
+};
+type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
+struct Example {
+    observations: Observations,
+    train: Vec<View>,
+    held: View,
+    record: field::SceneRecord,
+}
+fn load(path: &Path, c: &Config) -> Result<Vec<Example>> {
+    let manifest: Manifest =
+        serde_json::from_slice(&std::fs::read(path.with_extension("scene.json"))?)?;
+    let mut reader = Reader::open(path)?;
+    manifest.validate(reader.len())?;
+    let layout = *reader.layout();
+    if manifest.extent != c.extent || [layout.hr_width(), layout.hr_height()] != c.extent {
+        return Err(
+            "capture/config extent mismatch; choose --image to match the HR capture".into(),
+        );
+    }
+    let mut examples = Vec::new();
+    for (scene, record) in manifest.scenes.into_iter().enumerate() {
+        let records: Vec<_> = manifest
+            .records
+            .iter()
+            .filter(|r| r.scene == scene)
+            .collect();
+        if records.len() < c.views + 2 {
+            return Err("need context views, a fitting camera and a held camera per scene".into());
+        }
+        let mut views = Vec::new();
+        for r in records {
+            let sample = reader.sample(r.sample)?;
+            let n = layout.hr_texels();
+            let mut rgb = vec![0.0; 3 * n];
+            for channel in 0..3 {
+                let plane = sample
+                    .hr_channel(&layout, Plane::Color, channel)
+                    .ok_or("missing HR RGB")?;
+                for i in 0..n {
+                    rgb[3 * i + channel] = plane[i].to_f32();
+                }
+            }
+            if rgb.iter().any(|v| !v.is_finite() || *v < 0.0) {
+                return Err("invalid scene-linear RGB target".into());
+            }
+            // No other Sample plane is read by this path.
+            views.push(View {
+                camera: r.camera,
+                rgb,
+            });
+        }
+        let held = views.pop().unwrap();
+        let n = views.len();
+        let context_indices: Vec<_> = (0..c.views).map(|v| v * n / c.views).collect();
+        let context: Vec<_> = context_indices.iter().map(|i| views[*i].clone()).collect();
+        let train: Vec<_> = views
+            .into_iter()
+            .enumerate()
+            .filter(|(i, _)| !context_indices.contains(i))
+            .map(|(_, v)| v)
+            .collect();
+        if context
+            .iter()
+            .any(|v| v.camera.origin == held.camera.origin)
+            || train.is_empty()
+        {
+            return Err(
+                "held camera duplicates context or no fitting views remain; use --field-views"
+                    .into(),
+            );
+        }
+        let observations = Observations {
+            bounds: record.bounds,
+            views: context,
+        };
+        observations.validate(c)?;
+        examples.push(Example {
+            observations,
+            train,
+            held,
+            record,
+        });
+    }
+    Ok(examples)
+}
+fn copy(source: &meganeura::Session, dest: &mut meganeura::Session, model: &graph::Network) {
+    for p in &model.params {
+        let mut data = vec![0.0; p.len];
+        source.read_param(&p.name, &mut data);
+        dest.set_parameter(&p.name, &data);
+    }
+}
+fn render(
+    session: &mut meganeura::Session,
+    c: &Config,
+    shape: RenderShape,
+    example: &Example,
+) -> Result<Vec<f32>> {
+    let [w, h] = c.extent;
+    let n = (w * h) as usize;
+    let mut result = Vec::new();
+    for start in (0..n).step_by(shape.rays) {
+        let rays: Vec<_> = (0..shape.rays)
+            .map(|i| {
+                let p = (start + i).min(n - 1);
+                example
+                    .held
+                    .camera
+                    .ray([(p % w as usize) as f32, (p / w as usize) as f32], c.extent)
+            })
+            .collect();
+        let (mut queries, deltas) =
+            data::ray_queries(example.observations.bounds, &rays, shape.steps)?;
+        queries.extend((0..shape.probes).map(|_| field::Query {
+            position: example.observations.bounds.center,
+            direction: [0.0, 0.0, 1.0],
+        }));
+        Prepared::new(&example.observations, c, &queries)?.feed(session);
+        session.set_input("ray.deltas", &deltas);
+        session.step();
+        session.wait();
+        let pixels = session.read_output(shape.rays * 3);
+        if pixels.iter().any(|v| !v.is_finite()) {
+            return Err("non-finite field render".into());
+        }
+        result.extend_from_slice(&pixels[..3 * (n - start).min(shape.rays)]);
+    }
+    Ok(result)
+}
+fn score(a: &[f32], b: &[f32]) -> serde_json::Value {
+    let log_mse = a
+        .iter()
+        .zip(b)
+        .map(|(a, b)| (a.ln_1p() - b.ln_1p()).powi(2) as f64)
+        .sum::<f64>()
+        / a.len() as f64;
+    let mse = a
+        .iter()
+        .zip(b)
+        .map(|(a, b)| (a - b).powi(2) as f64)
+        .sum::<f64>()
+        / a.len() as f64;
+    serde_json::json!({"log1p_mse":log_mse,"linear_mse":mse,"compressed_psnr":-10.0*(ommatidia::metrics::error(a,b) as f64).max(1e-20).log10()})
+}
+fn png(path: &Path, rgb: &[f32], extent: [u32; 2]) -> Result<()> {
+    let bytes: Vec<_> = rgb
+        .iter()
+        .map(|v| {
+            let x = v.max(0.0) / (1.0 + v.max(0.0));
+            let x = if x <= 0.0031308 {
+                12.92 * x
+            } else {
+                1.055 * x.powf(1.0 / 2.4) - 0.055
+            };
+            (255.0 * x.clamp(0.0, 1.0)).round() as u8
+        })
+        .collect();
+    let mut e = png::Encoder::new(std::fs::File::create(path)?, extent[0], extent[1]);
+    e.set_color(png::ColorType::Rgb);
+    e.set_depth(png::BitDepth::Eight);
+    e.write_header()?.write_image_data(&bytes)?;
+    Ok(())
+}
+fn main() -> Result<()> {
+    env_logger::init();
+    let mut c = Config::default();
+    let mut data_files = Vec::<PathBuf>::new();
+    let mut eval = None;
+    let mut out = PathBuf::from("target/field");
+    let mut steps = 256;
+    let mut seed = 7u64;
+    let mut shape = RenderShape {
+        rays: 16,
+        steps: 32,
+        probes: 16,
+    };
+    let mut rate = 1e-3;
+    let mut argv = std::env::args().skip(1);
+    while let Some(flag) = argv.next() {
+        if flag == "--help" || flag == "-h" {
+            println!(
+                "field --data CAPTURE.omd [--data OTHER.omd] [--eval-data UNSEEN.omd]\n  --out DIR --steps N --seed N --image N --views N --channels N --hidden N\n  --rays N --samples N --probes N --rate F\nPosed RGB only. Final camera is held; light labels supervise separate heads.\nOutput: weights/config, RGB contexts, fixed-budget held-camera quality, PNGs."
+            );
+            return Ok(());
+        }
+        let v = argv.next().ok_or(format!("{flag} requires a value"))?;
+        match flag.as_str() {
+            "--data" => data_files.push(v.into()),
+            "--eval-data" => eval = Some(PathBuf::from(v)),
+            "--out" => out = v.into(),
+            "--steps" => steps = v.parse()?,
+            "--seed" => seed = v.parse()?,
+            "--image" => {
+                let n = v.parse()?;
+                c.extent = [n, n];
+            }
+            "--views" => c.views = v.parse()?,
+            "--channels" => c.channels = v.parse()?,
+            "--hidden" => c.hidden = v.parse()?,
+            "--rays" => shape.rays = v.parse()?,
+            "--samples" => shape.steps = v.parse()?,
+            "--probes" => shape.probes = v.parse()?,
+            "--rate" => rate = v.parse()?,
+            _ => return Err(format!("unknown option {flag}").into()),
+        }
+    }
+    c.validate()?;
+    shape.queries()?;
+    if data_files.is_empty() || steps == 0 || !f32::is_finite(rate) || rate <= 0.0 {
+        return Err("need data, positive updates and finite positive rate".into());
+    }
+    let mut train = Vec::new();
+    for path in &data_files {
+        train.extend(load(path, &c)?);
+    }
+    if train.is_empty() {
+        return Err("empty corpus".into());
+    }
+    let held = eval.as_ref().map(|p| load(p, &c)).transpose()?;
+    if held.as_ref().is_some_and(|held| {
+        held.iter().any(|a| {
+            train
+                .iter()
+                .any(|b| a.record.scene_seed == b.record.scene_seed)
+        })
+    }) {
+        return Err(
+            "--eval-data must contain unseen scene seeds, including across lighting variants"
+                .into(),
+        );
+    }
+    std::fs::create_dir_all(&out)?;
+    let context = ommatidia::gpu::create_context(None, false);
+    let backend = context.device_information().device_name.clone();
+    println!("field backend {backend}; quality only");
+    let model = graph::build_render(&c, shape, true)?;
+    let mut session = ommatidia::gpu::training_session(&model.graph, Arc::clone(&context));
+    model.initialize(&mut session, seed);
+    let inference = graph::build_render(&c, shape, false)?;
+    let mut baseline = ommatidia::gpu::inference_session(&inference.graph, Arc::clone(&context));
+    copy(&session, &mut baseline, &inference);
+    let mut rng = Rng::new(seed);
+    let mut first = 0.0;
+    let mut last = 0.0;
+    let mut log = std::fs::File::create(out.join("loss.csv"))?;
+    writeln!(log, "step,loss")?;
+    for step in 0..steps {
+        let example = &train[step % train.len()];
+        let target = &example.train[rng.below(example.train.len() as u32) as usize];
+        let n = (c.extent[0] * c.extent[1]) as usize;
+        let pixels: Vec<_> = (0..shape.rays)
+            .map(|_| rng.below(n as u32) as usize)
+            .collect();
+        let rays: Vec<_> = pixels
+            .iter()
+            .map(|p| {
+                target.camera.ray(
+                    [
+                        (p % c.extent[0] as usize) as f32,
+                        (p / c.extent[0] as usize) as f32,
+                    ],
+                    c.extent,
+                )
+            })
+            .collect();
+        let (mut queries, deltas) =
+            data::ray_queries(example.observations.bounds, &rays, shape.steps)?;
+        let (emission, emission_mask) = data::append_probes(
+            &mut queries,
+            &example.record.lighting,
+            shape.probes,
+            seed + step as u64,
+        );
+        let targets = Targets {
+            rgb: pixels
+                .iter()
+                .flat_map(|p| target.rgb[3 * p..3 * p + 3].iter().copied())
+                .collect(),
+            emission,
+            emission_mask,
+            environment: example.record.lighting.environment,
+            environment_mask: [1.0; 3],
+        };
+        Prepared::new(&example.observations, &c, &queries)?.feed(&mut session);
+        session.set_input("ray.deltas", &deltas);
+        targets.feed(&mut session);
+        session.set_adam(rate, 0.9, 0.999, 1e-8);
+        session.step();
+        session.wait();
+        last = session.read_loss();
+        if !last.is_finite() {
+            return Err(format!("non-finite loss at update {step}").into());
+        }
+        if step == 0 {
+            first = last;
+        }
+        writeln!(log, "{step},{last}")?;
+        if step % 16 == 0 {
+            println!("field update {step}/{steps}: {last:.6}");
+        }
+    }
+    session.save_checkpoint(&out.join("model.safetensors"))?;
+    std::fs::write(out.join("model.field.json"), serde_json::to_vec_pretty(&c)?)?;
+    // Reload before any held-camera evaluation. No metric-based checkpoint selection.
+    let mut learned = ommatidia::gpu::inference_session(&inference.graph, context);
+    learned.load_checkpoint(&out.join("model.safetensors"))?;
+    let examples = held.as_ref().unwrap_or(&train);
+    let mut scores = Vec::new();
+    for (i, example) in examples.iter().enumerate() {
+        let initial = render(&mut baseline, &c, shape, example)?;
+        let prediction = render(&mut learned, &c, shape, example)?;
+        let mut mean = [0.0f32; 3];
+        let mut count = 0;
+        for view in &example.observations.views {
+            for p in view.rgb.chunks_exact(3) {
+                for c in 0..3 {
+                    mean[c] += p[c];
+                }
+                count += 1;
+            }
+        }
+        mean.iter_mut().for_each(|v| *v /= count as f32);
+        let n = example.held.rgb.len() / 3;
+        let constant: Vec<_> = (0..n).flat_map(|_| mean).collect();
+        png(
+            &out.join(format!("{i}-reference.png")),
+            &example.held.rgb,
+            c.extent,
+        )?;
+        png(
+            &out.join(format!("{i}-prediction.png")),
+            &prediction,
+            c.extent,
+        )?;
+        png(&out.join(format!("{i}-initial.png")), &initial, c.extent)?;
+        // Reusable inference asset: RGB and poses, explicitly no training lights.
+        std::fs::write(
+            out.join(format!("{i}-context.json")),
+            serde_json::to_vec(&example.observations)?,
+        )?;
+        scores.push(serde_json::json!({"scene_seed":example.record.scene_seed,"learned":score(&prediction,&example.held.rgb),
+            "untrained":score(&initial,&example.held.rgb),"context_mean":score(&constant,&example.held.rgb),"black":score(&vec![0.0;3*n],&example.held.rgb)}));
+    }
+    let report = serde_json::json!({"backend":backend,"quality_only":true,"steps":steps,"seed":seed,"first_loss":first,"last_loss":last,
+        "rays":shape.rays,"samples":shape.steps,"probes":shape.probes,"training_files":data_files,
+        "evaluation":if held.is_some(){"unseen scenes and held cameras"}else{"held cameras of fitting scenes"},"scores":scores});
+    std::fs::write(
+        out.join("quality.json"),
+        serde_json::to_vec_pretty(&report)?,
+    )?;
+    println!("{}", serde_json::to_string_pretty(&report)?);
+    Ok(())
+}

@@ -9,6 +9,7 @@
 //! the canonical path tracer at high resolution.
 
 mod catalog;
+mod field_capture;
 mod gbuffer;
 mod radiance;
 mod render;
@@ -23,6 +24,9 @@ use ommatidia::dataset::{self, InputSource, Layout, Plane, PlaneSet, Sample};
 use ommatidia::rng::Rng;
 
 struct Args {
+    field_views: usize,
+    scene_labels: bool,
+    lighting_seed: Option<u64>,
     out: PathBuf,
     samples: usize,
     lr_width: u32,
@@ -66,6 +70,9 @@ struct Args {
 impl Default for Args {
     fn default() -> Self {
         Self {
+            field_views: 0,
+            scene_labels: false,
+            lighting_seed: None,
             out: PathBuf::from("data/train.omd"),
             samples: 64,
             lr_width: 128,
@@ -113,6 +120,9 @@ generate an ommatidia training set
 
 usage: ommatidia-data [options]
 
+  --field-views N           static posed-RGB orbit; write target-only .scene.json
+  --scene-labels            annotate procedural static scenes and centered cameras
+  --lighting-seed N         vary emitter RGB while preserving geometry/cameras
   --out PATH                where to write the dataset  [data/train.omd]
   --samples N               number of scene/camera pairs  [64]
   --lr WxH                  low resolution extent  [128x128]
@@ -127,6 +137,9 @@ usage: ommatidia-data [options]
                             for an independent finite-sample noise audit [0]
   --input-frames N          sparse path-traced input samples per pixel [1]
   --sequence-frames N       consecutive frames per scene [1]
+  --field-views N           static posed RGB orbit for field reconstruction, N>=3
+  --scene-labels            export static procedural cameras and emitter labels
+  --lighting-seed N         vary only source emission; requires scene labels
   --camera-motion F         world-X camera translation per sequence frame [0]
   --random-camera-motion F  deterministic curved camera motion, with nominal
                             translation F per frame [0]
@@ -196,6 +209,19 @@ fn parse_args() -> Result<Args, String> {
             "-h" | "--help" => {
                 print!("{USAGE}");
                 std::process::exit(0);
+            }
+            "--field-views" => {
+                args.field_views = value()?
+                    .parse()
+                    .map_err(|e| format!("--field-views: {e}"))?
+            }
+            "--scene-labels" => args.scene_labels = true,
+            "--lighting-seed" => {
+                args.lighting_seed = Some(
+                    value()?
+                        .parse()
+                        .map_err(|e| format!("--lighting-seed: {e}"))?,
+                )
             }
             "--out" => args.out = PathBuf::from(value()?),
             "--samples" => {
@@ -314,8 +340,35 @@ fn parse_args() -> Result<Args, String> {
             other => return Err(format!("unknown option {other:?}\n\n{USAGE}")),
         }
     }
-    if args.scale < 2 {
-        return Err(format!("--scale must be at least 2, got {}", args.scale));
+    if args.field_views != 0 {
+        if args.field_views < 3 || args.field_views > 256 {
+            return Err("--field-views must be 3..256".into());
+        }
+        args.sequence_frames = args.field_views;
+        args.scene_labels = true;
+        args.gbuffer = false;
+        args.hr_gbuffer = false;
+        args.split_radiance = false;
+    }
+    if args.scale == 0 || (args.scale < 2 && !args.scene_labels) {
+        return Err("scale must be >=2, or >=1 for labelled static captures".into());
+    }
+    if args.scene_labels
+        && (args.catalog.is_some()
+            || args.reference_from.is_some()
+            || args.object_motion != 0.0
+            || args.light_motion != 0.0
+            || args.projection_jitter
+            || args.camera_motion != 0.0
+            || args.random_camera_motion != 0.0
+            || args.restir_input
+            || args.svgf_input
+            || args.checkpoint.is_some())
+    {
+        return Err("scene labels currently require procedural static scenes, centered cameras and rendered path references; use --field-views for camera variation".into());
+    }
+    if args.lighting_seed.is_some() && !args.scene_labels {
+        return Err("--lighting-seed requires --scene-labels or --field-views".into());
     }
     if args.samples == 0 {
         return Err("--samples must be positive".into());
@@ -1068,6 +1121,14 @@ fn main() {
 
     let palette = TexturePalette::bake(&harness, args.seed);
 
+    let mut field_manifest = ommatidia::field::Manifest {
+        version: 1,
+        rgb_space: "scene-linear-renderer-units".into(),
+        static_scene: true,
+        extent: [hr_size.width, hr_size.height],
+        scenes: Vec::new(),
+        records: Vec::new(),
+    };
     let mut active_sequence: Option<ActiveSequence> = None;
     for index in 0..record_count {
         let scene_index = index / args.sequence_frames;
@@ -1138,10 +1199,21 @@ fn main() {
                 moving_start = objects.len();
                 record.kind = catalog::Kind::Interior;
             } else {
-                let geometries = scene::build(
+                let mut geometries = scene::build(
                     &scene_config,
                     args.seed ^ (scene_index as u64).wrapping_mul(0x9E37_79B9),
                 );
+                let scene_seed = args.seed ^ (scene_index as u64).wrapping_mul(0x9E37_79B9);
+                let lighting_seed = args.lighting_seed.map(|seed| seed ^ scene_seed);
+                field_capture::relight(&mut geometries, lighting_seed);
+                if args.scene_labels {
+                    field_manifest.scenes.push(field_capture::labels(
+                        &geometries,
+                        scene_seed,
+                        lighting_seed,
+                        scene_config.spread,
+                    ));
+                }
                 let (lights, geometries): (Vec<_>, Vec<_>) =
                     geometries.into_iter().partition(|s| {
                         args.light_motion != 0.0
@@ -1210,7 +1282,11 @@ fn main() {
         }
         let sequence = active_sequence.as_mut().expect("sequence was initialized");
         sequence.animate_objects(sequence_frame, args.object_motion, args.light_motion);
-        let mut camera = sequence.base_camera;
+        let mut camera = if args.field_views != 0 {
+            field_capture::orbit(&scene_config, sequence_frame, args.field_views)
+        } else {
+            sequence.base_camera
+        };
         camera.pos.x += args.camera_motion * sequence_frame as f32;
         let random_offset = scene::camera_motion(
             sequence.motion_seed,
@@ -1231,6 +1307,13 @@ fn main() {
             camera
         };
 
+        if args.scene_labels {
+            field_manifest.records.push(ommatidia::field::ViewRecord {
+                sample: index,
+                scene: scene_index,
+                camera: field_capture::camera(camera),
+            });
+        }
         let input_pass = if args.svgf_input || args.restir_input {
             render::Pass::RealTime
         } else {
@@ -1475,6 +1558,16 @@ fn main() {
     }
 
     let count = writer.finish().expect("cannot finish the dataset");
+    if args.scene_labels {
+        field_manifest
+            .validate(count as usize)
+            .expect("invalid scene labels");
+        std::fs::write(
+            args.out.with_extension("scene.json"),
+            serde_json::to_vec_pretty(&field_manifest).unwrap(),
+        )
+        .expect("cannot write scene labels");
+    }
     // The legacy OMD binary does not store transport depth. Keep an explicit
     // capture sidecar; copied references have unknown depth unless audited,
     // so never label them matched merely from today's command-line defaults.
