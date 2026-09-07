@@ -1,0 +1,25 @@
+name: review source snapshot
+
+on:
+  pull_request:
+    branches: [main]
+    paths: [".github/workflows/review-snapshot.yml"]
+
+permissions:
+  contents: read
+
+jobs:
+  snapshot:
+    if: github.head_ref == 'reconstruction/candidate-aware-fusion'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Archive reviewed source without Git metadata or credentials
+        run: tar --exclude=.git -czf "$RUNNER_TEMP/review-source.tar.gz" .
+      - uses: actions/upload-artifact@v4
+        with:
+          name: reconstruction-review-source
+          path: ${{ runner.temp }}/review-source.tar.gz
+          retention-days: 1
