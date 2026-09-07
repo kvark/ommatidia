@@ -11,7 +11,7 @@ The realtime path does not infer geometry it already knows. The field path
 receives no G-buffer or velocity and is allowed a wider/slower network. Shared
 code does not yet imply shared trained weights or proven transfer. Neither path
 is a demonstrated DLSS replacement. See [field.md](field.md) for the offline
-experiment and [shared-transport.md](shared-transport.md) for the research question.
+experiment and [quality-roadmap.md](quality-roadmap.md) for the research question.
 
 `transport::Frame` and `field::Observations` contain observations only. Ground
 truth uses separate `Target`/`Targets` types. State and rendered values remain

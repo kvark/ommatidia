@@ -1,146 +1,108 @@
 # Quality roadmap
 
-> Update: the [September reconstruction review](reconstruction-review-2026-09-06.md)
-> supersedes the immediate experiment order below; measured historical results remain unchanged.
+## Status after the September 7 architecture change
 
-The objective is not merely to beat Open Image Denoise on one average metric.
-Ommatidium should look at least as clean, retain its present edge and dark-region
-advantages, and remain temporally stable on scenes that were not used to make
-architecture decisions.
+The native multiscale denoiser, posed-RGB field, and incident-light supervision
+are implemented. Contract tests pass; neither new path has a promoted quality
+checkpoint. Keep realtime denoising and offline reconstruction as separate
+quality tracks. Shared code is not yet successful weight transfer.
 
-## Where the gap is
+The field's latest [paired ablation](results/incident-lavapipe-2026-09-07.md)
+used 16x16 images, a four-channel core and 128 updates. Incident supervision
+reduced total incident log-error 1.29%, but image PSNR fell 0.13 dB and indirect
+error rose 3.58%. Both outputs remain blurry. Keep that loss opt-in; diagnose
+geometry, sampling and learning capacity before adding another lighting loss.
 
-On the fixed six-scene spatial suite, Ommatidium currently averages 29.255 dB
-PSNR versus OIDN High's 28.047 dB and retains 77% of reference detail versus
-49%. OIDN nevertheless wins SSIM, 0.8731 to 0.8409, and looks smoother.
-Ommatidium's low-frequency PSNR lead is only 0.36 dB and its mean-luminance
-ratio is 0.935 rather than OIDN's 0.995. Ordinary PSNR rewards the sharp local
-result while underweighting exactly the broad mottling and energy loss that
-remain obvious in the images.
+Historical measurements remain in [results-overview.md](results-overview.md).
+This roadmap replaces the older immediate experiment order; negative tests of
+old models are not blanket rejections of new architectures.
 
-The temporal split-radiance experiments identify a concrete next target. On a
-32-scene audit, choosing among six existing geometry-aware filter scales per
-radiance lobe and 8×8 block raises the fixed estimator from 31.11 to 32.82 dB,
-SSIM from 0.9349 to 0.9441, and low-frequency PSNR from 35.33 to 38.68 dB,
-without losing mean energy. That reference-derived oracle is not deployable,
-but it shows that better scale selection can remove substantially more broad
-noise without a larger backbone or new general-purpose Meganeura operations.
+## Field track: recover structure before richer transport
 
-The September DLSS 4/5 audit changes the immediate order without changing the
-goal. Exact moving/jittered captures, reset-frame sampling, a linear-radiance
-kernel, and a validity-aware mix with the deterministic guide now form one
-native-compatible recurrent checkpoint. Its first 8k control improves
-per-frame PSNR, reset quality, broad temporal fluctuation, and mean energy on
-both the selector and an untouched audit. It still loses about 0.4 dB of
-fine-grained temporal error to its guide and visibly smooths tight glossy
-structure. This is progress, not a release-quality endpoint.
+### 1. Establish a useful fit, not another tiny smoke result
 
-After exact-motion retraining that fine-temporal deficit narrows to 0.17 dB,
-but a stricter real-mesh audit reverses the spatial result: on eight held-out
-ABO families the network loses 0.53 dB to its own guide. Balancing 24 disjoint
-ABO families into a short continuation does not improve that holdout and hurts
-temporal quality on both domains. The rollout corpus must include real geometry
-from the start; a procedural selector plus post-hoc adaptation is not a release
-gate.
+Use a construction-only scene with visible emitters, occlusion and texture.
+Start at 64x64, then 128x128, with several overlapping posed source views. Run
+fixed-budget controls for a wider model and denser ray sampling, changing one
+factor at a time. Log image rays/pixels seen, steps, gradient norms and separate
+image/emission/incident losses. The 64-channel/128-hidden default has not yet
+been evaluated by the tiny ablations.
 
-The next gates are consequently:
+First require a sharp fit to fitting cameras. Then test distinct validation
+cameras. Shuffle/zero source images to check whether predictions actually depend
+on the scene evidence rather than a spatial average. If fitting fails, use an
+explicitly oracle-only true-surface rendering diagnostic to distinguish decoder,
+geometry and sampling failures. Never count that oracle as the RGB-only model.
+Do not inspect the next untouched audit set while making these decisions.
 
-1. measure each reference set against an independently rendered path range and
-   stop treating residual reference grain as model error;
-2. train through rolled-out state and add explicit reactive/disocclusion
-   evidence before reintroducing a temporal loss—the one-step detached teacher
-   currently rewards a stable dark answer;
-3. publish quality against the same total frame time spent on additional paths,
-   not only against one fixed 1-spp input; and
-4. only then compare a coarse current-query/history-key attention block with a
-   gated convolutional state at matched complete-frame latency and memory.
+### 2. Supervise geometry without providing it at inference
 
-The reasoning and rejected controls are in
-[`dlss-4-5-lessons.md`](dlss-4-5-lessons.md) and the
-[`controlled result`](results/dlss-4-5-probes-2026-09-04.md).
+Add training-only first-hit distance, hit/miss, and geometric-surface records to
+synthetic captures. Supervise the ray-termination distribution around the true
+surface, free space before it, and transmittance of miss rays. Do not mark
+occluded space behind the first hit as empty or assign an arbitrary ground-truth
+volume density to a triangle surface. Treat transparent materials separately.
 
-The first half of gate 2 is now measured rather than assumed. At equal frame
-exposure, feeding the detached teacher causally through complete four-frame
-sequences is worse than one-pair training on every spatial and temporal metric,
-and a 0.1 temporal term makes it worse again. Both checkpoints are rejected;
-the reusable rollout path remains for the reactive/confidence objective that
-the result shows is missing. See the
-[`causal rollout control`](results/causal-rollout-2026-09-04.md).
-Training on procedural and real meshes together from initialization improves
-SSIM and fine temporal error, but still trades away procedural low-frequency
-fidelity and energy even after history calibration. It is another useful
-Pareto point, not the clear visual win required for promotion.
+Tie emitter supervision to occupied surface support as well as emitted radiance;
+an emission value at a point alone does not establish an opaque light source.
+Keep all labels out of runtime contexts and ray sampling. The inference contract
+remains posed RGB plus declared bounds. Measure depth, silhouette and emitter
+localization in addition to RGB, so incorrect geometry cannot hide behind colour.
+[DS-NeRF](https://www.cs.cmu.edu/~dsnerf/) is a primary reference for supervising
+ray termination rather than relying on RGB alone.
 
-## Ordered experiments
+### 3. Improve correspondence and ray coverage where controls justify it
 
-1. **Close the scale-selection investigation.** A pooled CPU selector recovered
-   only 26–29% of the held-out PSNR and low-frequency oracle gaps. A spatial
-   U-Net trained through the composed image then scored 31.01 dB versus 31.10
-   dB for the fixed estimator; low-frequency supervision and smoother block
-   decisions did not reverse the result. Both implementations were removed.
-   The [`pooled`](results/learned-lobe-selector-2026-08-24.md) and
-   [`spatial`](results/spatial-lobe-mixture-2026-08-24.md) reports rule out
-   investing native runtime complexity in filter-choice prediction with the
-   present data and features.
+Compare denser uniform samples against coarse-to-fine sampling driven by predicted
+weights, never target depth. Test thin surfaces and small emitters explicitly.
+If useful surface structure still fails despite a good fitting-camera result,
+replace unconditional multiview mean/variance pooling with a small plane-swept
+correspondence volume or learned visibility-weighted aggregation. Camera-frustum
+membership is not occlusion visibility. Preserve per-view evidence until the
+model can resolve disagreements. [MVSNeRF](https://apchenstu.github.io/mvsnerf/)
+provides a concrete correspondence-volume baseline, not a novelty claim.
 
-2. **Broaden the clean corpus and predict clean lobes directly.** Add
-   scene-held-out captures spanning hard and soft shadows, small emissives,
-   interiors, indirect fill, HDR highlights,
-   glossy and rough materials, textured geometry, thin silhouettes, and
-   animated occlusion. Keep independent high-sample references and measure
-   their own convergence. Procedural variants of the same scene family must
-   not cross the train/validation boundary. A first 24-scene direct-lobe probe
-   improved error, detail, and temporal metrics on two fresh seed families but
-   lost SSIM on the untouched audit; the
-   [`result`](results/direct-lobe-residual-2026-08-24.md) was removed rather
-   than promoted.
-   The generator now loads a glTF catalog (ABO objects, HSSD interiors, Aria
-   DTC scans) into the existing procedural room, or as an interior, and records
-   asset ids in a sidecar so a hold-out cannot leak. Fetch, capture, and the
-   `--eval-data` trainer switch are in [`catalog.md`](catalog.md). A B8
-   residual trained on 24 held-out ABO objects
-   ([`catalog-b8-split`](results/catalog-b8-split-2026-08-26.md)) peaked at
-   +0.20 dB / 0.9156 SSIM versus the estimator's 32.91 dB / 0.9507, then
-   overfit. Balanced procedural/ABO training plus an output-detail-preserving
-   low-resolution head now clears every metric on a fresh full-frame audit
-   when calibrated to a conservative 20% correction: +0.31 dB PSNR,
-   +0.0019 SSIM, and +0.46 dB low-frequency PSNR
-   ([`result`](results/balanced-low-resolution-2026-08-27.md)). This is a valid
-   step, not the visual endpoint; it remains offline until the gain is obvious
-   in full frames. The generator now also composes furnished HSSD scenes and
-   rejects cross-split mesh reuse. Retain the fixed estimator as the stable
-   input and baseline.
+Only after this control recovers boundaries and sources should incident
+supervision be rerun against the same stronger model. Next extend directional
+environments and lighting diversity; arbitrary relighting additionally requires
+a material/visibility/illumination factorization, not just a radiance head.
 
-3. **Train reconstruction and history together.** Feed new sparse samples,
-   reprojected history, validity/disocclusion information, and the learned
-   lobe estimate into a sequence-trained residual. Test camera motion, object
-   motion, exposure changes, cuts, and newly revealed surfaces. No
-   reference-derived selector labels may enter the deployed recurrent state.
+## Realtime track: beat the deterministic reconstruction
 
-4. **Revisit the backbone only if the estimator saturates.** Compare the
-   compact U-Net against a compute-matched windowed-attention hybrid after the
-   stronger input exists. The previous global-bottleneck attention experiment
-   improved only 0.03 dB and a shifted-window model was slower at matched
-   quality, so a large transformer is not the default next bet. Any new
-   architecture must win at matched frame time and code complexity, not only
-   parameter count.
+Do not let field experiments displace the original denoising goal. Run the new
+native path on fresh matched-depth captures, comparing its fixed candidate
+mixture against learned multiscale lobe selection and confidence/BPTT ablations.
+Use identical noisy frames, scene families and ray budgets. The
+[existing LavaPipe recipe](../benchmarks/transport-lavapipe.sh) is a starting
+harness, not a broad quality study.
 
-5. **Promote only after fixed visual gates pass.** Run the curated suite plus a
-   hidden scene set at identical output extents and fixed display exposure.
-   Require Ommatidium to match or beat OIDN High on SSIM and a perceptual
-   display-space diagnostic such as FLIP, beat it clearly on low-frequency
-   error, preserve the present detail and relative-MSE advantages, keep every
-   scene's energy near unity, and avoid a worst-scene regression. For motion,
-   report temporal block fluctuation, reprojection error on valid pixels, and
-   disocclusion recovery time. Always publish representative full frames and
-   crops beside the aggregate numbers.
+Include real meshes from initialization and longer causal sequences with camera,
+object and light motion, cuts, disocclusions, thin geometry and glossy reflections.
+Check expected previous-view depth under camera translation before tuning
+rejection thresholds. Preserve actual linear HDR energy, exact albedo/emission
+and separate lobe histories. Require gains in broad lighting error and temporal
+stability without ghosting, darkening or lost detail.
 
-Only after an experiment crosses its offline gate should its runtime cost be
-profiled and optimized. Existing filtered intermediates should be reused; new
-shader groups or Meganeura operations need a demonstrated quality or frame-time
-benefit before becoming product code.
+Compare with matched-input SVGF before DLSS Ray Reconstruction. ReSTIR+SVGF is a
+separate pipeline control, not a same-input denoiser comparison. Use LavaPipe to
+render, train and judge quality; production GPU timing is a later, separate gate.
 
-Independent 16,384-spp references differ at 48.66 dB pairwise, implying a
-51.67 dB one-reference noise floor; target convergence is not the current
-30–33 dB bottleneck. See the
-[`reference-noise audit`](results/reference-noise-2026-08-27.md).
+## Shared-core experiment comes after useful standalone models
+
+At equal architecture and budget, compare independent training, field-pretrained
+core initialization, and joint training. Keep geometry/material inference in the
+field adapter and supplied surface data authoritative in the realtime path.
+Light changes should preserve geometry, not force radiance features to be
+invariant. Group all views and lighting variants of a geometry into one split.
+Retain shared weights only if fresh task-specific evaluations improve without
+negative transfer. OLATverse and blade-volume integration are not prerequisites.
+
+## Evidence for every quality decision
+
+Use fitting data for optimization, validation for choices, and fresh scene/family
+holdouts for the final audit. Retire an opened audit set into development rather
+than repeatedly calling it untouched. Measure reference convergence separately.
+Publish full frames, fixed crops, motion sequences, per-scene tails, named RGB
+transforms, linear energy and structural/temporal metrics beside means. Promote
+only after repeat seeds and a larger independent scene/camera/light evaluation;
+no LavaPipe timings or tiny smoke gains are product claims.

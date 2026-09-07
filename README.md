@@ -11,6 +11,16 @@ among multiscale and reprojected candidates, and preserves known surface albedo
 and emission. Training includes confidence supervision and short radiance BPTT.
 The published v0.3.1 checkpoint remains supported by the legacy runtime.
 
+## Visual results
+
+Historical spatial denoising, local-light scene, 2x reconstruction. These are
+archived outputs, **not** the new transport/field model. [Full comparison and
+limitations](docs/results-overview.md).
+
+| Sparse paths + bilinear | Historical Ommatidium | 4,096-spp reference |
+|---|---|---|
+| <img src="docs/comparison-suite/local-light/bilinear.png" alt="Sparse local-light paths, bilinearly upscaled" width="256" height="256"> | <img src="docs/comparison-suite/local-light/ommatidium.png" alt="Historical Ommatidium local-light reconstruction" width="256" height="256"> | <img src="docs/comparison-suite/local-light/canonical.png" alt="Local-light reference, 4096 samples per pixel" width="256" height="256"> |
+
 ## Build
 
 Place `ommatidia` and `meganeura` in sibling directories. CI pins Meganeura
@@ -35,11 +45,19 @@ cargo +1.92.0 run -p ommatidia-train --bin field -- --help
 bash benchmarks/field-lavapipe.sh
 ```
 
+The current field is still blurry. Below: one fixed held case (scene 10000,
+optimization seed 7), **16x16 native pixels enlarged**, 128 updates. Incident loss
+is not promoted; see [all four paired results](docs/results/incident-lavapipe-2026-09-07.md).
+
+| RGB/source supervision | + incident supervision | Reference |
+|---|---|---|
+| <img src="docs/field-preview/control.png" alt="Tiny field without incident loss; blurred scene structure" width="192" height="192"> | <img src="docs/field-preview/incident.png" alt="Same field with incident loss; scene structure remains blurred" width="192" height="192"> | <img src="docs/field-preview/reference.png" alt="Held scene 10000 reference at native 16 by 16 pixels" width="192" height="192"> |
+
 ## Quality and integration
 
 See [the architecture and input contract](docs/design.md),
 [the quality harness](benchmarks/README.md), and
-[the shared-transport direction](docs/shared-transport.md).
+[the quality roadmap](docs/quality-roadmap.md).
 `ommatidia::transport::native::Native` exposes the new Rust GPU path;
 `process` adds synchronous upload/readback for tests. Existing `Upscaler`/C ABI
 clients retain legacy checkpoint behavior.
