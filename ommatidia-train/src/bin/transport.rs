@@ -245,11 +245,12 @@ fn main() -> Result<()> {
     let mut rate = 0.001f32;
     let mut eval_only = false;
     let mut fixed_exposure_loss = false;
+    let mut weights = graph::LossWeights::default();
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
         if arg == "--help" {
             println!(
-                "transport --data TRAIN.omd --eval-data HOLDOUT.omd [--out DIR] [--steps 128] [--unroll 2] [--channels 8] [--seed 7] [--lr 0.001] [--eval-only] [--fixed-exposure-loss]\nCaptures must have matched transport, split radiance, HR surfaces, and disjoint scene seeds."
+                "transport --data TRAIN.omd --eval-data HOLDOUT.omd [--out DIR] [--steps 128] [--unroll 2] [--channels 8] [--seed 7] [--lr 0.001] [--eval-only] [--fixed-exposure-loss]\n  --compressed-weight F [1] --physical-weight F [0.1] --low-frequency-weight F [0.05]\n  --confidence-weight F [0.01] --temporal-weight F [0.01]\nCaptures must have matched transport, split radiance, HR surfaces, and disjoint scene seeds."
             );
             return Ok(());
         }
@@ -271,9 +272,15 @@ fn main() -> Result<()> {
             "--channels" => channels = v.parse()?,
             "--seed" => seed = v.parse()?,
             "--lr" => rate = v.parse()?,
+            "--compressed-weight" => weights.compressed = v.parse()?,
+            "--physical-weight" => weights.physical = v.parse()?,
+            "--low-frequency-weight" => weights.low_frequency = v.parse()?,
+            "--confidence-weight" => weights.confidence = v.parse()?,
+            "--temporal-weight" => weights.temporal = v.parse()?,
             _ => return Err(format!("unknown option {arg}").into()),
         }
     }
+    weights.validate()?;
     if !(1..=8).contains(&unroll) || !rate.is_finite() || rate <= 0.0 {
         return Err("invalid unroll or learning rate".into());
     }
@@ -339,6 +346,7 @@ fn main() -> Result<()> {
                 }
                 learned.process(frame)?;
             }
+            weights.feed(&mut session);
             let fraction = update as f32 / steps.max(1) as f32;
             session.set_adam(
                 rate * (0.1 + 0.9 * 0.5 * (1.0 + (std::f32::consts::PI * fraction).cos())),
@@ -367,7 +375,7 @@ fn main() -> Result<()> {
         std::fs::write(
             out.join("training.json"),
             serde_json::to_vec_pretty(
-                &serde_json::json!({"steps":steps,"unroll":unroll,"seed":seed,"learning_rate":rate,"fixed_exposure_loss":fixed_exposure_loss,"training":train.provenance,"evaluation":holdout.provenance}),
+                &serde_json::json!({"steps":steps,"unroll":unroll,"seed":seed,"learning_rate":rate,"fixed_exposure_loss":fixed_exposure_loss,"loss_weights":weights,"training":train.provenance,"evaluation":holdout.provenance}),
             )?,
         )?;
     }

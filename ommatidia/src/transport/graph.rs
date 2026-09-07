@@ -6,6 +6,49 @@ use meganeura::{Graph, NodeId};
 use crate::neural::Builder;
 pub use crate::neural::Network;
 
+/// Training-only objective coefficients. Defaults preserve the prior objective.
+#[derive(Clone, Copy, Debug, serde::Serialize)]
+pub struct LossWeights {
+    pub compressed: f32,
+    pub physical: f32,
+    pub low_frequency: f32,
+    pub confidence: f32,
+    pub temporal: f32,
+}
+impl Default for LossWeights {
+    fn default() -> Self {
+        Self {
+            compressed: 1.0,
+            physical: 0.1,
+            low_frequency: 0.05,
+            confidence: 0.01,
+            temporal: 0.01,
+        }
+    }
+}
+impl LossWeights {
+    fn values(self) -> [f32; 5] {
+        [
+            self.compressed,
+            self.physical,
+            self.low_frequency,
+            self.confidence,
+            self.temporal,
+        ]
+    }
+    pub fn validate(self) -> Result<(), String> {
+        let values = self.values();
+        if values.iter().any(|v| !v.is_finite() || *v < 0.0) || values.iter().all(|v| *v == 0.0) {
+            return Err("loss weights must be finite, nonnegative and not all zero".into());
+        }
+        Ok(())
+    }
+    /// Call after the last `feed` in an unroll to override the default loss.
+    pub fn feed(self, session: &mut meganeura::Session) {
+        session.set_input("loss.weights", &self.values());
+    }
+}
+
 fn filled(g: &mut Graph, x: NodeId, value: f32) -> NodeId {
     let shape = g.node(x).ty.shape.clone();
     g.constant(vec![value; shape.iter().product()], &shape)
@@ -69,6 +112,10 @@ pub fn build(config: Config, low: [u32; 2], unroll: usize) -> Result<Network, St
     let spatial = low[0] * low[1];
     let n = (slots * spatial) as usize;
     let mut b = Builder::new();
+    let objective_weights: Option<[NodeId; 5]> = (unroll > 0).then(|| {
+        let input = b.g.input("loss.weights", &[5]);
+        split(&mut b.g, input, 5, 1, 1).try_into().unwrap()
+    });
     let mut previous = None;
     let mut previous_target = None;
     let mut total_loss = None;
@@ -151,10 +198,17 @@ pub fn build(config: Config, low: [u32; 2], unroll: usize) -> Result<Network, St
         let scale = b.g.input(&format!("{tag}.loss_scale"), &[6 * n]);
         let encoded = compress(&mut b.g, image, config.exposure);
         let encoded_target = compress(&mut b.g, target, config.exposure);
-        let mut loss = b.g.mse_loss(encoded, encoded_target);
+        let [
+            compressed_weight,
+            physical_weight,
+            low_frequency_weight,
+            confidence_weight,
+            temporal_weight,
+        ] = objective_weights.unwrap();
+        let loss = b.g.mse_loss(encoded, encoded_target);
+        let mut loss = b.g.mul(loss, compressed_weight);
         let physical = scaled_mse(&mut b.g, image, target, scale);
-        let weight = b.g.scalar(0.1);
-        let physical = b.g.mul(physical, weight);
+        let physical = b.g.mul(physical, physical_weight);
         loss = b.g.add(loss, physical);
         // Low-frequency physical lobe error, no loss-time change to the estimator.
         let error = b.g.neg(target);
@@ -177,14 +231,12 @@ pub fn build(config: Config, low: [u32; 2], unroll: usize) -> Result<Network, St
             &[(channels * spatial / (block * block)) as usize],
         );
         let lf = b.g.mse_loss(avg, zero);
-        let weight = b.g.scalar(0.05);
-        let lf = b.g.mul(lf, weight);
+        let lf = b.g.mul(lf, low_frequency_weight);
         loss = b.g.add(loss, lf);
         let confidence = b.g.input(&format!("{tag}.confidence"), &[2 * n]);
         let mask = b.g.input(&format!("{tag}.confidence_mask"), &[2 * n]);
         let cl = scaled_mse(&mut b.g, history_share.unwrap(), confidence, mask);
-        let weight = b.g.scalar(0.01);
-        let cl = b.g.mul(cl, weight);
+        let cl = b.g.mul(cl, confidence_weight);
         loss = b.g.add(loss, cl);
         if let Some(old_target) = previous_target {
             let reference_history = warp(&mut b.g, old_target, &maps, n);
@@ -195,8 +247,7 @@ pub fn build(config: Config, low: [u32; 2], unroll: usize) -> Result<Network, St
             let valid = b.g.input(&format!("{tag}.temporal_mask"), &[6 * n]);
             let masked = b.g.mul(valid, scale);
             let tl = scaled_mse(&mut b.g, change, expected, masked);
-            let weight = b.g.scalar(0.01);
-            let tl = b.g.mul(tl, weight);
+            let tl = b.g.mul(tl, temporal_weight);
             loss = b.g.add(loss, tl);
         }
         previous_target = Some(target);
@@ -224,6 +275,7 @@ pub fn feed(
     target: &Target,
     frame: usize,
 ) {
+    LossWeights::default().feed(session);
     session.set_input(&format!("{tag}.features"), &p.features);
     session.set_input(&format!("{tag}.candidates"), &p.candidates);
     session.set_input(&format!("{tag}.prior"), &p.prior);

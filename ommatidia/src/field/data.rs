@@ -169,6 +169,27 @@ pub fn ray_queries(
     rays: &[Ray],
     steps: usize,
 ) -> Result<(Vec<Query>, Vec<f32>), String> {
+    sample_rays(bounds, rays, steps, None)
+}
+
+/// One random quadrature point per fixed ray interval. The interval widths and
+/// surface-termination classes stay unchanged; only where the field is queried
+/// changes. No target metadata is accepted. Evaluation keeps deterministic midpoints.
+pub fn stratified_ray_queries(
+    bounds: Bounds,
+    rays: &[Ray],
+    steps: usize,
+    seed: u64,
+) -> Result<(Vec<Query>, Vec<f32>), String> {
+    sample_rays(bounds, rays, steps, Some(seed))
+}
+
+fn sample_rays(
+    bounds: Bounds,
+    rays: &[Ray],
+    steps: usize,
+    seed: Option<u64>,
+) -> Result<(Vec<Query>, Vec<f32>), String> {
     bounds.validate()?;
     RenderShape {
         rays: rays.len(),
@@ -183,12 +204,14 @@ pub fn ray_queries(
         return Err("rays require finite origins and unit directions".into());
     }
     let intervals: Vec<_> = rays.iter().map(|r| ray_interval(bounds, *r)).collect();
-    let mut queries = Vec::new();
-    let mut deltas = Vec::new();
+    let mut rng = seed.map(crate::rng::Rng::new);
+    let mut queries = Vec::with_capacity(rays.len() * steps);
+    let mut deltas = Vec::with_capacity(rays.len() * steps);
     for s in 0..steps {
         for (ray, &(near, far)) in rays.iter().zip(&intervals) {
             let dt = (far - near) / steps as f32;
-            let t = near + (s as f32 + 0.5) * dt;
+            let u = rng.as_mut().map_or(0.5, |r| r.uniform());
+            let t = near + (s as f32 + u) * dt;
             queries.push(Query {
                 position: std::array::from_fn(|i| ray.origin[i] + t * ray.direction[i]),
                 direction: ray.direction,
