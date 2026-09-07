@@ -51,6 +51,7 @@ jobs:
           git apply --check /tmp/ommatidia-review/code.patch
           git apply /tmp/ommatidia-review/code.patch
           python3 /tmp/ommatidia-review/docs.py
+          python3 .github/review-fix.py
           cargo +1.92.0 fmt --all
       - name: Commit implementation to this review branch only
         env:
@@ -59,7 +60,7 @@ jobs:
           test "$(git ls-remote origin refs/heads/reconstruction/candidate-aware-fusion | cut -f1)" = "$EXPECTED_SHA"
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git rm -r .github/review-payload
+          git rm -r .github/review-payload .github/review-fix.py
           git add README.md docs ommatidia ommatidia-data ommatidia-train
           git diff --cached --check
           git commit -m 'feat: physical candidate-aware fusion, local backbone, and matched transport'
