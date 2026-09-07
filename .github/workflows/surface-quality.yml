@@ -1,8 +1,6 @@
 name: surface quality (LavaPipe)
 on:
   workflow_dispatch:
-  pull_request:
-    paths: ['.github/workflows/surface-quality.yml']
 permissions:
   contents: read
 concurrency:

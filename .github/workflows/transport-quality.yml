@@ -1,12 +1,19 @@
 name: transport quality (LavaPipe)
 on:
   workflow_dispatch:
+  push:
+    branches: [docs/visual-quality-roadmap]
+    paths: ['.github/workflows/transport-quality.yml']
 permissions:
   contents: read
 jobs:
   quality:
     runs-on: ubuntu-latest
     timeout-minutes: 40
+    env:
+      TRANSPORT_UPDATES: '512'
+      TRANSPORT_TRAIN_SCENES: '8'
+      TRANSPORT_HOLD_SCENES: '4'
     steps:
       - uses: actions/checkout@v4
         with:
