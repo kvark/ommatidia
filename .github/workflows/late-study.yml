@@ -1,0 +1,149 @@
+name: late reconstruction validation
+on:
+  pull_request:
+    paths: ['.github/workflows/late-study.yml', '.github/late-edit.py', '.github/late-fix.py']
+permissions:
+  contents: read
+  actions: read
+env:
+  VK_ICD_FILENAMES: /usr/share/vulkan/icd.d/lvp_icd.json
+  OMMATIDIA_REQUIRE_GPU: '1'
+  MEGANEURA_REV: 10b596177affc383ab0617c41b44ad4ee3cfbceb
+jobs:
+  prepare:
+    if: github.event.pull_request.number == 19 && github.head_ref == 'docs/visual-quality-roadmap' && github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    permissions:
+      contents: write
+      actions: read
+    outputs:
+      sha: ${{ steps.commit.outputs.sha }}
+    defaults:
+      run:
+        shell: bash
+        working-directory: ommatidia
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          path: ommatidia
+      - uses: actions/checkout@v4
+        with:
+          repository: kvark/meganeura
+          ref: ${{ env.MEGANEURA_REV }}
+          path: meganeura
+          persist-credentials: false
+      - name: Setup and apply
+        run: |
+          rustup toolchain install 1.92.0 --profile minimal --component rustfmt,clippy
+          sudo apt-get update -qq
+          sudo apt-get install -y libvulkan1 mesa-vulkan-drivers
+          python3 .github/late-edit.py
+          if test -f .github/late-fix.py; then python3 .github/late-fix.py; fi
+          cargo +1.92.0 fmt --all
+          mkdir -p target/late-validation
+      - name: Workspace validation
+        run: |
+          cargo +1.92.0 check --workspace --all-targets --locked 2>&1 | tee target/late-validation/check.log
+          cargo +1.92.0 test --workspace --locked 2>&1 | tee target/late-validation/unit.log
+          cargo +1.92.0 clippy --workspace --all-targets --locked -- -D warnings 2>&1 | tee target/late-validation/clippy.log
+      - name: All reconstruction GPU contracts
+        run: |
+          cargo +1.92.0 test -p ommatidia --test gpu_runtime --test transport --test field --test late_rgb --test candidate_oracle --test quality_controls --locked -- --ignored --nocapture --test-threads=1 2>&1 | tee target/late-validation/gpu.log
+      - name: Commit checked source only
+        id: commit
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          test "$(git ls-remote origin refs/heads/docs/visual-quality-roadmap | cut -f1)" = "$EXPECTED_SHA"
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git rm .github/late-edit.py
+          git rm --ignore-unmatch .github/late-fix.py
+          git add ommatidia ommatidia-train benchmarks/late-fusion-lavapipe.sh
+          git diff --cached --check
+          git commit -m 'feat: late source-view appearance fusion and conditional candidate oracle'
+          git push origin HEAD:refs/heads/docs/visual-quality-roadmap
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+      - name: Build standalone experiment binaries
+        run: |
+          cargo +1.92.0 build -p ommatidia-train --bins --locked
+          mkdir -p /tmp/late-bins
+          cp target/debug/field target/debug/transport /tmp/late-bins/
+      - uses: actions/upload-artifact@v4
+        with:
+          name: late-binaries
+          path: /tmp/late-bins
+          retention-days: 7
+      - name: Archive formatted source and validation
+        if: always()
+        run: tar --exclude=.git --exclude=target/debug --exclude=target/release -czf "$RUNNER_TEMP/late-source.tar.gz" .
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: late-source-validation
+          path: ${{ runner.temp }}/late-source.tar.gz
+          retention-days: 7
+  quality:
+    needs: prepare
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        arm: [recover-wide, moments, late-rgb, candidate-oracle]
+    defaults:
+      run:
+        shell: bash
+        working-directory: ommatidia
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.sha }}
+          path: ommatidia
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: late-binaries
+          path: /tmp/late-bins
+      - uses: actions/download-artifact@v4
+        with:
+          github-token: ${{ github.token }}
+          run-id: 34153941146
+          name: corrected-control-data
+          path: ommatidia/target/late-data
+      - uses: actions/download-artifact@v4
+        if: matrix.arm == 'recover-wide'
+        with:
+          github-token: ${{ github.token }}
+          run-id: 34152574900
+          name: control-field-wide
+          path: ommatidia/target/old-wide
+      - uses: actions/download-artifact@v4
+        if: matrix.arm == 'candidate-oracle'
+        with:
+          github-token: ${{ github.token }}
+          run-id: 34153941146
+          name: corrected-transport-control
+          path: ommatidia/target/old-transport
+      - name: Run quality experiment
+        env:
+          ARM: ${{ matrix.arm }}
+          LATE_FIELD_BIN: /tmp/late-bins/field
+          LATE_TRANSPORT_BIN: /tmp/late-bins/transport
+          LATE_DATA: target/late-data
+          LATE_RECOVER_DIR: target/old-wide
+          LATE_TRANSPORT_DIR: target/old-transport
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y libvulkan1 mesa-vulkan-drivers
+          chmod +x /tmp/late-bins/*
+          (cd target/late-data && sha256sum -c SHA256SUMS)
+          bash benchmarks/late-fusion-lavapipe.sh "$ARM"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: late-${{ matrix.arm }}
+          path: ommatidia/target/late-results/${{ matrix.arm }}
+          retention-days: 7
