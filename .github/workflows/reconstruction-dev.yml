@@ -11,6 +11,9 @@ jobs:
     timeout-minutes: 40
     permissions:
       contents: write
+    defaults:
+      run:
+        working-directory: ommatidia
     steps:
       - uses: actions/checkout@v4
         with:
@@ -19,7 +22,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           repository: kvark/blade
-          ref: c24621aa6606da968fd1b3967d5993f8aa2b74e8
+          ref: b208f3b1f97196c2971436b5726e61e71b149c37
           path: blade
           persist-credentials: false
       - uses: actions/checkout@v4
@@ -28,44 +31,52 @@ jobs:
           ref: 230cab004a898d0494e0a327ef695652a98a10cc
           path: meganeura
           persist-credentials: false
-      - uses: actions/checkout@v4
-        with:
-          repository: kvark/blade-volume
-          ref: 27b33d117a20f7dd0eb4eba89bab1298c8056f45
-          path: blade-volume
-          persist-credentials: false
       - name: Setup
         run: |
           rustup toolchain install 1.92.0 --profile minimal --component rustfmt,clippy
           sudo apt-get update -qq
           sudo apt-get install -y libvulkan1 mesa-vulkan-drivers
-      - name: Upgrade and format
-        working-directory: ommatidia
+      - name: Apply verified reconstruction source
         run: |
-          python3 - <<'PY'
-          from pathlib import Path
-          p=Path('Cargo.toml'); s=p.read_text().replace('blade-graphics = "0.8.4"','blade-graphics = "0.9"');p.write_text(s)
-          p=Path('.github/workflows/check.yml');s=p.read_text().replace('3d7a3977a047fa4f728ab62b6df1663f5a4f9627','c24621aa6606da968fd1b3967d5993f8aa2b74e8').replace('bf72c42c8639ae8b326361754fc43a478ff837d4','230cab004a898d0494e0a327ef695652a98a10cc');p.write_text(s)
-          PY
+          if test -d .github/transport-payload; then
+            cat .github/transport-payload/*.txt | base64 -d > /tmp/transport.xz
+            echo '9eeb4ac5e569eb4fd8caf1cd7450fa8df3dc9ec7cc882dc30712e41a3c148557  /tmp/transport.xz' | sha256sum -c -
+            xz -dc /tmp/transport.xz > /tmp/transport.patch
+            git apply --check /tmp/transport.patch
+            git apply /tmp/transport.patch
+            git rm scripts/curriculum.sh scripts/curve.py ommatidia-train/src/bin/lobe-scale-oracle.rs ommatidia-train/src/bin/temporal-oracle.rs
+          fi
           if test -f .github/reconstruction-edit.py; then python3 .github/reconstruction-edit.py; fi
           cargo +1.92.0 fmt --all
-      - name: Check updated dependencies
-        working-directory: ommatidia
+      - name: Check updated dependencies and all targets
         run: cargo +1.92.0 check --workspace --all-targets
-      - name: Commit checked upgrade
-        working-directory: ommatidia
+      - name: Commit implementation to this review branch
         env:
           EXPECTED_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
           test "$(git ls-remote origin refs/heads/reconstruction/candidate-aware-fusion | cut -f1)" = "$EXPECTED_SHA"
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add -u
+          if test -d .github/transport-payload; then git rm -r .github/transport-payload; fi
+          if test -f .github/reconstruction-edit.py; then git rm .github/reconstruction-edit.py; fi
+          git add -A
           git diff --cached --check
-          if ! git diff --cached --quiet; then git commit -m 'build: adopt current Blade and Meganeura fixes'; git push origin HEAD:refs/heads/reconstruction/candidate-aware-fusion; fi
-      - name: Archive public source for inspection
+          if ! git diff --cached --quiet; then git commit -m 'feat: lobe-separated multiscale reconstruction with short BPTT'; git push origin HEAD:refs/heads/reconstruction/candidate-aware-fusion; fi
+      - name: Workspace tests
+        if: success() || failure()
+        run: cargo +1.92.0 test --workspace --locked
+      - name: Clippy
+        if: success() || failure()
+        run: cargo +1.92.0 clippy --workspace --all-targets --locked -- -D warnings
+      - name: New recurrent transport GPU and training tests
+        if: success() || failure()
+        env:
+          VK_ICD_FILENAMES: /usr/share/vulkan/icd.d/lvp_icd.json
+          OMMATIDIA_REQUIRE_GPU: 1
+        run: cargo +1.92.0 test -p ommatidia --test transport --locked -- --ignored --nocapture --test-threads=1
+      - name: Archive formatted source
         if: always()
-        run: tar --exclude=.git --exclude=target -czf "$RUNNER_TEMP/reconstruction-source.tar.gz" ommatidia blade meganeura blade-volume
+        run: tar --exclude=.git --exclude=target -czf "$RUNNER_TEMP/reconstruction-source.tar.gz" .
       - uses: actions/upload-artifact@v4
         if: always()
         with:
