@@ -16,10 +16,9 @@ concurrency:
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
-  # Path dependencies are pinned like Cargo.lock; Blade 0.9 is not compatible
-  # with this Meganeura revision's graphics/OpenXR dependency contract.
-  BLADE_REV: b208f3b1f97196c2971436b5726e61e71b149c37
-  MEGANEURA_REV: 230cab004a898d0494e0a327ef695652a98a10cc
+  # Blade checkout supplies capture shaders only; crates resolve through Cargo.lock.
+  BLADE_REV: c24621aa6606da968fd1b3967d5993f8aa2b74e8
+  MEGANEURA_REV: d903bba0a478277216133719e1eaa31b56d0be10
 
 jobs:
   platform:
@@ -103,6 +102,9 @@ jobs:
     name: GPU image reference (LavaPipe)
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    env:
+      VK_ICD_FILENAMES: /usr/share/vulkan/icd.d/lvp_icd.json
+      OMMATIDIA_REQUIRE_GPU: 1
     steps:
       - name: Check out Ommatidia
         uses: actions/checkout@v4
@@ -127,16 +129,12 @@ jobs:
           sudo apt-get install -y libvulkan1 mesa-vulkan-drivers
       - name: Run GPU contract, recurrence, training and image tests
         working-directory: ommatidia
-        env:
-          VK_ICD_FILENAMES: /usr/share/vulkan/icd.d/lvp_icd.json
-          OMMATIDIA_REQUIRE_GPU: 1
         run: |
           cargo +1.92.0 test -p ommatidia --test gpu_runtime --locked -- --ignored --nocapture --test-threads=1
           cargo +1.92.0 test -p ommatidia --test transport --locked -- --ignored --nocapture --test-threads=1
+          cargo +1.92.0 test -p ommatidia --test field --locked -- --ignored --nocapture --test-threads=1
       - name: Capture moving, jittered geometry and lighting
         working-directory: ommatidia
-        env:
-          VK_ICD_FILENAMES: /usr/share/vulkan/icd.d/lvp_icd.json
         run: |
           cargo +1.92.0 run -p ommatidia-data --locked -- \
             --out target/catalog-smoke.omd --samples 1 --lr 16x16 \
@@ -152,6 +150,16 @@ jobs:
             --canonical-frames 1 --sequence-frames 2 \
             --random-camera-motion 0.05 --restir-input --hr-gbuffer
           test -s target/restir-motion-smoke.omd
+      - name: Train and reload a field on held-scene RGB
+        working-directory: ommatidia
+        run: bash benchmarks/field-lavapipe.sh
+      - name: Upload field quality evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: field-lavapipe-quality
+          path: ommatidia/target/field-quality
+          retention-days: 7
       - name: Upload changed image
         if: failure()
         uses: actions/upload-artifact@v4
