@@ -304,6 +304,43 @@ mod tests {
                 Proposal::EmitterAimed,
             ),
         ];
+        // The field's first-surface labels come from the same GPU ray query,
+        // not an independent geometry approximation or camera-Z conversion.
+        for (ray, _) in &rays {
+            let end = std::array::from_fn(|i| ray.origin[i] + ray.direction[i]);
+            let camera = blade_render::Camera {
+                pos: ray.origin.into(),
+                rot: scene::look_at(ray.origin, end),
+                fov_y: 1.0,
+                depth: 200.0,
+                fov: None,
+            };
+            let frame = render::capture(
+                &mut tracer.renderer,
+                &tracer.target,
+                &context,
+                &mut encoder,
+                &harness.asset_hub,
+                &mut source,
+                &camera,
+                render::Pass::Canonical {
+                    frames: 1,
+                    max_bounces: 2,
+                    sample_offset: 0,
+                },
+                false,
+                Some(&tracer.surface),
+                Some(&tracer.lobes),
+            );
+            let labels = crate::field_capture::surface_labels(&frame, 1, 200.0).unwrap();
+            if ray.direction[1] < 0.0 {
+                assert!((labels.distance[0].unwrap() - ray.origin[1]).abs() < 1e-5);
+                assert_eq!(labels.emission[0], light);
+            } else {
+                assert_eq!(labels.distance[0], None);
+                assert_eq!(labels.emission[0], [0.0; 3]);
+            }
+        }
         let capture = tracer
             .capture(&harness, &mut encoder, &mut source, &rays, 2, 4)
             .unwrap();

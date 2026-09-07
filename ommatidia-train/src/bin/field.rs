@@ -4,7 +4,7 @@ use ommatidia::{
     field::{
         self, Config, Manifest, Observations, View,
         data::{self, Prepared, RenderShape, Targets},
-        graph, incident,
+        graph, incident, surface,
     },
     rng::Rng,
 };
@@ -14,10 +14,22 @@ use std::{
     sync::Arc,
 };
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
+#[path = "field/diagnostics.rs"]
+mod diagnostics;
+struct TargetView {
+    view: View,
+    surface: Option<surface::Capture>,
+}
+impl std::ops::Deref for TargetView {
+    type Target = View;
+    fn deref(&self) -> &View {
+        &self.view
+    }
+}
 struct Example {
     observations: Observations,
-    train: Vec<View>,
-    held: View,
+    train: Vec<TargetView>,
+    held: TargetView,
     record: field::SceneRecord,
 }
 fn load(path: &Path, c: &Config) -> Result<Vec<Example>> {
@@ -58,15 +70,21 @@ fn load(path: &Path, c: &Config) -> Result<Vec<Example>> {
                 return Err("invalid scene-linear RGB target".into());
             }
             // No other Sample plane is read by this path.
-            views.push(View {
-                camera: r.camera,
-                rgb,
+            views.push(TargetView {
+                view: View {
+                    camera: r.camera,
+                    rgb,
+                },
+                surface: r.surface.clone(),
             });
         }
         let held = views.pop().unwrap();
         let n = views.len();
         let context_indices: Vec<_> = (0..c.views).map(|v| v * n / c.views).collect();
-        let context: Vec<_> = context_indices.iter().map(|i| views[*i].clone()).collect();
+        let context: Vec<_> = context_indices
+            .iter()
+            .map(|i| views[*i].view.clone())
+            .collect();
         let train: Vec<_> = views
             .into_iter()
             .enumerate()
@@ -103,43 +121,6 @@ fn copy(source: &meganeura::Session, dest: &mut meganeura::Session, model: &grap
         source.read_param(&p.name, &mut data);
         dest.set_parameter(&p.name, &data);
     }
-}
-fn render(
-    session: &mut meganeura::Session,
-    c: &Config,
-    shape: RenderShape,
-    example: &Example,
-) -> Result<Vec<f32>> {
-    let [w, h] = c.extent;
-    let n = (w * h) as usize;
-    let mut result = Vec::new();
-    for start in (0..n).step_by(shape.rays) {
-        let rays: Vec<_> = (0..shape.rays)
-            .map(|i| {
-                let p = (start + i).min(n - 1);
-                example
-                    .held
-                    .camera
-                    .ray([(p % w as usize) as f32, (p / w as usize) as f32], c.extent)
-            })
-            .collect();
-        let (mut queries, deltas) =
-            data::ray_queries(example.observations.bounds, &rays, shape.steps)?;
-        queries.extend((0..shape.probes).map(|_| field::Query {
-            position: example.observations.bounds.center,
-            direction: [0.0, 0.0, 1.0],
-        }));
-        Prepared::new(&example.observations, c, &queries)?.feed(session);
-        session.set_input("ray.deltas", &deltas);
-        session.step();
-        session.wait();
-        let pixels = session.read_output(shape.rays * 3);
-        if pixels.iter().any(|v| !v.is_finite()) {
-            return Err("non-finite field render".into());
-        }
-        result.extend_from_slice(&pixels[..3 * (n - start).min(shape.rays)]);
-    }
-    Ok(result)
 }
 /// Labels specify evaluator rays, never inference observations. No held score
 /// participates in optimization or checkpoint selection.
@@ -244,11 +225,18 @@ fn main() -> Result<()> {
     let mut rate = 1e-3;
     let mut incident_rays = 0usize;
     let mut incident_weight = 0.1f32;
+    let mut surface_weight = None::<f32>;
+    let mut emitter_fraction = 0.0f32;
+    let mut diagnostics = false;
     let mut argv = std::env::args().skip(1);
     while let Some(flag) = argv.next() {
+        if flag == "--diagnostics" {
+            diagnostics = true;
+            continue;
+        }
         if flag == "--help" || flag == "-h" {
             println!(
-                "field --data CAPTURE.omd [--data OTHER.omd] [--eval-data UNSEEN.omd]\n  --out DIR --steps N --seed N --image N --views N --channels N --hidden N\n  --rays N --samples N --probes N --rate F\n  --incident-rays N [0] --incident-weight F [0.1 when incident rays enabled]\nPosed RGB only. Final camera is held; light labels supervise separate heads.\nOutput: weights/config, RGB contexts, fixed-budget held-camera quality, PNGs."
+                "field --data CAPTURE.omd [--data OTHER.omd] [--eval-data UNSEEN.omd]\n  --out DIR --steps N --seed N --image N --views N --channels N --hidden N\n  --rays N --samples N --probes N --rate F\n  --surface-weight F (opt-in; 0 retains matched control graph)\n  --emitter-fraction F [0] --diagnostics\n  --incident-rays N [0] --incident-weight F [0.1 when incident rays enabled]\nPosed RGB only. Final camera is held; light labels supervise separate heads.\nOutput: weights/config, RGB contexts, fixed-budget held-camera quality, PNGs."
             );
             return Ok(());
         }
@@ -272,8 +260,16 @@ fn main() -> Result<()> {
             "--rate" => rate = v.parse()?,
             "--incident-rays" => incident_rays = v.parse()?,
             "--incident-weight" => incident_weight = v.parse()?,
+            "--surface-weight" => surface_weight = Some(v.parse()?),
+            "--emitter-fraction" => emitter_fraction = v.parse()?,
             _ => return Err(format!("unknown option {flag}").into()),
         }
+    }
+    if surface_weight.is_some_and(|w| !w.is_finite() || w < 0.0)
+        || !emitter_fraction.is_finite()
+        || !(0.0..=1.0).contains(&emitter_fraction)
+    {
+        return Err("surface weight must be nonnegative; emitter fraction must be in [0,1]".into());
     }
     c.validate()?;
     shape.queries()?;
@@ -306,6 +302,16 @@ fn main() -> Result<()> {
             "incident training requires --incident-probes captures for every fitting scene".into(),
         );
     }
+    if (surface_weight.is_some() || emitter_fraction > 0.0)
+        && train
+            .iter()
+            .any(|e| e.train.iter().any(|v| v.surface.is_none()))
+    {
+        return Err(
+            "surface training requires --surface-labels captures, including the weight-zero arm"
+                .into(),
+        );
+    }
     let held = eval.as_ref().map(|p| load(p, &c)).transpose()?;
     if held.as_ref().is_some_and(|held| {
         held.iter().any(|a| {
@@ -323,10 +329,14 @@ fn main() -> Result<()> {
     let context = ommatidia::gpu::create_context(None, false);
     let backend = context.device_information().device_name.clone();
     println!("field backend {backend}; quality only");
-    let model = graph::build_training(&c, training_shape, incident_rays)?;
+    let model = if surface_weight.is_some() {
+        graph::build_surface_training(&c, training_shape, incident_rays)?
+    } else {
+        graph::build_training(&c, training_shape, incident_rays)?
+    };
     let mut session = ommatidia::gpu::training_session(&model.graph, Arc::clone(&context));
     model.initialize(&mut session, seed);
-    let inference = graph::build_render(&c, shape, false)?;
+    let inference = graph::build_diagnostics(&c, shape)?;
     let mut baseline = ommatidia::gpu::inference_session(&inference.graph, Arc::clone(&context));
     copy(&session, &mut baseline, &inference);
     let mut rng = Rng::new(seed);
@@ -338,8 +348,28 @@ fn main() -> Result<()> {
         let example = &train[step % train.len()];
         let target = &example.train[rng.below(example.train.len() as u32) as usize];
         let n = (c.extent[0] * c.extent[1]) as usize;
+        // Balanced source pixels are an explicit training stratum, shared across
+        // ablations. They never change ray depth samples or inference observations.
+        let source_pixels: Vec<_> = target
+            .surface
+            .as_ref()
+            .map(|s| {
+                s.emission
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, e)| e.iter().any(|v| *v > 0.0))
+                    .map(|(i, _)| i)
+                    .collect()
+            })
+            .unwrap_or_default();
         let pixels: Vec<_> = (0..shape.rays)
-            .map(|_| rng.below(n as u32) as usize)
+            .map(|i| {
+                if !source_pixels.is_empty() && (i as f32) < emitter_fraction * shape.rays as f32 {
+                    source_pixels[rng.below(source_pixels.len() as u32) as usize]
+                } else {
+                    rng.below(n as u32) as usize
+                }
+            })
             .collect();
         let mut rays: Vec<_> = pixels
             .iter()
@@ -384,6 +414,22 @@ fn main() -> Result<()> {
         Prepared::new(&example.observations, &c, &queries)?.feed(&mut session);
         session.set_input("ray.deltas", &deltas);
         targets.feed(&mut session);
+        if let Some(weight) = surface_weight {
+            let labels = target.surface.as_ref().unwrap();
+            let mut chosen: Vec<_> = pixels
+                .iter()
+                .map(|p| Some((labels.distance[*p], labels.ray_limit)))
+                .collect();
+            chosen.extend((0..incident_rays).map(|_| None));
+            let termination = surface::Targets::new(
+                example.observations.bounds,
+                &rays,
+                shape.steps,
+                &chosen,
+                weight,
+            )?;
+            termination.feed(&mut session);
+        }
         if !chosen.is_empty() {
             incident::Targets::new(&chosen, c.exposure)?
                 .weighted(incident_weight)?
@@ -421,8 +467,20 @@ fn main() -> Result<()> {
     let examples = held.as_ref().unwrap_or(&train);
     let mut scores = Vec::new();
     for (i, example) in examples.iter().enumerate() {
-        let initial = render(&mut baseline, &c, shape, example)?;
-        let prediction = render(&mut learned, &c, shape, example)?;
+        let initial = diagnostics::render(
+            &mut baseline,
+            &c,
+            shape,
+            &example.observations,
+            &example.held,
+        )?;
+        let prediction = diagnostics::render(
+            &mut learned,
+            &c,
+            shape,
+            &example.observations,
+            &example.held,
+        )?;
         let mut mean = [0.0f32; 3];
         let mut count = 0;
         for view in &example.observations.views {
@@ -443,21 +501,77 @@ fn main() -> Result<()> {
         )?;
         png(
             &out.join(format!("{i}-prediction.png")),
-            &prediction,
+            &prediction.rgb,
             c.extent,
         )?;
-        png(&out.join(format!("{i}-initial.png")), &initial, c.extent)?;
+        png(
+            &out.join(format!("{i}-initial.png")),
+            &initial.rgb,
+            c.extent,
+        )?;
         // Reusable inference asset: RGB and poses, explicitly no training lights.
         std::fs::write(
             out.join(format!("{i}-context.json")),
             serde_json::to_vec(&example.observations)?,
         )?;
-        scores.push(serde_json::json!({"scene_seed":example.record.scene_seed,"learned":score(&prediction,&example.held.rgb),
-            "untrained":score(&initial,&example.held.rgb),"context_mean":score(&constant,&example.held.rgb),"black":score(&vec![0.0;3*n],&example.held.rgb),
-            "incident":score_incident(&mut incident_session,&c,incident_shape,example)?}));
+        let mut diagnostic = serde_json::Value::Null;
+        if diagnostics {
+            let fit = diagnostics::render(
+                &mut learned,
+                &c,
+                shape,
+                &example.observations,
+                &example.train[0],
+            )?;
+            png(&out.join(format!("{i}-fit.png")), &fit.rgb, c.extent)?;
+            png(
+                &out.join(format!("{i}-fit-reference.png")),
+                &example.train[0].rgb,
+                c.extent,
+            )?;
+            diagnostics::save_geometry(
+                &out.join(format!("{i}-held")),
+                &prediction,
+                &example.observations,
+                &example.held,
+                &c,
+                shape.steps,
+            )?;
+            diagnostics::save_geometry(
+                &out.join(format!("{i}-fit")),
+                &fit,
+                &example.observations,
+                &example.train[0],
+                &c,
+                shape.steps,
+            )?;
+            let mut controls = Vec::new();
+            for zero in [true, false] {
+                let obs = diagnostics::ablated(&example.observations, zero);
+                let control = diagnostics::render(&mut learned, &c, shape, &obs, &example.held)?;
+                let name = if zero {
+                    "zero-rgb"
+                } else {
+                    "scrambled-rgb-poses"
+                };
+                png(&out.join(format!("{i}-{name}.png")), &control.rgb, c.extent)?;
+                controls.push(
+                    serde_json::json!({"input":name,"quality":score(&control.rgb,&example.held.rgb),
+                    "output_change":score(&control.rgb,&prediction.rgb)}),
+                );
+            }
+            diagnostic = serde_json::json!({"fitting_camera":score(&fit.rgb,&example.train[0].rgb),
+                "geometry_fit":diagnostics::geometry(&fit,&example.observations,&example.train[0],&c,shape.steps),
+                "geometry_held":diagnostics::geometry(&prediction,&example.observations,&example.held,&c,shape.steps),
+                "context_controls":controls});
+        }
+        scores.push(serde_json::json!({"scene_seed":example.record.scene_seed,"learned":score(&prediction.rgb,&example.held.rgb),
+            "untrained":score(&initial.rgb,&example.held.rgb),"context_mean":score(&constant,&example.held.rgb),"black":score(&vec![0.0;3*n],&example.held.rgb),
+            "diagnostics":diagnostic,"incident":score_incident(&mut incident_session,&c,incident_shape,example)?}));
     }
     let report = serde_json::json!({"backend":backend,"quality_only":true,"steps":steps,"seed":seed,"first_loss":first,"last_loss":last,
         "rays":shape.rays,"samples":shape.steps,"probes":shape.probes,"incident_rays":incident_rays,"incident_weight":incident_weight,"training_files":data_files,
+        "surface_weight":surface_weight,"emitter_fraction":emitter_fraction,"diagnostics":diagnostics,
         "evaluation":if held.is_some(){"unseen scenes and held cameras"}else{"held cameras of fitting scenes"},"scores":scores});
     std::fs::write(
         out.join("quality.json"),

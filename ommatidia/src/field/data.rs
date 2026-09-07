@@ -182,32 +182,7 @@ pub fn ray_queries(
     }) {
         return Err("rays require finite origins and unit directions".into());
     }
-    let intervals: Vec<_> = rays
-        .iter()
-        .map(|r| {
-            let mut near = 0.0f32;
-            let mut far = f32::INFINITY;
-            for axis in 0..3 {
-                let lo = bounds.center[axis] - bounds.radius;
-                let hi = bounds.center[axis] + bounds.radius;
-                if r.direction[axis].abs() < 1e-8 {
-                    if r.origin[axis] < lo || r.origin[axis] > hi {
-                        return (0.0, 0.0);
-                    }
-                } else {
-                    let a = (lo - r.origin[axis]) / r.direction[axis];
-                    let b = (hi - r.origin[axis]) / r.direction[axis];
-                    near = near.max(a.min(b));
-                    far = far.min(a.max(b));
-                }
-            }
-            if far <= near || !far.is_finite() {
-                (0.0, 0.0)
-            } else {
-                (near, far)
-            }
-        })
-        .collect();
+    let intervals: Vec<_> = rays.iter().map(|r| ray_interval(bounds, *r)).collect();
     let mut queries = Vec::new();
     let mut deltas = Vec::new();
     for s in 0..steps {
@@ -274,4 +249,29 @@ pub fn append_probes(
         mask.iter_mut().for_each(|v| *v *= scale);
     }
     (labels, mask)
+}
+
+/// Ray/cube interval in world units. Depends only on acquisition inputs.
+pub fn ray_interval(bounds: Bounds, r: Ray) -> (f32, f32) {
+    let mut near = 0.0f32;
+    let mut far = f32::INFINITY;
+    for axis in 0..3 {
+        let lo = bounds.center[axis] - bounds.radius;
+        let hi = bounds.center[axis] + bounds.radius;
+        if r.direction[axis].abs() < 1e-8 {
+            if r.origin[axis] < lo || r.origin[axis] > hi {
+                return (0.0, 0.0);
+            }
+        } else {
+            let a = (lo - r.origin[axis]) / r.direction[axis];
+            let b = (hi - r.origin[axis]) / r.direction[axis];
+            near = near.max(a.min(b));
+            far = far.min(a.max(b));
+        }
+    }
+    if far <= near || !far.is_finite() {
+        (0.0, 0.0)
+    } else {
+        (near, far)
+    }
 }

@@ -166,6 +166,7 @@ pub fn build_points(c: &Config, queries: usize) -> Result<Network, String> {
     })
 }
 struct Rendered {
+    termination: NodeId,
     total: NodeId,
     direct: NodeId,
     indirect: NodeId,
@@ -176,6 +177,7 @@ fn render(g: &mut Graph, f: &Field, shape: RenderShape) -> Rendered {
     let mut direct = g.constant(vec![0.0; 3 * n], &[n, 3]);
     let mut indirect = g.constant(vec![0.0; 3 * n], &[n, 3]);
     let deltas = g.input("ray.deltas", &[shape.steps * n, 1]);
+    let mut termination = None;
     for s in 0..shape.steps {
         let sigma = rows(g, f.density, s * n, n, 1);
         let dt = rows(g, deltas, s * n, n, 1);
@@ -186,6 +188,11 @@ fn render(g: &mut Graph, f: &Field, shape: RenderShape) -> Rendered {
         let one = constant(g, keep, 1.0);
         let alpha = g.add(one, neg);
         let weight = g.mul(trans, alpha);
+        let flat = g.reshape(weight, &[n]);
+        termination = Some(match termination {
+            None => flat,
+            Some(prior) => g.concat(prior, flat, 1, (s * n) as u32, n as u32, 1),
+        });
         let weight = g.broadcast_inner(weight, 3);
         let emission = rows(g, f.emission, s * n, n, 3);
         let part = g.mul(weight, emission);
@@ -197,10 +204,20 @@ fn render(g: &mut Graph, f: &Field, shape: RenderShape) -> Rendered {
     }
     let one = g.constant(vec![1.0; n], &[n, 1]);
     let background = g.matmul(one, f.environment);
+    let escape = g.reshape(trans, &[n]);
+    let termination = g.concat(
+        termination.unwrap(),
+        escape,
+        1,
+        (shape.steps * n) as u32,
+        n as u32,
+        1,
+    );
     let trans = g.broadcast_inner(trans, 3);
     let background = g.mul(trans, background);
     let direct = g.add(direct, background);
     Rendered {
+        termination,
         total: g.add(direct, indirect),
         direct,
         indirect,
@@ -240,7 +257,7 @@ fn masked_loss(g: &mut Graph, a: NodeId, b: NodeId, mask: NodeId, e: f32) -> Nod
 /// Training uses volume-rendered RGB plus separately masked source-emission and environment losses.
 /// Inference output is [rendered RGB, density, radiance, emission, environment].
 pub fn build_render(c: &Config, shape: RenderShape, training: bool) -> Result<Network, String> {
-    build(c, shape, training, 0)
+    build(c, shape, training, 0, false)
 }
 /// Last `incident_rays` in each ray-sample block supervise incident light;
 /// preceding rays supervise camera RGB. They share density, visibility,
@@ -254,13 +271,37 @@ pub fn build_training(
     if incident_rays >= shape.rays {
         return Err("incident training must retain at least one image ray".into());
     }
-    build(c, shape, true, incident_rays)
+    build(c, shape, true, incident_rays, false)
+}
+/// Training-only termination NLL; weight-zero targets preserve the entire graph.
+pub fn build_surface_training(
+    c: &Config,
+    shape: RenderShape,
+    incident_rays: usize,
+) -> Result<Network, String> {
+    if incident_rays >= shape.rays {
+        return Err("surface training needs image rays".into());
+    }
+    build(c, shape, true, incident_rays, true)
+}
+/// Inference diagnostics: RGB and step-major termination masses, including escape.
+pub fn build_diagnostics(c: &Config, shape: RenderShape) -> Result<Network, String> {
+    c.validate()?;
+    let mut b = Builder::new();
+    let f = field(&mut b, c, shape.queries()?);
+    let r = render(&mut b.g, &f, shape);
+    b.g.set_outputs(vec![r.total, r.termination]);
+    Ok(Network {
+        graph: b.g,
+        params: b.params,
+    })
 }
 fn build(
     c: &Config,
     shape: RenderShape,
     training: bool,
     incident_rays: usize,
+    surface: bool,
 ) -> Result<Network, String> {
     c.validate()?;
     let q = shape.queries()?;
@@ -274,6 +315,17 @@ fn build(
         let a = log_radiance(&mut b.g, rgb, c.exposure);
         let target = log_radiance(&mut b.g, target, c.exposure);
         let mut loss = b.g.mse_loss(a, target);
+        if surface {
+            let target =
+                b.g.input("target.termination", &[(shape.steps + 1) * shape.rays]);
+            let eps = constant(&mut b.g, rendered.termination, 1e-8);
+            let mass = b.g.add(rendered.termination, eps);
+            let log_mass = b.g.log(mass);
+            let error = b.g.mul(target, log_mass);
+            let error = b.g.sum_all(error);
+            let error = b.g.neg(error);
+            loss = b.g.add(loss, error);
+        }
         let target = b.g.input("target.emission", &[q, 3]);
         let mask = b.g.input("target.emission_mask", &[q, 3]);
         let auxiliary = masked_loss(&mut b.g, f.emission, target, mask, c.exposure);
