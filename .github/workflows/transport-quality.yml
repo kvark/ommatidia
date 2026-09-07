@@ -9,11 +9,12 @@ permissions:
 jobs:
   quality:
     runs-on: ubuntu-latest
-    timeout-minutes: 40
+    timeout-minutes: 45
     env:
       TRANSPORT_UPDATES: '512'
       TRANSPORT_TRAIN_SCENES: '8'
       TRANSPORT_HOLD_SCENES: '4'
+      TRANSPORT_HOLD_SEED: '50000'
     steps:
       - uses: actions/checkout@v4
         with:
@@ -36,12 +37,12 @@ jobs:
           rustup toolchain install 1.92.0 --profile minimal
           sudo apt-get update -qq
           sudo apt-get install -y libvulkan1 mesa-vulkan-drivers
-      - name: Render, train, reload and evaluate
+      - name: Paired loss-normalization quality experiment
         working-directory: ommatidia
-        run: bash benchmarks/transport-lavapipe.sh
+        run: bash benchmarks/normalization-lavapipe.sh
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: transport-lavapipe-quality
-          path: ommatidia/target/transport-quality
+          name: normalization-lavapipe-quality
+          path: ommatidia/target/normalization-quality
           retention-days: 7
