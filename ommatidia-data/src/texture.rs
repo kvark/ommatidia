@@ -172,9 +172,28 @@ pub fn bake(kind: Kind, seed: u64) -> Vec<u8> {
     png
 }
 
+/// Blade's disk cache keys inline assets by name/metadata, not source bytes.
+/// Content-dependent names prevent earlier captures from replacing this palette.
+/// This non-cryptographic key is local cache identity, not dataset provenance.
+pub fn cache_name(bytes: &[u8]) -> String {
+    use std::hash::{Hash, Hasher};
+    let mut hash = std::collections::hash_map::DefaultHasher::new();
+    bytes.hash(&mut hash);
+    format!("procedural-{:016x}.png", hash.finish())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn inline_cache_identity_tracks_source_content() {
+        let a = bake(Kind::Noise, 7);
+        let b = bake(Kind::Noise, 20260907);
+        assert_eq!(cache_name(&a), cache_name(&bake(Kind::Noise, 7)));
+        assert_ne!(cache_name(&a), cache_name(&b));
+        assert!(cache_name(&a).ends_with(".png"));
+    }
 
     #[test]
     fn every_pattern_covers_its_range_without_leaving_it() {

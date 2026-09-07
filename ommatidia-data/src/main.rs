@@ -587,7 +587,11 @@ impl Harness {
         let workers = (0..num_workers())
             .map(|i| choir.add_worker(&format!("ommatidia-data-{i}")))
             .collect();
-        let cache = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../target/data-assets");
+        let cache = std::env::var_os("OMMATIDIA_ASSET_CACHE")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| {
+                PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../target/data-assets")
+            });
         let asset_hub = blade_render::AssetHub::new(&cache, &choir, &context);
         let (shaders, task) =
             blade_render::Shaders::load(&shader_dir(shader_dir_override), &asset_hub, true);
@@ -627,8 +631,8 @@ impl TexturePalette {
         let mut tasks = Vec::new();
         for kind in texture::KINDS {
             for variant in 0..Self::VARIANTS {
-                let name = format!("{kind:?}{variant}.png").to_lowercase();
                 let bytes = texture::bake(kind, seed ^ variant.wrapping_mul(0x9E37_79B9_7F4A_7C15));
+                let name = texture::cache_name(&bytes);
                 // The metadata a glTF base colour gets, so these reach the
                 // shader through the same BC1 compression and mip chain a real
                 // material would.
