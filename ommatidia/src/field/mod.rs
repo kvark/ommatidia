@@ -7,6 +7,16 @@ pub mod surface;
 
 use serde::{Deserialize, Serialize};
 
+/// Missing fields preserve historical moment-pooled checkpoints. LateRgb adds
+/// appearance parameters and requires a newly trained matching checkpoint.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ViewFusion {
+    #[default]
+    Moments,
+    LateRgb,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
@@ -17,6 +27,8 @@ pub struct Config {
     pub hidden: u32,
     pub position_frequencies: u32,
     pub exposure: f32,
+    #[serde(default)]
+    pub view_fusion: ViewFusion,
 }
 impl Default for Config {
     fn default() -> Self {
@@ -28,6 +40,7 @@ impl Default for Config {
             hidden: 128,
             position_frequencies: 4,
             exposure: 1.0,
+            view_fusion: ViewFusion::Moments,
         }
     }
 }

@@ -229,6 +229,7 @@ fn main() -> Result<()> {
     let mut emitter_fraction = 0.0f32;
     let mut diagnostics = false;
     let mut stratified = false;
+    let mut eval_checkpoint = None::<PathBuf>;
     let mut argv = std::env::args().skip(1);
     while let Some(flag) = argv.next() {
         if flag == "--stratified" {
@@ -241,7 +242,7 @@ fn main() -> Result<()> {
         }
         if flag == "--help" || flag == "-h" {
             println!(
-                "field --data CAPTURE.omd [--data OTHER.omd] [--eval-data UNSEEN.omd]\n  --out DIR --steps N --seed N --image N --views N --channels N --hidden N\n  --rays N --samples N --probes N --rate F --stratified\n  --surface-weight F (opt-in; 0 retains matched control graph)\n  --emitter-fraction F [0] --diagnostics\n  --incident-rays N [0] --incident-weight F [0.1 when incident rays enabled]\nPosed RGB only. Final camera is held; light labels supervise separate heads.\nOutput: weights/config, RGB contexts, fixed-budget held-camera quality, PNGs."
+                "field --data CAPTURE.omd [--data OTHER.omd] [--eval-data UNSEEN.omd]\n  --out DIR --steps N --seed N --image N --views N --channels N --hidden N\n  --rays N --samples N --probes N --rate F --stratified\n  --view-fusion moments|late-rgb --eval-checkpoint PATH\n  --surface-weight F (opt-in; 0 retains matched control graph)\n  --emitter-fraction F [0] --diagnostics\n  --incident-rays N [0] --incident-weight F [0.1 when incident rays enabled]\nPosed RGB only. Final camera is held; light labels supervise separate heads.\nOutput: weights/config, RGB contexts, fixed-budget held-camera quality, PNGs."
             );
             return Ok(());
         }
@@ -249,6 +250,14 @@ fn main() -> Result<()> {
         match flag.as_str() {
             "--data" => data_files.push(v.into()),
             "--eval-data" => eval = Some(PathBuf::from(v)),
+            "--eval-checkpoint" => eval_checkpoint = Some(PathBuf::from(v)),
+            "--view-fusion" => {
+                c.view_fusion = match v.as_str() {
+                    "moments" => field::ViewFusion::Moments,
+                    "late-rgb" => field::ViewFusion::LateRgb,
+                    _ => return Err("view fusion must be moments or late-rgb".into()),
+                }
+            }
             "--out" => out = v.into(),
             "--steps" => steps = v.parse()?,
             "--seed" => seed = v.parse()?,
@@ -276,6 +285,10 @@ fn main() -> Result<()> {
     {
         return Err("surface weight must be nonnegative; emitter fraction must be in [0,1]".into());
     }
+    if let Some(path) = &eval_checkpoint {
+        c = serde_json::from_slice(&std::fs::read(path.with_file_name("model.field.json"))?)?;
+        steps = 0;
+    }
     c.validate()?;
     shape.queries()?;
     let training_shape = RenderShape {
@@ -292,7 +305,11 @@ fn main() -> Result<()> {
     if incident_rays == 0 {
         incident_weight = 0.0;
     }
-    if data_files.is_empty() || steps == 0 || !f32::is_finite(rate) || rate <= 0.0 {
+    if data_files.is_empty()
+        || (steps == 0 && eval_checkpoint.is_none())
+        || !f32::is_finite(rate)
+        || rate <= 0.0
+    {
         return Err("need data, positive updates and finite positive rate".into());
     }
     let mut train = Vec::new();
@@ -334,12 +351,18 @@ fn main() -> Result<()> {
     let context = ommatidia::gpu::create_context(None, false);
     let backend = context.device_information().device_name.clone();
     println!("field backend {backend}; quality only");
-    let model = if surface_weight.is_some() {
+    let model = if eval_checkpoint.is_some() {
+        graph::build_diagnostics(&c, shape)?
+    } else if surface_weight.is_some() {
         graph::build_surface_training(&c, training_shape, incident_rays)?
     } else {
         graph::build_training(&c, training_shape, incident_rays)?
     };
-    let mut session = ommatidia::gpu::training_session(&model.graph, Arc::clone(&context));
+    let mut session = if eval_checkpoint.is_some() {
+        ommatidia::gpu::inference_session(&model.graph, Arc::clone(&context))
+    } else {
+        ommatidia::gpu::training_session(&model.graph, Arc::clone(&context))
+    };
     model.initialize(&mut session, seed);
     let inference = graph::build_diagnostics(&c, shape)?;
     let mut baseline = ommatidia::gpu::inference_session(&inference.graph, Arc::clone(&context));
@@ -467,11 +490,16 @@ fn main() -> Result<()> {
             println!("field update {step}/{steps}: {last:.6}");
         }
     }
-    session.save_checkpoint(&out.join("model.safetensors"))?;
+    if eval_checkpoint.is_none() {
+        session.save_checkpoint(&out.join("model.safetensors"))?;
+    }
+    let checkpoint = eval_checkpoint
+        .clone()
+        .unwrap_or_else(|| out.join("model.safetensors"));
     std::fs::write(out.join("model.field.json"), serde_json::to_vec_pretty(&c)?)?;
     // Reload before any held-camera evaluation. No metric-based checkpoint selection.
     let mut learned = ommatidia::gpu::inference_session(&inference.graph, Arc::clone(&context));
-    learned.load_checkpoint(&out.join("model.safetensors"))?;
+    learned.load_checkpoint(&checkpoint)?;
     let incident_shape = RenderShape {
         rays: shape.rays,
         steps: shape.steps,
@@ -480,7 +508,7 @@ fn main() -> Result<()> {
     let incident_model = graph::build_incident(&c, incident_shape)?;
     let mut incident_session =
         ommatidia::gpu::inference_session(&incident_model.graph, Arc::clone(&context));
-    incident_session.load_checkpoint(&out.join("model.safetensors"))?;
+    incident_session.load_checkpoint(&checkpoint)?;
     let examples = held.as_ref().unwrap_or(&train);
     let mut scores = Vec::new();
     for (i, example) in examples.iter().enumerate() {
@@ -586,7 +614,7 @@ fn main() -> Result<()> {
             "untrained":score(&initial.rgb,&example.held.rgb),"context_mean":score(&constant,&example.held.rgb),"black":score(&vec![0.0;3*n],&example.held.rgb),
             "diagnostics":diagnostic,"incident":score_incident(&mut incident_session,&c,incident_shape,example)?}));
     }
-    let report = serde_json::json!({"backend":backend,"quality_only":true,"steps":steps,"seed":seed,"first_loss":first,"last_loss":last,
+    let report = serde_json::json!({"backend":backend,"quality_only":true,"eval_checkpoint":eval_checkpoint,"view_fusion":c.view_fusion,"steps":steps,"seed":seed,"first_loss":first,"last_loss":last,
         "rays":shape.rays,"samples":shape.steps,"probes":shape.probes,"incident_rays":incident_rays,"incident_weight":incident_weight,"training_files":data_files,
         "surface_weight":surface_weight,"emitter_fraction":emitter_fraction,"diagnostics":diagnostics,
         "sampling":if stratified {"stratified-fixed-intervals"} else {"midpoint"},

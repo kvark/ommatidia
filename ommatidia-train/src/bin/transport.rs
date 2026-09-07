@@ -12,6 +12,9 @@ use std::{
 type EvaluationHistory = ([Vec<f32>; 2], Vec<f32>, Vec<ommatidia::temporal::Surface>);
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 
+#[path = "transport/oracle_report.rs"]
+mod oracle_report;
+
 struct Corpus {
     frames: Vec<(Frame, Target)>,
     length: usize,
@@ -162,7 +165,9 @@ fn evaluate(
     learned: &mut native::Native,
     baseline: &mut native::Native,
     out: &Path,
+    candidate_oracle: bool,
 ) -> Result<serde_json::Value> {
+    let mut oracle_frames = Vec::new();
     let mut scores = [Score::default(), Score::default()];
     let mut previous: Option<EvaluationHistory> = None;
     let mut rows = std::fs::File::create(out.join("frames.csv"))?;
@@ -219,6 +224,12 @@ fn evaluate(
         )?;
         // All frames are retained: evaluation is not a cherry-picked screenshot.
         let prefix = format!("{:03}-{:03}", index / corpus.length, index % corpus.length);
+        if candidate_oracle {
+            let mut report = oracle_report::frame(learned, frame, target, config, out, &prefix)?;
+            report["sequence"] = serde_json::json!(index / corpus.length);
+            report["frame"] = serde_json::json!(index % corpus.length);
+            oracle_frames.push(report);
+        }
         for (name, image) in [
             ("base", &images[0]),
             ("learned", &images[1]),
@@ -227,6 +238,12 @@ fn evaluate(
             save_png(&out.join(format!("{prefix}-{name}.png")), image, extent)?;
         }
         previous = Some((images, target.rgb.clone(), current));
+    }
+    if candidate_oracle {
+        std::fs::write(
+            out.join("candidate-oracle.json"),
+            serde_json::to_vec_pretty(&oracle_frames)?,
+        )?;
     }
     scores.iter_mut().for_each(Score::finish);
     Ok(
@@ -244,15 +261,20 @@ fn main() -> Result<()> {
     let mut seed = 7u64;
     let mut rate = 0.001f32;
     let mut eval_only = false;
+    let mut candidate_oracle = false;
     let mut fixed_exposure_loss = false;
     let mut weights = graph::LossWeights::default();
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
         if arg == "--help" {
             println!(
-                "transport --data TRAIN.omd --eval-data HOLDOUT.omd [--out DIR] [--steps 128] [--unroll 2] [--channels 8] [--seed 7] [--lr 0.001] [--eval-only] [--fixed-exposure-loss]\n  --compressed-weight F [1] --physical-weight F [0.1] --low-frequency-weight F [0.05]\n  --confidence-weight F [0.01] --temporal-weight F [0.01]\nCaptures must have matched transport, split radiance, HR surfaces, and disjoint scene seeds."
+                "transport --data TRAIN.omd --eval-data HOLDOUT.omd [--out DIR] [--steps 128] [--unroll 2] [--channels 8] [--seed 7] [--lr 0.001] [--eval-only] [--candidate-oracle] [--fixed-exposure-loss]\n  --compressed-weight F [1] --physical-weight F [0.1] --low-frequency-weight F [0.05]\n  --confidence-weight F [0.01] --temporal-weight F [0.01]\nCaptures must have matched transport, split radiance, HR surfaces, and disjoint scene seeds."
             );
             return Ok(());
+        }
+        if arg == "--candidate-oracle" {
+            candidate_oracle = true;
+            continue;
         }
         if arg == "--fixed-exposure-loss" {
             fixed_exposure_loss = true;
@@ -379,7 +401,14 @@ fn main() -> Result<()> {
             )?,
         )?;
     }
-    let report = evaluate(&holdout, config, &mut learned, &mut baseline, &out)?;
+    let report = evaluate(
+        &holdout,
+        config,
+        &mut learned,
+        &mut baseline,
+        &out,
+        candidate_oracle,
+    )?;
     std::fs::write(
         out.join("quality.json"),
         serde_json::to_vec_pretty(&report)?,

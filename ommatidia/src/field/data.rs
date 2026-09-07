@@ -2,8 +2,16 @@
 use super::*;
 
 #[derive(Clone, Debug, PartialEq)]
+pub struct SourceEvidence {
+    pub rgb: Vec<f32>,
+    pub direction: Vec<f32>,
+    pub valid: Vec<f32>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
 pub struct Prepared {
     pub images: Vec<Vec<f32>>,
+    pub sources: Vec<SourceEvidence>,
     pub indices: Vec<[Vec<u32>; 4]>,
     pub weights: Vec<[Vec<f32>; 4]>,
     pub positions: Vec<f32>,
@@ -32,6 +40,7 @@ impl Prepared {
         let q = queries.len();
         let mut result = Self {
             images: Vec::new(),
+            sources: Vec::new(),
             indices: Vec::new(),
             weights: Vec::new(),
             positions: Vec::new(),
@@ -72,6 +81,15 @@ impl Prepared {
                     image[(6 + c) * n + i] = ray.direction[c];
                 }
             }
+            let mut source = SourceEvidence {
+                rgb: if config.view_fusion == ViewFusion::LateRgb {
+                    view.rgb.clone()
+                } else {
+                    Vec::new()
+                },
+                direction: vec![0.0; 3 * q],
+                valid: vec![0.0; q],
+            };
             let mut indices: [Vec<u32>; 4] = std::array::from_fn(|_| vec![0; q]);
             let mut weights: [Vec<f32>; 4] = std::array::from_fn(|_| vec![0.0; q]);
             for (i, query) in queries.iter().enumerate() {
@@ -99,6 +117,14 @@ impl Prepared {
                         * (if dy == 0 { 1.0 - fy } else { fy });
                 }
                 result.coverage[i] += 1.0;
+                source.valid[i] = 1.0;
+                let direction = unit(std::array::from_fn(|c| {
+                    query.position[c] - view.camera.origin[c]
+                }));
+                source.direction[3 * i..3 * i + 3].copy_from_slice(&direction);
+            }
+            if config.view_fusion == ViewFusion::LateRgb {
+                result.sources.push(source);
             }
             result.images.push(image);
             result.indices.push(indices);
@@ -113,6 +139,11 @@ impl Prepared {
     pub fn feed(&self, session: &mut meganeura::Session) {
         for v in 0..self.images.len() {
             session.set_input(&format!("view{v}.rgb_rays"), &self.images[v]);
+            if let Some(source) = self.sources.get(v) {
+                session.set_input(&format!("view{v}.linear_rgb"), &source.rgb);
+                session.set_input(&format!("view{v}.source_direction"), &source.direction);
+                session.set_input(&format!("view{v}.valid"), &source.valid);
+            }
             for k in 0..4 {
                 session.set_input_u32(&format!("view{v}.index{k}"), &self.indices[v][k]);
                 session.set_input(&format!("view{v}.weight{k}"), &self.weights[v][k]);

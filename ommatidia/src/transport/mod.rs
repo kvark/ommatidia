@@ -6,6 +6,7 @@ pub mod cpu;
 pub mod graph;
 pub mod native;
 pub mod olat;
+pub mod oracle;
 
 use crate::dataset::{Layout, Plane, Sample};
 use serde::{Deserialize, Serialize};
