@@ -244,13 +244,18 @@ fn main() -> Result<()> {
     let mut seed = 7u64;
     let mut rate = 0.001f32;
     let mut eval_only = false;
+    let mut fixed_exposure_loss = false;
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
         if arg == "--help" {
             println!(
-                "transport --data TRAIN.omd --eval-data HOLDOUT.omd [--out DIR] [--steps 128] [--unroll 2] [--channels 8] [--seed 7] [--lr 0.001] [--eval-only]\nCaptures must have matched transport, split radiance, HR surfaces, and disjoint scene seeds."
+                "transport --data TRAIN.omd --eval-data HOLDOUT.omd [--out DIR] [--steps 128] [--unroll 2] [--channels 8] [--seed 7] [--lr 0.001] [--eval-only] [--fixed-exposure-loss]\nCaptures must have matched transport, split radiance, HR surfaces, and disjoint scene seeds."
             );
             return Ok(());
+        }
+        if arg == "--fixed-exposure-loss" {
+            fixed_exposure_loss = true;
+            continue;
         }
         if arg == "--eval-only" {
             eval_only = true;
@@ -325,6 +330,13 @@ fn main() -> Result<()> {
                 };
                 let prepared = cpu::prepare(frame, &old, config);
                 graph::feed(&mut session, &format!("f{slot}"), &prepared, target, slot);
+                if fixed_exposure_loss {
+                    // Override only loss inputs: same graph, queries and initialization.
+                    session.set_input(
+                        &format!("f{slot}.loss_scale"),
+                        &vec![config.exposure; target.lobes.len()],
+                    );
+                }
                 learned.process(frame)?;
             }
             let fraction = update as f32 / steps.max(1) as f32;
@@ -355,7 +367,7 @@ fn main() -> Result<()> {
         std::fs::write(
             out.join("training.json"),
             serde_json::to_vec_pretty(
-                &serde_json::json!({"steps":steps,"unroll":unroll,"seed":seed,"learning_rate":rate,"training":train.provenance,"evaluation":holdout.provenance}),
+                &serde_json::json!({"steps":steps,"unroll":unroll,"seed":seed,"learning_rate":rate,"fixed_exposure_loss":fixed_exposure_loss,"training":train.provenance,"evaluation":holdout.provenance}),
             )?,
         )?;
     }
