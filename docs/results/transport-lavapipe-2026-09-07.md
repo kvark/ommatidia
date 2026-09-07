@@ -44,10 +44,13 @@ frames shows smoothing and energy loss; one view is mostly occluded, so four
 sequence seeds do not constitute broad content coverage.
 
 An independent reference range on the first sequence gives 31.61 dB pairwise,
-an estimated 34.62 dB one-reference noise floor, 54.39 dB low-frequency agreement,
-and energy B/A 0.999775. The floor estimate assumes independent equal-variance
-samples; it cannot diagnose shared estimator bias. Broad lighting disagreement
-is much larger than the measured broad reference noise.
+an estimated 34.62 dB one-reference noise floor, and energy B/A 0.999775.
+At the matching 8x8 block extent, reference agreement is 49.47 dB; the existing
+reference-noise tool's coarser 16x16 block report is 54.39 dB. The 8x8 value was
+computed from the retained OMD references with an independent NumPy replay.
+The floor estimate assumes independent equal-variance samples; it cannot diagnose
+shared estimator bias. Broad lighting disagreement is much larger than measured
+broad reference noise at either block extent.
 
 ## Next isolated test
 
