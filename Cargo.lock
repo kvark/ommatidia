@@ -249,7 +249,7 @@ dependencies = [
 [[package]]
 name = "blade-macros"
 version = "0.3.0"
-source = "git+https://github.com/kvark/blade?rev=95f5004fb02785a792c883a5312ca5ac37872a75#95f5004fb02785a792c883a5312ca5ac37872a75"
+source = "git+https://github.com/kvark/blade?rev=b208f3b1f97196c2971436b5726e61e71b149c37#b208f3b1f97196c2971436b5726e61e71b149c37"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -1285,7 +1285,7 @@ name = "meganeura"
 version = "0.2.0"
 dependencies = [
  "blade-graphics",
- "blade-macros 0.3.0 (git+https://github.com/kvark/blade?rev=95f5004fb02785a792c883a5312ca5ac37872a75)",
+ "blade-macros 0.3.0 (git+https://github.com/kvark/blade?rev=b208f3b1f97196c2971436b5726e61e71b149c37)",
  "bytemuck",
  "egglog",
  "flate2",
@@ -1583,6 +1583,9 @@ dependencies = [
  "meganeura",
  "ommatidia",
  "png",
+ "ron",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
