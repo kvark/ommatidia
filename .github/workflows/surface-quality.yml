@@ -1,0 +1,53 @@
+name: surface quality (LavaPipe)
+on:
+  workflow_dispatch:
+  pull_request:
+    paths: ['.github/workflows/surface-quality.yml']
+permissions:
+  contents: read
+concurrency:
+  group: surface-quality-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  quality:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      FIELD_UPDATES: '2048'
+      FIELD_IMAGE: '64'
+      SURFACE_RESULTS: target/surface-quality-long
+    defaults:
+      run:
+        shell: bash
+        working-directory: ommatidia
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: ommatidia
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          repository: kvark/meganeura
+          ref: d903bba0a478277216133719e1eaa31b56d0be10
+          path: meganeura
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          repository: kvark/blade
+          ref: c24621aa6606da968fd1b3967d5993f8aa2b74e8
+          path: blade
+          persist-credentials: false
+      - name: Install Rust and software Vulkan
+        run: |
+          rustup toolchain install 1.92.0 --profile minimal
+          sudo apt-get update -qq
+          sudo apt-get install -y libvulkan1 mesa-vulkan-drivers
+      - name: Capture, fit, reload and diagnose
+        run: bash benchmarks/surface-lavapipe.sh
+      - name: Retain complete quality evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: surface-lavapipe-long
+          path: ommatidia/target/surface-quality-long
+          retention-days: 7
