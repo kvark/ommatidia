@@ -114,6 +114,49 @@ pub fn orbit(config: &scene::SceneConfig, frame: usize, count: usize) -> blade_r
         fov: None,
     }
 }
+/// Read f32 geometric distances and centre-ray emission from the same renderer.
+/// Enabling the lobe probe makes render::capture disable primary jitter for RGB.
+pub fn surface_labels(
+    frame: &crate::render::Frame,
+    n: usize,
+    ray_limit: f32,
+) -> Result<field::surface::Capture, String> {
+    let g = frame
+        .gbuffer
+        .as_ref()
+        .ok_or("surface capture needs primary G-buffer readback")?;
+    let l = frame
+        .radiance
+        .as_ref()
+        .ok_or("surface capture needs centred radiance readback")?;
+    if g.len() < n || l.len() != 9 * n {
+        return Err("surface readback size mismatch".into());
+    }
+    let mut distance = Vec::with_capacity(n);
+    let mut emission = Vec::with_capacity(n);
+    for (i, &t) in g[..n].iter().enumerate() {
+        if !t.is_finite() || t <= 0.0 {
+            return Err("invalid primary-ray distance".into());
+        }
+        let hit = t < ray_limit;
+        distance.push(hit.then_some(t));
+        emission.push(if hit {
+            std::array::from_fn(|c| l[(6 + c) * n + i])
+        } else {
+            [0.0; 3]
+        });
+    }
+    let capture = field::surface::Capture {
+        version: 1,
+        pixel_filter: "center".into(),
+        ray_limit,
+        distance,
+        emission,
+    };
+    capture.validate([n as u32, 1])?;
+    Ok(capture)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

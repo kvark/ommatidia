@@ -27,6 +27,7 @@ use ommatidia::rng::Rng;
 struct Args {
     field_views: usize,
     scene_labels: bool,
+    surface_labels: bool,
     lighting_seed: Option<u64>,
     incident_probes: usize,
     incident_batches: u32,
@@ -75,6 +76,7 @@ impl Default for Args {
         Self {
             field_views: 0,
             scene_labels: false,
+            surface_labels: false,
             lighting_seed: None,
             incident_probes: 0,
             incident_batches: 8,
@@ -125,6 +127,7 @@ generate an ommatidia training set
 
 usage: ommatidia-data [options]
 
+  --surface-labels         target-only first surfaces; centre-sample matching RGB
   --incident-probes N       directional light targets per static scene [0]
   --incident-batches N      independent four-path batches per probe [8, >=2]
   --field-views N           static posed-RGB orbit; write target-only .scene.json
@@ -223,6 +226,7 @@ fn parse_args() -> Result<Args, String> {
                     .map_err(|e| format!("--field-views: {e}"))?
             }
             "--scene-labels" => args.scene_labels = true,
+            "--surface-labels" => args.surface_labels = true,
             "--incident-probes" => {
                 args.incident_probes = value()?
                     .parse()
@@ -383,6 +387,9 @@ fn parse_args() -> Result<Args, String> {
             || args.checkpoint.is_some())
     {
         return Err("scene labels currently require procedural static scenes, centered cameras and rendered path references; use --field-views for camera variation".into());
+    }
+    if args.surface_labels && !args.scene_labels {
+        return Err("--surface-labels requires static scene labels or --field-views".into());
     }
     if args.lighting_seed.is_some() && !args.scene_labels {
         return Err("--lighting-seed requires --scene-labels or --field-views".into());
@@ -1045,14 +1052,13 @@ fn main() {
     let lr_probe = args
         .gbuffer
         .then(|| gbuffer::Probe::new(&context, lr_size, args.sequence_frames > 1));
-    let hr_probe = args
-        .hr_gbuffer
+    let hr_probe = (args.hr_gbuffer || args.surface_labels)
         .then(|| gbuffer::Probe::new(&context, hr_size, has_motion));
     let lr_radiance_probe = args
         .split_radiance
         .then(|| radiance::Probe::new(&context, lr_size));
-    let hr_radiance_probe =
-        (args.split_radiance && need_hr_render).then(|| radiance::Probe::new(&context, hr_size));
+    let hr_radiance_probe = ((args.split_radiance || args.surface_labels) && need_hr_render)
+        .then(|| radiance::Probe::new(&context, hr_size));
     let sync_point = context.submit(&mut encoder);
     assert!(
         context.wait_for(&sync_point, 30_000).unwrap(),
@@ -1149,7 +1155,13 @@ fn main() {
     let palette = TexturePalette::bake(&harness, args.seed);
 
     let mut field_manifest = ommatidia::field::Manifest {
-        version: if args.incident_probes > 0 { 2 } else { 1 },
+        version: if args.surface_labels {
+            3
+        } else if args.incident_probes > 0 {
+            2
+        } else {
+            1
+        },
         rgb_space: "scene-linear-renderer-units".into(),
         static_scene: true,
         extent: [hr_size.width, hr_size.height],
@@ -1359,6 +1371,7 @@ fn main() {
 
         if args.scene_labels {
             field_manifest.records.push(ommatidia::field::ViewRecord {
+                surface: None,
                 sample: index,
                 scene: scene_index,
                 camera: field_capture::camera(camera),
@@ -1400,7 +1413,7 @@ fn main() {
                     .fold(0.0, f32::max),
             );
         }
-        let (hr, reference_lr) = if let Some(reader) = &mut reference_reader {
+        let (mut hr, reference_lr) = if let Some(reader) = &mut reference_reader {
             let source_layout = *reader.layout();
             let source_index = if reader.sequence_length() == 1 {
                 scene_index
@@ -1494,6 +1507,19 @@ fn main() {
             )
         };
 
+        if args.surface_labels {
+            field_manifest.records.last_mut().unwrap().surface = Some(
+                field_capture::surface_labels(&hr, layout.hr_texels(), camera.depth)
+                    .expect("invalid centre-ray surface capture"),
+            );
+            // These readbacks are training labels, not additional OMD input planes.
+            if !args.hr_gbuffer {
+                hr.gbuffer = None;
+            }
+            if !args.split_radiance {
+                hr.radiance = None;
+            }
+        }
         if args.split_radiance && index == 0 {
             report_lobe_reconstruction("input", &lr, layout.lr_texels());
             report_lobe_reconstruction("reference", &hr, layout.hr_texels());

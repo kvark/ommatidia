@@ -3,6 +3,7 @@
 pub mod data;
 pub mod graph;
 pub mod incident;
+pub mod surface;
 
 use serde::{Deserialize, Serialize};
 
@@ -222,6 +223,8 @@ pub struct SceneRecord {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ViewRecord {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub surface: Option<surface::Capture>,
     pub sample: usize,
     pub scene: usize,
     pub camera: Camera,
@@ -238,7 +241,7 @@ pub struct Manifest {
 }
 impl Manifest {
     pub fn validate(&self, records: usize) -> Result<(), String> {
-        if ![1, 2].contains(&self.version)
+        if ![1, 2, 3].contains(&self.version)
             || self.rgb_space != "scene-linear-renderer-units"
             || !self.static_scene
             || self.extent.contains(&0)
@@ -246,7 +249,7 @@ impl Manifest {
             || self.scenes.is_empty()
         {
             return Err(
-                "field capture needs static v1/v2 scene-linear metadata and matching record count"
+                "field capture needs static v1/v2/v3 scene-linear metadata and matching record count"
                     .into(),
             );
         }
@@ -255,6 +258,12 @@ impl Manifest {
                 return Err("invalid scene/sample index".into());
             }
             r.camera.validate()?;
+            if let Some(surface) = &r.surface {
+                if self.version < 3 {
+                    return Err("surface labels require manifest v3".into());
+                }
+                surface.validate(self.extent)?;
+            }
         }
         for s in &self.scenes {
             s.bounds.validate()?;
