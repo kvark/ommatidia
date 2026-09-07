@@ -37,6 +37,7 @@ struct Args {
     camera_motion: f32,
     random_camera_motion: f32,
     object_motion: f32,
+    light_motion: f32,
     projection_jitter: bool,
     split_radiance: bool,
     canopy: bool,
@@ -79,6 +80,7 @@ impl Default for Args {
             camera_motion: 0.0,
             random_camera_motion: 0.0,
             object_motion: 0.0,
+            light_motion: 0.0,
             projection_jitter: false,
             split_radiance: false,
             canopy: false,
@@ -143,6 +145,7 @@ usage: ommatidia-data [options]
                             roughness floor of 0.15 keeps estimator variance
                             down and also removes the small bright highlights
                             that over-smoothing destroys for free
+  --light-motion F          move emissive geometry independently per frame [0]
   --object-motion F         move one sphere and one box independently, with
                             nominal translation F per frame [0]
   --projection-jitter       shift each low-resolution projection by a
@@ -254,6 +257,11 @@ fn parse_args() -> Result<Args, String> {
                     .parse()
                     .map_err(|e| format!("--object-motion: {e}"))?
             }
+            "--light-motion" => {
+                args.light_motion = value()?
+                    .parse()
+                    .map_err(|e| format!("--light-motion: {e}"))?
+            }
             "--projection-jitter" => args.projection_jitter = true,
             "--split-radiance" => args.split_radiance = true,
             "--canopy" => args.canopy = true,
@@ -335,11 +343,16 @@ fn parse_args() -> Result<Args, String> {
     if !args.object_motion.is_finite() || args.object_motion < 0.0 {
         return Err("--object-motion must be finite and non-negative".into());
     }
+    if !args.light_motion.is_finite() || args.light_motion < 0.0 {
+        return Err("--light-motion must be finite and nonnegative".into());
+    }
     if args.camera_motion != 0.0 && args.random_camera_motion != 0.0 {
         return Err("--camera-motion and --random-camera-motion are mutually exclusive".into());
     }
-    let has_motion =
-        args.camera_motion != 0.0 || args.random_camera_motion != 0.0 || args.object_motion != 0.0;
+    let has_motion = args.camera_motion != 0.0
+        || args.random_camera_motion != 0.0
+        || args.object_motion != 0.0
+        || args.light_motion != 0.0;
     if has_motion && args.sequence_frames == 1 {
         return Err("motion needs --sequence-frames above one".into());
     }
@@ -391,6 +404,8 @@ struct ActiveSequence {
     base_camera: blade_render::Camera,
     motion_seed: u64,
     moving_start: usize,
+    light_indices: Vec<usize>,
+    base_transforms: Vec<gpu::Transform>,
 }
 
 /// One exact output-subpixel centre in input-pixel units.
@@ -410,29 +425,25 @@ fn projection_jitter(frame: usize, scale: u32) -> [f32; 2] {
     ]
 }
 
-fn translation_transform(offset: [f32; 3]) -> gpu::Transform {
-    gpu::Transform {
-        x: [1.0, 0.0, 0.0, offset[0]].into(),
-        y: [0.0, 1.0, 0.0, offset[1]].into(),
-        z: [0.0, 0.0, 1.0, offset[2]].into(),
-    }
-}
-
 impl ActiveSequence {
-    fn animate_objects(&mut self, frame: usize, step: f32) {
-        for (moving_index, object) in self.objects[self.moving_start..].iter_mut().enumerate() {
-            object.prev_transform = translation_transform(scene::object_motion(
-                self.motion_seed,
-                moving_index,
-                frame.saturating_sub(1),
-                step,
-            ));
-            object.transform = translation_transform(scene::object_motion(
-                self.motion_seed,
-                moving_index,
-                frame,
-                step,
-            ));
+    fn animate_objects(&mut self, frame: usize, step: f32, light_step: f32) {
+        for (index, object) in self.objects.iter_mut().enumerate() {
+            let light = self.light_indices.contains(&index);
+            if !light && index < self.moving_start {
+                continue;
+            }
+            let amount = if light { light_step } else { step };
+            let seed = self.motion_seed ^ if light { 0xA11C_E001 } else { 0 };
+            let transform = |frame| {
+                let d = scene::object_motion(seed, index, frame, amount);
+                let mut result = self.base_transforms[index];
+                result.x.w += d[0];
+                result.y.w += d[1];
+                result.z.w += d[2];
+                result
+            };
+            object.prev_transform = transform(frame.saturating_sub(1));
+            object.transform = transform(frame);
         }
     }
 }
@@ -809,8 +820,10 @@ fn main() {
         height: args.lr_height * args.scale,
         depth: 1,
     };
-    let has_motion =
-        args.camera_motion != 0.0 || args.random_camera_motion != 0.0 || args.object_motion != 0.0;
+    let has_motion = args.camera_motion != 0.0
+        || args.random_camera_motion != 0.0
+        || args.object_motion != 0.0
+        || args.light_motion != 0.0;
 
     // High-resolution geometry is opt-in: it costs a cheap full-resolution
     // primary-surface pass in an application, but may recover silhouettes that
@@ -868,7 +881,8 @@ fn main() {
         let source_sequence = reader.sequence_length();
         let has_motion = args.camera_motion != 0.0
             || args.random_camera_motion != 0.0
-            || args.object_motion != 0.0;
+            || args.object_motion != 0.0
+            || args.light_motion != 0.0;
         if has_motion {
             assert_eq!(
                 source_sequence, args.sequence_frames,
@@ -1076,6 +1090,7 @@ fn main() {
             };
             let base_camera;
             let moving_start;
+            let mut light_indices = Vec::new();
             if use_interior {
                 let loaded = catalog.as_ref().expect("interior scenes need a catalog");
                 let entry = interior_pool
@@ -1119,6 +1134,7 @@ fn main() {
                         args.seed ^ scene_index as u64,
                     ),
                 )));
+                light_indices.push(objects.len() - 1);
                 moving_start = objects.len();
                 record.kind = catalog::Kind::Interior;
             } else {
@@ -1126,6 +1142,11 @@ fn main() {
                     &scene_config,
                     args.seed ^ (scene_index as u64).wrapping_mul(0x9E37_79B9),
                 );
+                let (lights, geometries): (Vec<_>, Vec<_>) =
+                    geometries.into_iter().partition(|s| {
+                        args.light_motion != 0.0
+                            && s.geometry.emissive_factor.iter().any(|v| *v > 0.0)
+                    });
                 let (static_surfaces, moving_surfaces) = if args.object_motion == 0.0 {
                     (geometries, Vec::new())
                 } else {
@@ -1136,6 +1157,14 @@ fn main() {
                     &format!("scene{scene_index}"),
                     static_surfaces,
                 )));
+                if !lights.is_empty() {
+                    light_indices.push(objects.len());
+                    objects.push(blade_render::Object::from(palette.build_model(
+                        &harness,
+                        &format!("scene{scene_index}-lights"),
+                        lights,
+                    )));
+                }
                 moving_start = objects.len();
                 for (moving_index, surface) in moving_surfaces.into_iter().enumerate() {
                     objects.push(blade_render::Object::from(palette.build_model(
@@ -1171,6 +1200,8 @@ fn main() {
                 scene_records.push(record);
             }
             active_sequence = Some(ActiveSequence {
+                base_transforms: objects.iter().map(|o| o.transform).collect(),
+                light_indices,
                 objects,
                 base_camera,
                 motion_seed: args.seed ^ (scene_index as u64).wrapping_mul(0xD1B5_4A32_D192_ED03),
@@ -1178,7 +1209,7 @@ fn main() {
             });
         }
         let sequence = active_sequence.as_mut().expect("sequence was initialized");
-        sequence.animate_objects(sequence_frame, args.object_motion);
+        sequence.animate_objects(sequence_frame, args.object_motion, args.light_motion);
         let mut camera = sequence.base_camera;
         camera.pos.x += args.camera_motion * sequence_frame as f32;
         let random_offset = scene::camera_motion(
@@ -1458,6 +1489,10 @@ fn main() {
     let transport = serde_json::json!({
         "schema": 1,
         "records": count,
+        "capture_seed": args.seed,
+        "scene_seeds": (0..args.samples).map(|i|args.seed ^ (i as u64).wrapping_mul(0x9E37_79B9)).collect::<Vec<_>>(),
+        "family_ids": scene_records.iter().flat_map(|s|s.families.iter().cloned()).collect::<Vec<_>>(),
+        "light_motion": args.light_motion,
         "input_estimator": if args.svgf_input { "restir-svgf" } else if args.restir_input { "restir" } else { "independent-paths" },
         "input_max_bounces": input_depth,
         "reference_max_bounces": reference_depth,

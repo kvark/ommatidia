@@ -8,7 +8,7 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 publish = false
-default-run = "ommatidia-train"
+default-run = "transport"
 
 [dependencies]
 ommatidia.workspace = true
@@ -19,3 +19,6 @@ half.workspace = true
 log.workspace = true
 meganeura.workspace = true
 png.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+ron.workspace = true
