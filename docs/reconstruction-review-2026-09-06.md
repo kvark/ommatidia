@@ -22,11 +22,11 @@ That is a legitimate *transport-regression* research task, but not a clean denoi
 
 ### 2. Linear kernels still fed nonlinear temporal averaging
 
-The recent `linear_kernel` change correctly averages spatial taps before compression. However, the reviewed `model::gather`, CPU reconstruction and unpack shader still mix the deterministic guide and warped output in compressed colour. History reprojection also interpolates compressed pixels, and history is stored compressed in f16.
+The recent `linear_kernel` change correctly averages spatial taps before compression. However, the reviewed `model::gather`, CPU reconstruction and unpack shader still mix the deterministic guide and warped output in compressed colour. Native history reprojection also interpolates compressed pixels, and history is stored compressed in f16. The old CPU history helper instead interpolates linear radiance, so fractional-motion CPU replay already differed from the native legacy path.
 
 For `c(x)=x/(1+x)`, the arithmetic mean of radiances 0 and 4 is 2. Averaging their compressed values and decoding gives 2/3. This is not an aesthetic difference: the representation itself changes the estimator. The same issue recurs at fractional motion, not only at explicit mix gates.
 
-**Implemented:** versioned `fusion::Mode::{Legacy, Linear, CandidateAware}`. The new modes interpolate and mix linear, possibly demodulated radiance; compression is used for network features and loss. The existing history texture stores linear demodulated f16 in the new modes. CPU teacher/evaluation replay quantizes that linear history to match native storage. Missing fields select Legacy, including sidecars that already have `linear_kernel: true`.
+**Implemented:** versioned `fusion::Mode::{Legacy, Linear, CandidateAware}`. The new modes interpolate and mix linear, possibly demodulated radiance; compression is used for network features and loss. The existing history texture stores linear demodulated f16 in the new modes. CPU teacher/evaluation replay now explicitly reproduces each mode's native storage and interpolation: compressed f16 for Legacy, linear f16 for the new modes. The separate reference-change temporal-loss resampler stays linear. This also corrects the old fractional-motion CPU/native replay discrepancy without changing legacy native checkpoint behavior. Missing fields select Legacy, including sidecars that already have `linear_kernel: true`.
 
 This removes these particular nonlinear averaging errors, not all bias. The rational loss transform, the established inverse-transform ceiling, learned sample selection, clamping, finite precision and reference noise remain separate issues. An explicit exposure/HDR contract should replace the fixed ceiling in a later version, with tests rather than silent reinterpretation of weights.
 
@@ -94,7 +94,7 @@ Use identical matched captures and comparable schedules for these arms:
 
 | Arm | Fusion | Backbone | Question |
 |---|---|---|---|
-| A | legacy | group-norm | matched-data baseline |
+| A | legacy | group-norm | matched-data, native-consistent replay baseline |
 | B | linear | group-norm | radiometry/history-storage effect |
 | C | candidate | group-norm | candidate visibility effect |
 | D | candidate | local | crop-normalization effect |

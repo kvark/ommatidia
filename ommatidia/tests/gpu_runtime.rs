@@ -66,12 +66,14 @@ fn config() -> ModelConfig {
         low_frequency_loss_weight: 0.0,
         residual_bound: 0.0,
         gn_eps: 1e-5,
+        backbone: ommatidia::model::Backbone::GroupNorm,
         objective: Objective::Direct,
         prediction: ommatidia::model::Prediction::SubpixelResidual,
         reconstruction_base: ReconstructionBase::Bilinear,
         guide: ommatidia::model::GuideConfig::TUNED,
         kernel_radius: 2,
         linear_kernel: false,
+        fusion: ommatidia::fusion::Mode::Legacy,
         demodulate: false,
         guide_mix: false,
         demodulation_offset: 0.25,
@@ -179,6 +181,13 @@ fn write_temporal_checkpoint(
     let mut values = vec![0.0; bias.len];
     let gates = config.history_mix_channels() as usize;
     values[bias.len - gates..].fill(8.0);
+    if config.fusion == ommatidia::fusion::Mode::CandidateAware {
+        let slots = (config.scale * config.scale) as usize;
+        let start = bias.len - gates;
+        values[start..].fill(0.0);
+        values[start..start + slots].fill(2.0);
+        values[start + 2 * slots..start + 3 * slots].fill(-3.0);
+    }
     session.set_parameter(&bias.name, &values);
     ommatidia::checkpoint::save(&mut session, config, stem).expect("save");
 }
@@ -823,9 +832,29 @@ fn demodulated_kernel_upscale_matches_the_cpu_path() {
 #[test]
 #[ignore = "requires a GPU"]
 fn temporal_runtime_matches_cpu_recurrence_and_reset() {
+    check_temporal_parity(ommatidia::fusion::Mode::Legacy);
+}
+
+#[test]
+#[ignore = "requires a GPU"]
+fn linear_fusion_matches_cpu_recurrence_and_reset() {
+    check_temporal_parity(ommatidia::fusion::Mode::Linear);
+}
+
+#[test]
+#[ignore = "requires a GPU"]
+fn candidate_fusion_matches_cpu_recurrence_and_reset() {
+    check_temporal_parity(ommatidia::fusion::Mode::CandidateAware);
+}
+
+fn check_temporal_parity(fusion: ommatidia::fusion::Mode) {
     let Some(context) = context() else { return };
-    let config = temporal_kernel_config();
-    let dir = std::env::temp_dir().join("ommatidia-gpu-runtime-temporal-parity");
+    let config = ModelConfig {
+        fusion,
+        ..temporal_kernel_config()
+    };
+    let dir =
+        std::env::temp_dir().join(format!("ommatidia-gpu-runtime-temporal-parity-{fusion:?}"));
     std::fs::create_dir_all(&dir).unwrap();
     let stem = dir.join("model");
     write_temporal_checkpoint(&config, &stem, Arc::clone(&context));
@@ -1139,16 +1168,18 @@ fn temporal_runtime_matches_cpu_recurrence_and_reset() {
     );
     let mut first_compressed =
         batch::compress_linear_crop(&first, &prepared[0].sample, &layout, crop, &config);
-    first_compressed
-        .iter_mut()
-        .for_each(|value| *value = f16::from_f32(*value).to_f32());
+    if !config.fusion.is_linear() {
+        first_compressed
+            .iter_mut()
+            .for_each(|value| *value = f16::from_f32(*value).to_f32());
+    }
     let current_surfaces = batch::crop_hr_surfaces(&prepared[1].sample, &layout, crop);
     let previous_surfaces = batch::crop_hr_surfaces(&prepared[0].sample, &layout, crop);
     let motion_interleaved: Vec<_> = hr_motion[1]
         .chunks_exact(3)
         .flat_map(|value| [value[0], value[1]])
         .collect();
-    let warped = batch::warp_previous_output(
+    let warped = batch::warp_previous_output_for_fusion(
         &first_compressed,
         ommatidia::temporal::Reprojection {
             motion: &motion_interleaved,
@@ -1158,6 +1189,7 @@ fn temporal_runtime_matches_cpu_recurrence_and_reset() {
         },
         TILE as usize,
         SCALE as usize,
+        config.fusion,
     );
     assert!(
         warped.validity.contains(&0.0) && warped.validity.contains(&1.0),
@@ -1182,6 +1214,48 @@ fn temporal_runtime_matches_cpu_recurrence_and_reset() {
             ..Default::default()
         },
     );
+    // The differentiable image graph must implement the same candidate gates
+    // as CPU reconstruction and the native unpack shader, not just compile.
+    let image_model =
+        ommatidia::model::build_ending(&config, ommatidia::model::Ending::Image, [TILE, TILE])
+            .unwrap();
+    let mut image_session =
+        ommatidia::gpu::inference_session(&image_model.graph, Arc::clone(&context));
+    image_session
+        .load_checkpoint(&ommatidia::checkpoint::Paths::from_stem(&stem).weights)
+        .unwrap();
+    let mut taps = vec![0.0; config.tap_len()];
+    batch::write_taps(
+        &prepared[1].sample,
+        &layout,
+        crop,
+        0,
+        &config,
+        batch::ExtraTaps {
+            current: Some(&prepared[1].current_color),
+            ..Default::default()
+        },
+        &mut taps,
+    );
+    image_session.set_input("cond", &expected_cond);
+    image_session.set_input("taps", &taps);
+    image_session.set_input("guide", &recurrent_guide);
+    image_session.set_input("history", &warped.color);
+    image_session.set_input("history_validity", &warped.validity);
+    image_session.step();
+    image_session.wait();
+    let image: Vec<f32> = image_session.read_output(config.loss_len());
+    let cpu = batch::compress_linear_crop(&expected, &prepared[1].sample, &layout, crop, &config);
+    let error = image
+        .iter()
+        .zip(cpu)
+        .map(|(a, b)| (a - b).abs())
+        .fold(0.0f32, f32::max);
+    assert!(
+        error < 2.0e-3,
+        "{fusion:?} image graph differs from CPU by {error:e}"
+    );
+
     let reset_guide = make_guide(&samples[1], &color[1], &vec![0.0; texels]);
     let spatial = batch::assemble_kernel(
         &samples[1],
@@ -1531,4 +1605,143 @@ fn check_kernel_parity(config: &ModelConfig, label: &str) {
         context.destroy_texture(texture);
     }
     context.destroy_command_encoder(&mut encoder);
+}
+
+#[test]
+#[ignore = "requires a GPU"]
+fn local_backbone_is_crop_invariant_away_from_boundaries() {
+    let Some(context) = context() else { return };
+    const FULL: usize = 64;
+    const CROP: usize = 32;
+    const ORIGIN: usize = 16;
+    for backbone in [
+        ommatidia::model::Backbone::GroupNorm,
+        ommatidia::model::Backbone::Local,
+    ] {
+        let config = ModelConfig {
+            tile: CROP as u32,
+            batch: 1,
+            base_channels: 8,
+            level_multipliers: vec![1],
+            backbone,
+            cond_planes: PlaneSet::new().with(Plane::Color),
+            reconstruction_base: ReconstructionBase::Bilinear,
+            ..ModelConfig::default()
+        };
+        let mut input = vec![0.0; 3 * FULL * FULL];
+        let mut crop = vec![0.0; 3 * CROP * CROP];
+        for c in 0..3 {
+            for y in 0..FULL {
+                for x in 0..FULL {
+                    let inside = (ORIGIN..ORIGIN + CROP).contains(&x)
+                        && (ORIGIN..ORIGIN + CROP).contains(&y);
+                    let value = 0.1 * ((x + y * 3 + c * 7) as f32 * 0.13).sin()
+                        + if inside { 0.2 } else { 2.0 };
+                    input[(c * FULL + y) * FULL + x] = value;
+                    if inside {
+                        crop[(c * CROP + y - ORIGIN) * CROP + x - ORIGIN] = value;
+                    }
+                }
+            }
+        }
+        let run = |extent: usize, input: &[f32]| {
+            let model =
+                ommatidia::model::build_for_extent(&config, false, [extent as u32; 2]).unwrap();
+            let mut session = ommatidia::gpu::inference_session(&model.graph, Arc::clone(&context));
+            model.initialize(&mut session, 101);
+            let head = model
+                .params
+                .iter()
+                .find(|p| p.name == "head.conv.weight")
+                .unwrap();
+            // A zero head would make even the GroupNorm control invariant.
+            let weights: Vec<_> = (0..head.len)
+                .map(|i| 0.03 * (i as f32 * 0.17).sin())
+                .collect();
+            session.set_parameter(&head.name, &weights);
+            session.set_input("cond", input);
+            session.step();
+            session.wait();
+            session.read_output(config.target_channels() as usize * extent * extent)
+        };
+        let full: Vec<f32> = run(FULL, &input);
+        let cropped: Vec<f32> = run(CROP, &crop);
+        let mut worst = 0.0f32;
+        for c in 0..config.target_channels() as usize {
+            for y in 12..20 {
+                for x in 12..20 {
+                    let a = full[(c * FULL + y + ORIGIN) * FULL + x + ORIGIN];
+                    let b = cropped[(c * CROP + y) * CROP + x];
+                    assert!(a.is_finite() && b.is_finite());
+                    worst = worst.max((a - b).abs());
+                }
+            }
+        }
+        println!("{backbone:?} crop/full-frame interior discrepancy: {worst:e}");
+        if backbone == ommatidia::model::Backbone::Local {
+            assert!(
+                worst < 5.0e-5,
+                "local backbone changed its interior prediction: {worst:e}"
+            );
+        } else {
+            assert!(
+                worst > 1.0e-4,
+                "control did not expose spatial normalization: {worst:e}"
+            );
+        }
+    }
+}
+
+#[test]
+#[ignore = "requires a GPU"]
+fn candidate_local_training_updates_finite_parameters() {
+    let Some(context) = context() else { return };
+    let config = ModelConfig {
+        base_channels: 8,
+        temporal_weight: 0.0,
+        fusion: ommatidia::fusion::Mode::CandidateAware,
+        backbone: ommatidia::model::Backbone::Local,
+        ..temporal_kernel_config()
+    };
+    let model = ommatidia::model::build(&config, true).unwrap();
+    let mut session = ommatidia::gpu::training_session(&model.graph, context);
+    model.initialize(&mut session, 4);
+    session.set_input("cond", &vec![0.2; config.cond_len()]);
+    session.set_input("taps", &vec![0.25; config.tap_len()]);
+    session.set_input("guide", &vec![0.5; config.loss_len()]);
+    session.set_input("history", &vec![0.6; config.loss_len()]);
+    session.set_input(
+        "history_validity",
+        &vec![
+            1.0;
+            (config.batch * config.scale * config.scale * config.tile * config.tile) as usize
+        ],
+    );
+    session.set_input("target", &vec![0.55; config.loss_len()]);
+    session.set_adam(1.0e-3, 0.9, 0.999, 1.0e-8);
+    let mut first = 0.0;
+    let mut last = 0.0;
+    for step in 0..8 {
+        session.step();
+        session.wait();
+        let loss = session.read_loss();
+        assert!(loss.is_finite(), "non-finite training loss at {step}");
+        if step == 0 {
+            first = loss;
+        }
+        last = loss;
+    }
+    assert!(
+        last < first,
+        "candidate gate did not learn: {first} -> {last}"
+    );
+    let names: Vec<_> = model.params.iter().map(|p| p.name.as_str()).collect();
+    assert!(
+        session
+            .read_params(&names)
+            .iter()
+            .flatten()
+            .all(|v| v.is_finite())
+    );
+    println!("candidate/local training loss {first:e} -> {last:e}");
 }

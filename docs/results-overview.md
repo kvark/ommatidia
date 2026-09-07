@@ -1,0 +1,343 @@
+# Reconstruction results and historical comparisons
+
+The path-tracing-first data path produces independent sparse paths and a
+4,096-spp reference. It does not run historical weights on an
+out-of-distribution input.
+
+On 128 non-overlapping crops from a separate seed-10000 validation set,
+texel-aligned bilinear scores 26.51 dB / 0.5776 SSIM. The v0.3 filter reaches
+34.61 dB / 0.9543 before its learned correction. A held-out sweep tuned the
+same fixed-cost filter to 34.72 dB / 0.9574; the matching b8 residual reaches
+34.74 dB / 0.9575. The
+network still runs wholly at low resolution; the extra guide is contained in
+Ommatidium's existing unpack dispatch, with no ReSTIR or SVGF upstream and no
+new Meganeura graph operation or shader group. Filter coefficients are stored
+in the checkpoint, so the runtime continues to interpret v0.3.0 exactly as it
+was trained while v0.3.1 opts into the tuned profile.
+A matched 1-spp arm reaches 31.74 dB / 0.9215 SSIM with the HR guide, but a b8
+network trained specifically on that distribution adds less than 0.005 dB.
+That closes the “larger static network” branch: temporal history must supply
+new samples before more model capacity is justified.
+On the current common 128-crop score, a perfect static-history oracle makes
+that value concrete: the tuned guide rises from 32.17 dB at one accumulated
+sample to 33.76 at two, 34.72 at four, 35.50 at eight, and 35.89 at sixteen.
+Four aligned 1-spp frames are worth +2.55 dB before motion and rejection
+losses—over one hundred times the b8 static residual's gain.
+The first moving-camera oracle measured the important failure mode:
+motion-only accumulation ghosts and falls from 31.17 to 29.09 dB, whereas
+depth/normal/albedo rejection reaches 32.33 dB / 0.9301 SSIM. Only 2.7% of
+history pixels are rejected. Validity is therefore an explicit input to the
+temporal model, not something a larger backbone should have to infer.
+The sequence-aware trainer now preserves whole-sequence splits and tests a
+safe temporal model: accumulated colour remains the deterministic base, while
+current RGB, confidence, and the exact guided base are ordinary U-Net input
+channels. Predicting three low-resolution colour corrections reaches 32.28 dB
+on a separate moving-sequence set versus 32.26 dB for rejected history alone;
+a 4×-compute b16 control reaches 32.30 dB. The small learned increment is real
+but not release-worthy, so the spatial v0.3.1 runtime remains the default while
+motion diversity and temporal losses are expanded. See the
+[`temporal model result`](results/temporal-low-color-2026-08-14.md).
+The follow-up
+[`curved-motion gates`](results/temporal-motion-gates-2026-08-15.md)
+add a motion-compensated stability metric. Curved-motion training plus one
+history-deviation channel improves the independent set by 1.27 dB spatially
+and 0.57 dB temporally at essentially the same b8 cost; the next larger step is
+joint sequence training rather than a wider or transformer backbone.
+The subsequent
+[`object-motion gate`](results/temporal-object-motion-2026-08-15.md)
+animates independent Blade objects and scores moving pixels directly. A mixed
+camera/object 4,000-step b8 run reaches 34.52 dB on object-only motion and
+34.21 dB on camera-only motion, improving the prior checkpoint by 0.06 and
+0.02 dB at identical inference cost while retaining temporal stability. A
+velocity-channel ablation was worse and its code was removed.
+The complete controlled setup and trace are recorded in the
+[`independent-path result`](results/path-trace-guided-2026-08-13.md).
+
+A compute-matched shifted-window transformer tied the convolutional network in
+quality and ran 7.5% slower. Its experimental Meganeura window primitive was
+removed again, deleting roughly 440 lines rather than carrying unused graph,
+autodiff, compiler, and shader surface. The evidence and future temporal gate
+are in the [`architecture decision`](architecture-decision.md).
+
+The primary comparison is ordered by the actual product path. Every image is a
+matched **2×** reconstruction of the same held-out scene; ReSTIR+SVGF is a
+separate control, not Ommatidium's input. OIDN denoises at input resolution and
+then receives the same texel-centre 2× bilinear reconstruction—it is not being
+presented as an OIDN upscaler.
+
+| scene | Sparse paths + bilinear 2× | Ommatidium 2× | OIDN High + bilinear 2× | ReSTIR+SVGF + bilinear 2× | Canonical 4,096 spp |
+|---|---|---|---|---|---|
+| canopy shadow | <img src="comparison-suite/canopy-shadow/bilinear.png" alt="Bilinearly reconstructed sparse canopy-shadow paths" width="256" height="256"> | <img src="comparison-suite/canopy-shadow/ommatidium.png" alt="Ommatidium canopy-shadow reconstruction" width="256" height="256"> | <img src="comparison-suite/canopy-shadow/oidn-input-high.png" alt="OIDN High canopy-shadow denoise" width="256" height="256"> | <img src="comparison-suite/canopy-shadow/restir-svgf.png" alt="ReSTIR plus SVGF canopy-shadow control" width="256" height="256"> | <img src="comparison-suite/canopy-shadow/canonical.png" alt="Canonical canopy-shadow reference" width="256" height="256"> |
+| local light | <img src="comparison-suite/local-light/bilinear.png" alt="Bilinearly reconstructed sparse local-light paths" width="256" height="256"> | <img src="comparison-suite/local-light/ommatidium.png" alt="Ommatidium local-light reconstruction" width="256" height="256"> | <img src="comparison-suite/local-light/oidn-input-high.png" alt="OIDN High local-light denoise" width="256" height="256"> | <img src="comparison-suite/local-light/restir-svgf.png" alt="ReSTIR plus SVGF local-light control" width="256" height="256"> | <img src="comparison-suite/local-light/canonical.png" alt="Canonical local-light reference" width="256" height="256"> |
+| hard shadow | <img src="comparison-suite/hard-shadow/bilinear.png" alt="Bilinearly reconstructed sparse hard-shadow paths" width="256" height="256"> | <img src="comparison-suite/hard-shadow/ommatidium.png" alt="Ommatidium hard-shadow reconstruction" width="256" height="256"> | <img src="comparison-suite/hard-shadow/oidn-input-high.png" alt="OIDN High hard-shadow denoise" width="256" height="256"> | <img src="comparison-suite/hard-shadow/restir-svgf.png" alt="ReSTIR plus SVGF hard-shadow control" width="256" height="256"> | <img src="comparison-suite/hard-shadow/canonical.png" alt="Canonical hard-shadow reference" width="256" height="256"> |
+
+All five cells in each row are generated and explicitly displayed at the same
+256×256 output extent.
+The first column is the actual 128×128 sparse path input reconstructed with the
+suite's texel-centre bilinear 2× baseline; the native 128×128 diagnostic is not
+used in this table.
+
+The six-scene suite confirms both the progress and the shortcoming visible in
+those images. Ommatidium averages 29.26 dB, 1.21 dB above OIDN High, retains 77%
+of canonical detail rather than OIDN's 49%, and has far lower relative error in
+dark regions. OIDN leads SSIM (0.873 versus 0.841) because it is smoother.
+Ommatidium still carries only 93.5% of canonical mean luminance and leads OIDN
+by just 0.36 dB on the new block-average low-frequency score: the broad mottling
+is real. The complete images, per-scene CSV, speed trace, rejected first fixes,
+and reproduction command are in the
+[`curated OIDN result`](results/curated-oidn-2026-08-22.md) and
+[`benchmark harness`](benchmarks/README.md).
+The ordered work needed to turn the current metric lead into an equally clear
+visual lead is tracked in the
+[`quality roadmap`](quality-roadmap.md).
+The latest balanced-corpus probe is the first learned correction to improve
+PSNR, SSIM, low-frequency error, detail, and temporal stability together on a
+fresh full-frame audit, but the calibrated gain remains deliberately small;
+see the [`result`](results/balanced-low-resolution-2026-08-27.md).
+
+### Temporal history removes the broad fluctuation
+
+The remaining spatial mottling is not recoverable from a different loss over
+the same noisy frame. The recurrent experiment instead mixes the previous
+reconstruction after the current-frame gather, using current-to-previous motion
+and explicit per-sub-pixel surface validity. Rejected history hard-closes the
+gate; it can no longer become accidental black radiance.
+
+On 756 crops from 63 unseen four-frame sequences, with a fresh 1-spp path each
+frame, the model reaches 27.62 dB versus 26.04 dB for accumulated HR guidance.
+Its motion-compensated temporal delta is +4.14 dB better, and its 16x16-block
+delta is +9.54 dB better: broad frame-to-frame fluctuation falls from 0.000578
+to 0.000064, about ninefold. Quality improves with recurrent age rather than
+drifting. The native implementation reproduces the same contract. A live
+four-frame Blade run reduced display-space 16x16-block fluctuation from
+0.000934 for the bilinear 1-spp input to 0.000045, about 21x, while the
+finite-sample canonical reference measured 0.000010. That is a runtime sanity
+check rather than a replacement for the linear-HDR validation above.
+
+A newer image-quality arm isolates reconstruction from physical motion: sixteen
+independent 1-spp frames visit the exact 2x projection grid, leaving four path
+samples at each output subpixel. Its held-out targets are now separate
+16,384-spp captures; reference grain is no longer being mistaken for model
+quality.
+
+Across 60 non-reset full frames from four held-out sequences, the accumulated
+HR guide reaches 28.11 dB / 0.8467 SSIM. Capturing first-response diffuse,
+specular, and emissive radiance separately, filtering demodulated diffuse and
+rough specular with five geometry-aware à-trous scales, then restoring exact
+output-resolution albedo raises that to 29.87 dB / 0.9165. The compact learned
+residual reaches 30.01 dB / 0.9161, retains 74% of reference detail, and raises
+16x16-block low-frequency PSNR from the HR guide's 32.60 to 34.48 dB. On the
+mature fifteenth frame it reaches 30.71 dB / 0.9255 and 35.89 dB low-frequency
+PSNR.
+
+This is real progress, but not the goal: broad wall illumination variation is
+still visible, and the final RGB residual is worth only 0.14 dB over the fixed
+split-lobe estimator. A 1.23M-parameter U-Net with global bottleneck attention
+was worse (+0.03 dB at equal training), so that code was removed. The next
+quality experiment is learned per-lobe filter selection, not a larger final
+colour residual. This static projection-grid experiment also does not replace
+the moving-sequence validation above.
+
+| accumulated HR guide, 16 frames | split-lobe à-trous estimate | Ommatidium residual | 16,384-spp reference |
+|---|---|---|---|
+| <img src="temporal-low-frequency/hr-guided.png" alt="Accumulated high-resolution guide on the held-out glossy scene" width="256" height="256"> | <img src="temporal-low-frequency/split-guided.png" alt="Roughness-aware split-radiance multiscale reconstruction" width="256" height="256"> | <img src="temporal-low-frequency/predicted.png" alt="Phase-lobe Ommatidium output, with remaining broad wall variation visible" width="256" height="256"> | <img src="temporal-low-frequency/reference.png" alt="Independent 16,384-spp reference" width="256" height="256"> |
+
+The full data recipe, radius gate, metrics, rejected initialization, and 4-spp
+control are in the
+[`1-spp temporal result`](results/temporal-validity-1spp-2026-08-22.md).
+The split-radiance capture contract, clean-reference audit, multiscale filter,
+and architecture controls are recorded in the
+[`split-radiance result`](results/split-radiance-atrous-2026-08-23.md).
+
+A 32-scene follow-up now measures the next target without growing the runtime:
+selecting one of the six already-computed filter scales independently for
+diffuse and specular, constant over 8x8 output blocks. The oracle improves the
+fixed estimator from 31.11 to 32.82 dB, SSIM from 0.9349 to 0.9441, and
+low-frequency PSNR from 35.33 to 38.68 dB while preserving luminance. Reusing
+the preceding frame's reference-derived choices retains most of the gain, so
+the decision is stable enough to try learning. It remains an oracle, not a
+product result. Two deployable probes failed the offline gate and were removed:
+a pooled CPU selector recovered only 26–29% of the held-out PSNR and
+low-frequency oracle gaps, while a spatial mixture head scored 31.01 dB versus
+31.10 dB for the fixed estimator. The
+[`pooled`](results/learned-lobe-selector-2026-08-24.md) and
+[`spatial`](results/spatial-lobe-mixture-2026-08-24.md) negative results
+leave the oracle as a useful diagnostic, not a committed architecture. The
+next quality step is broader clean scene coverage and direct lobe
+reconstruction rather than another filter-choice classifier.
+
+| fixed split-lobe estimator | 8x8 per-lobe scale oracle | 16,384-spp reference |
+|---|---|---|
+| <img src="lobe-scale-oracle/fixed.png" alt="Fixed multiscale split-lobe estimate" width="256" height="256"> | <img src="lobe-scale-oracle/oracle-b8.png" alt="Per-lobe scale-selection quality ceiling" width="256" height="256"> | <img src="lobe-scale-oracle/reference.png" alt="Independent clean reference for the scale-selection audit" width="256" height="256"> |
+
+The first direct-lobe residual probe is more promising but still not ready.
+On eight fresh 16,384-spp scenes, a 302k-parameter model improves full-frame
+PSNR by 0.14 dB, low-frequency PSNR by 0.16 dB, relative error by 8.5%, and
+temporal error by 0.14 dB, but SSIM falls from 0.9132 to 0.9097 and the visual
+change remains subtle. Its implementation was removed rather than expanding
+the runtime. The [`controlled result`](results/direct-lobe-residual-2026-08-24.md)
+points to broadening the training corpus before spending more capacity.
+
+| fixed split-lobe estimator | offline direct-lobe probe | 16,384-spp reference |
+|---|---|---|
+| <img src="direct-lobe-residual/fixed.png" alt="Fixed split-lobe estimator on the fresh full-frame audit" width="256" height="256"> | <img src="direct-lobe-residual/predicted.png" alt="Direct-lobe residual probe on the same frame and extent" width="256" height="256"> | <img src="direct-lobe-residual/reference.png" alt="Independent clean reference at the same 256 by 256 extent" width="256" height="256"> |
+
+### Why the ReSTIR control is darker
+
+Blade's linear-HDR regression shows that no-reuse ReSTIR carries 99.1% and
+pairwise reuse 99.0% of a **transport-matched direct** canonical reference.
+The remaining dark faces are not a reservoir normalization loss: Blade's
+real-time mode stops at the first non-emissive hit, while the clean canonical
+target traces secondary paths that bring indirect fill back from the floor and
+neighboring objects. NVIDIA likewise treats multi-bounce reuse as a separate
+[ReSTIR GI](https://research.nvidia.com/publication/2021-06_restir-gi-path-resampling-real-time-path-tracing)
+algorithm. The table above therefore labels ReSTIR+SVGF as a direct-light
+comparison control and never presents raw ReSTIR as Ommatidium source data.
+
+### Reconstruction is one operation
+
+The learned residual over a deterministic filter was worth 0.02 dB, and the
+frame was visibly soft. Neither was a limit of the network. Asking a
+least-squares model for the residual of a filter asks it to predict that
+filter's error, which is dominated by the noise the renderer happened to draw
+and whose conditional mean is almost exactly zero — so a 74k model and a 649k
+model agreed, and the conclusion drawn was that spatial reconstruction had
+saturated.
+
+An oracle that only picks which of the *already shipped* filter footprints to
+use per texel is worth +0.83 to +2.23 dB at 4 spp, bracketed by forcing the
+choice constant over 4×4 and 16×16 blocks so it cannot exploit the noise draw.
+The tuned global filter width is the right one for 14.7% of texels.
+
+`Prediction::SubpixelKernel` therefore has the network emit gather weights over
+the input samples, one set per output sub-pixel, with nothing filtered
+beforehand and no base to correct. The intended output is a convex combination
+of measured radiance. A later audit found that the checkpoints in the table
+below actually averaged the bounded `compress(radiance)` representation; this
+still prevents an unbounded learned residual, but concavity biases broad
+filters dark. New kernel sidecars opt into linear-radiance averaging and
+compress only the result, while old weights keep their exact historical path.
+Measured on the same held-out set:
+
+| reconstruction | PSNR | SSIM | relMSE | detail |
+|---|---:|---:|---:|---:|
+| texel-centre bilinear | 26.51 dB | 0.5776 | 0.08941 | 394% |
+| HR guide 5×5 (v0.3.1 base) | 34.87 dB | 0.9579 | 0.01043 | 63% |
+| kernel b8 r2 | 35.38 dB | 0.9338 | 0.00815 | 99% |
+| **kernel b16 r2** | **36.61 dB** | 0.9514 | **0.00595** | **86%** |
+
+Capacity matters again: b8 → b16 is worth +1.23 dB, where under the residual
+parameterisation an 8.8× larger model was worth 0.03 dB.
+
+Two metrics were added to see any of this. PSNR and SSIM cannot: a box blur
+that removes an eighth of the frame's remaining detail costs 0.06 dB and
+0.002 SSIM, and *improves* the same error measured in display space. Detail
+retention is displayed gradient energy as a fraction of the canonical frame's,
+and relMSE keeps a bright region from deciding the score alone.
+
+### The scenes had to change too
+
+Blade's fallback environment is a white 1×1 texture, so an open scene is a
+uniform furnace in which nothing can be in shadow: none of the old validation
+pixels fall below a displayed luminance of 0.10. Every material was a constant
+colour, so albedo demodulation — one of the larger wins in a production
+denoiser — measured as 0.01 dB. `--canopy`, `--textures`, `--gloss` and
+`--ground-patches N` fix that, all off by default. Textures go through the same
+BC1 asset path a glTF material's base colour does.
+
+Retrained on those scenes, both architectures for 8,000 steps, scored on a
+separate 128-scene set:
+
+| external validation | PSNR | SSIM | relMSE | worst crop | detail |
+|---|---:|---:|---:|---:|---:|
+| HR guide 5×5 | 28.36 dB | 0.8736 | 0.187 | 5.80 | 47% |
+| residual b8 | 29.96 dB | 0.8704 | 17.204 | **171.31** | 61% |
+| kernel b16 r2 | **30.26 dB** | 0.8563 | 0.044 | 0.47 | 67% |
+| **kernel b16 r2, `--demodulate`** | 30.21 dB | **0.8840** | **0.032** | **0.29** | **83%** |
+
+This corrects something. The learned residual added 0.02 dB on the old scenes
+and 1.60 dB here, so most of that null result was the data rather than the
+parameterisation — a residual over a filter has nothing to predict when the
+truth inside every object is smooth. But it is unbounded, and its relative
+error is 92× worse than the base it corrects, with a worst crop of 171. PSNR
+reports the same model as a 1.60 dB win, because the failure is in the dark
+third of the frame where PSNR has almost no weight.
+
+The kernel model's worst crop is 0.47 — better than the deterministic base's
+own worst case. That is still the bounded-gather formulation rather than an
+unconstrained residual, but its historical compressed-space average did not
+preserve physical energy. The corrected linear path and its controlled
+firefly/guide-mix experiment are recorded in the
+[`DLSS 4/5 follow-up`](results/dlss-4-5-probes-2026-09-04.md).
+
+Demodulating the albedo — dividing it out before the gather and multiplying the
+exact output-resolution one back after — is level on PSNR and better on
+everything else, and is the only arm that beats the deterministic base on SSIM
+too. The offset that bounds how far a pixel may be rescaled matters more than it
+sounds: at 0.05 it allows a factor of twenty, which lands pixels where the
+compressed gather has no precision left and costs 1.5 dB. At 0.25 it allows
+four.
+
+Three sweeps settled the rest. Nine taps cannot denoise four samples per pixel;
+twenty-five is the knee and forty-nine buys 0.32 dB for twice the head. A 1×1
+head looked like free money and costs 0.73 dB — and saves less than it appears,
+since 22% of the arithmetic is 8.5% of the frame. They have one thing in common:
+every knob is really "how much smoothing", PSNR always prefers more of it, and
+detail retention crossing 100% is what marks a variant that failed to denoise.
+Every underperforming arm in this work sat above it.
+
+Reprojected history extends the formulation naturally — the accumulated estimate
+is one more tap, and how much to trust it is one more weight — but a single-frame
+objective never asks for it. The learned bias for that tap did not move off its
+initialisation in 8,000 steps: twenty-five current-frame taps already denoise a
+4-spp frame, so history buys nothing a per-frame squared error can see, and the
+sequence flickered while every individual frame improved.
+
+Stability had to go into the objective. The temporal metric rearranges into a
+squared error against a host-assembled target, so it costs the graph six
+operations rather than a per-pixel gather it cannot express, with the previous
+frame's answer coming from a detached copy of the network. Temporal error then
+moves monotonically with its weight, and at weight 1 the reconstruction gives up
+0.31 dB of PSNR for 0.95 dB of stability while also improving relative error,
+worst case, and SSIM — 1.49 dB better per frame than the deterministic
+accumulation, five times better on relative error, sixteen times better in its
+worst crop, and within 0.17 dB on stability.
+
+Weighting that term toward moving pixels seemed obvious and is wrong: the target
+is least trustworthy exactly where motion is largest, so it amplifies target
+error rather than a deficiency, monotonically. Moving pixels remain the
+unsolved case. See the
+[`single-operation result`](results/monolithic-kernel-2026-08-15.md).
+
+SSIM should not be read on this content. Split by crop brightness, the darkest
+third scores 0.9810 and the brightest 0.7905: C2 is absolute, and where the
+local variance falls below it the structure term reports agreement whatever the
+images did. `metrics::ssim` is unchanged so published figures still compare, and
+the diagnostic now reports the split.
+
+The checked-in July experiments below used SVGF-filtered inputs. They found the
+architecture and kernel optimizations, but their quality figures describe an
+upscaler stacked after SVGF, not its replacement. Dataset v2 records that
+provenance and the trainer refuses filtered data unless
+`--allow-filtered-input` is explicit. Findings worth knowing before reading
+further:
+
+- **The direct objective beats the diffusion one**, by 5.12 dB against 1.54,
+  with the diffusion arm given half again as much training. Worse for
+  diffusion, its sampler makes its own output worse the more it is used —
+  +3.31 dB at one step, +1.55 at twenty. Conditioning on the renderer's
+  G-buffer leaves little for a sampler to explore, so iterating only
+  accumulates the model's own error.
+- **The G-buffer is worth half a decibel** over colour alone, steadily, for
+  channels the renderer produced anyway.
+- **The deployment shape is semi-realtime, but not a 2 ms upscaler.** Two kernel fixes
+  in meganeura — parallelising GroupNorm over the image, and making the
+  Winograd transforms read contiguously — were worth 5.4x with the weights
+  untouched. The rest was not needing the large network at all: a 649k
+  parameter model matches the 6.5M one once it is trained out. With the much
+  stronger low-resolution guided base, a 74k-parameter b8 model stays within
+  0.03 dB of b24 and runs in 7.76 ms end to end at 960×540 → 1920×1080. The
+  sharper v0.3 HR-guided path adds roughly one millisecond in unpack.
+- **Compare shapes at convergence, not at a fixed step count.** A sweep that
+  gave every shape 5000 steps ranked them almost exactly wrong, because the
+  large ones were the undertrained ones.

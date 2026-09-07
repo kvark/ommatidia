@@ -29,6 +29,17 @@ pub enum Objective {
     Direct,
 }
 
+/// Versioned normalization contract for crop-trained reconstruction.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Backbone {
+    /// Historical diffusion-derived blocks with image-wide GroupNorm.
+    #[default]
+    GroupNorm,
+    /// Local convolutions/SiLU with 0.1-scaled residual branches and no
+    /// image-wide statistics. Requires direct regression and new weights.
+    Local,
+}
+
 /// Spatial quantity emitted by the network.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Prediction {
@@ -38,23 +49,11 @@ pub enum Prediction {
     LowResolutionResidual,
     /// A gather kernel over nearby input samples, one per output sub-pixel.
     ///
-    /// Denoising and upscaling stop being two stages. There is no filtered
-    /// low-resolution image in the middle and no deterministic base to correct:
-    /// the output pixel is a weighted average of the sparse samples themselves,
-    /// and the network's whole job is deciding which of them belong to it.
-    ///
-    /// Predicting the weights rather than the colour is what makes this
-    /// tractable. Asked for a residual over a filter, a least-squares network
-    /// is being asked to predict that filter's error, which is dominated by the
-    /// particular noise the renderer drew and whose conditional mean is very
-    /// nearly zero — measured at 0.02 dB on this data. Asked for weights, it is
-    /// choosing among samples it can see, and it cannot answer zero.
-    ///
-    /// Two properties come from the form rather than from training. The output
-    /// is a convex combination of real radiance, so it cannot overshoot, invent
-    /// energy, or emit the black pixels a normalised bilateral gather produces
-    /// when it rejects every tap. And the reconstruction is one dispatch over
-    /// one neighbourhood, so nothing is filtered twice.
+    /// The head predicts positive spatial weights, followed by optional guide
+    /// and history gates. Convex weights constrain range, not estimator bias:
+    /// sample-dependent weights and compressed-space losses can still darken
+    /// radiance. `fusion` versions physical and candidate-aware mixing without
+    /// changing the interpretation of released checkpoints.
     SubpixelKernel,
 }
 
@@ -188,6 +187,9 @@ pub struct ModelConfig {
     pub blocks_per_level: usize,
     pub num_groups: u32,
     pub gn_eps: f32,
+    /// Local reconstruction avoids crop/full-frame spatial-statistic drift.
+    #[serde(default)]
+    pub backbone: Backbone,
     /// Width of the sinusoidal timestep embedding the host computes.
     pub time_input_dim: u32,
     /// Width the timestep MLP projects to.
@@ -312,6 +314,10 @@ pub struct ModelConfig {
     /// contract; newly trained kernel checkpoints opt in explicitly.
     #[serde(default)]
     pub linear_kernel: bool,
+    /// Versioned fusion/interpolation contract. Missing sidecars retain the
+    /// historical compressed-space behavior, even with linear gather taps.
+    #[serde(default)]
+    pub fusion: crate::fusion::Mode,
     /// Reprojected sparse samples consumed by this checkpoint. `None` keeps
     /// all existing single-frame sidecars and runtimes unchanged.
     #[serde(default)]
@@ -338,6 +344,7 @@ impl Default for ModelConfig {
             blocks_per_level: 1,
             num_groups: 8,
             gn_eps: 1e-5,
+            backbone: Backbone::GroupNorm,
             time_input_dim: 64,
             time_embed_dim: 256,
             // Overwritten from the data; 1.0 leaves the residual as it is.
@@ -351,6 +358,7 @@ impl Default for ModelConfig {
             guide: GuideConfig::TUNED,
             kernel_radius: legacy_kernel_radius(),
             linear_kernel: false,
+            fusion: crate::fusion::Mode::Legacy,
             demodulate: false,
             guide_mix: false,
             demodulation_offset: legacy_demodulation_offset(),
@@ -416,7 +424,7 @@ impl ModelConfig {
             Some(temporal)
                 if self.prediction == Prediction::SubpixelKernel && temporal.previous_output =>
             {
-                self.scale * self.scale
+                self.scale * self.scale * self.fusion.gate_parameters()
             }
             _ => 0,
         }
@@ -426,7 +434,7 @@ impl ModelConfig {
     /// sub-pixel. Not counted in [`Self::gather_taps`].
     pub fn guide_mix_channels(&self) -> u32 {
         if self.guide_mix && self.prediction == Prediction::SubpixelKernel {
-            self.scale * self.scale
+            self.scale * self.scale * self.fusion.gate_parameters()
         } else {
             0
         }
@@ -635,6 +643,11 @@ impl ModelConfig {
                 ));
             }
         }
+        if self.backbone == Backbone::Local && self.objective != Objective::Direct {
+            return Err(
+                "the local backbone requires direct regression and a new checkpoint".into(),
+            );
+        }
         self.validate_extent([self.tile, self.tile])?;
         if !self.time_input_dim.is_multiple_of(2) {
             return Err(format!(
@@ -707,6 +720,14 @@ impl ModelConfig {
                     self.demodulation_offset
                 ));
             }
+        }
+        if self.fusion.is_linear()
+            && (!self.linear_kernel
+                || self.prediction != Prediction::SubpixelKernel
+                || !self.guide_mix
+                || !self.temporal.is_some_and(|t| t.previous_output))
+        {
+            return Err("linear/candidate fusion requires linear kernel taps, guide mixing and previous-output history".into());
         }
         if self.guide_mix {
             if self.prediction != Prediction::SubpixelKernel {
@@ -974,6 +995,9 @@ impl<'a> Builder<'a> {
     }
 
     fn group_norm(&mut self, x: NodeId, name: &str, s: Shape) -> NodeId {
+        if self.config.backbone == Backbone::Local {
+            return x;
+        }
         let weight = self.param(
             &format!("{name}.weight"),
             s.channels as usize,
@@ -1059,6 +1083,13 @@ impl<'a> Builder<'a> {
         let h = self.group_norm(h, &format!("{name}.norm2"), wide);
         let h = self.g.silu(h);
         let h = self.conv(h, &format!("{name}.conv2.weight"), wide, out_c, 3, 1);
+        let h = if self.config.backbone == Backbone::Local {
+            let len = (self.config.batch * out_c * s.spatial()) as usize;
+            let scale = self.g.constant(vec![0.1; len], &[len]);
+            self.g.mul(h, scale)
+        } else {
+            h
+        };
 
         if s.channels == out_c {
             self.g.add(x, h)
@@ -1116,13 +1147,22 @@ pub(crate) fn bilinear_kernel_bias(config: &ModelConfig) -> Vec<f32> {
     // finds evidence for it.
     if config.guide_mix_channels() != 0 {
         let gather_share = 0.25;
-        let mix_bias = inverse_softplus(gather_share / (1.0 - gather_share));
+        let odds: f32 = gather_share / (1.0 - gather_share);
+        let mix_bias = if config.fusion == crate::fusion::Mode::CandidateAware {
+            odds.ln()
+        } else {
+            inverse_softplus(odds)
+        };
         for slot in 0..slots {
             out[(slots * taps + slot) as usize] = mix_bias;
         }
     }
     if config.history_mix_channels() != 0 {
-        let mix_bias = inverse_softplus(FLOOR);
+        let mix_bias = if config.fusion == crate::fusion::Mode::CandidateAware {
+            FLOOR.ln()
+        } else {
+            inverse_softplus(FLOOR)
+        };
         let offset = slots * taps + config.guide_mix_channels();
         for slot in 0..slots {
             out[(offset + slot) as usize] = mix_bias;
@@ -1263,6 +1303,18 @@ fn gather(
         let ones = graph.constant(vec![1.0; len], &[len]);
         let denominator = graph.add(image, ones);
         image = graph.div(image, denominator);
+    }
+    if config.fusion.is_linear() {
+        let guide = graph.input("guide", &[(batch * 3 * slots * spatial) as usize]);
+        let (history, validity) = history_inputs.expect("validated recurrent fusion");
+        return crate::fusion::build(
+            graph,
+            [image, guide, history],
+            validity,
+            [guide_gates.unwrap(), history_gates.unwrap()],
+            config.fusion,
+            [batch, slots, spatial],
+        );
     }
     if let Some(gates) = guide_gates {
         let guide = graph.input("guide", &[(batch * 3 * slots * spatial) as usize]);
@@ -1569,7 +1621,27 @@ pub fn build_ending(
             .add_per_channel(output, bias, config.target_channels(), spatial);
         // Mix gates share this softplus so the prediction graph stays the
         // same shape as a spatial kernel; gather maps `m` to `m/(m+1)`.
-        builder.g.softplus(biased, 1.0)
+        if config.fusion == crate::fusion::Mode::CandidateAware {
+            let spatial_channels = config.scale * config.scale * config.gather_taps();
+            let mixes = config.guide_mix_channels() + config.history_mix_channels();
+            let taps = builder
+                .g
+                .split_a(biased, batch, spatial_channels, mixes, spatial);
+            let coefficients = builder
+                .g
+                .split_b(biased, batch, spatial_channels, mixes, spatial);
+            let positive = builder.g.softplus(taps, 1.0);
+            builder.g.concat(
+                positive,
+                coefficients,
+                batch,
+                spatial_channels,
+                mixes,
+                spatial,
+            )
+        } else {
+            builder.g.softplus(biased, 1.0)
+        }
     } else if config.residual_bound != 0.0 {
         let bounded = builder.g.tanh(output);
         let len = config.target_len_for_extent(extent);
@@ -1698,6 +1770,22 @@ mod tests {
     }
 
     #[test]
+    fn local_backbone_has_no_normalization_parameters() {
+        let mut c = small();
+        c.objective = Objective::Direct;
+        c.backbone = Backbone::Local;
+        let model = build(&c, true).unwrap();
+        assert!(model.params.iter().all(|p| !p.name.contains("norm")));
+        let serialized = ron::ser::to_string(&c).unwrap();
+        let restored: ModelConfig = ron::from_str(&serialized).unwrap();
+        assert_eq!(restored.backbone, Backbone::Local);
+        let old: ModelConfig = ron::from_str(&serialized.replace(",backbone:Local", "")).unwrap();
+        assert_eq!(old.backbone, Backbone::GroupNorm);
+        c.objective = Objective::Diffusion;
+        assert!(c.validate().is_err());
+    }
+
+    #[test]
     fn default_is_the_measured_deployment_baseline() {
         let c = ModelConfig::default();
         assert_eq!(c.objective, Objective::Direct);
@@ -1790,6 +1878,45 @@ mod tests {
         assert_eq!(c.guide_mix_channels(), 4);
         assert_eq!(c.target_channels(), 25 * 4 + 4 + 4);
         assert!(c.validate().is_ok());
+    }
+
+    #[test]
+    fn candidate_fusion_versions_channels_and_builds_all_endings() {
+        let mut c = ModelConfig {
+            batch: 1,
+            tile: 16,
+            base_channels: 8,
+            prediction: Prediction::SubpixelKernel,
+            reconstruction_base: ReconstructionBase::Sample,
+            demodulate: true,
+            linear_kernel: true,
+            guide_mix: true,
+            temporal: Some(crate::temporal::Config {
+                frames: 4,
+                rejection: crate::temporal::RejectionConfig::default(),
+                features: crate::temporal::Features::Variance,
+                unrejected_tap: false,
+                previous_output: true,
+            }),
+            ..ModelConfig::default()
+        };
+        let legacy = c.target_channels();
+        for mode in [
+            crate::fusion::Mode::Linear,
+            crate::fusion::Mode::CandidateAware,
+        ] {
+            c.fusion = mode;
+            c.validate().unwrap();
+            assert_eq!(
+                c.target_channels(),
+                legacy + 8 * (mode.gate_parameters() - 1)
+            );
+            for ending in [Ending::Prediction, Ending::Image, Ending::Loss] {
+                build_ending(&c, ending, [c.tile, c.tile]).unwrap();
+            }
+        }
+        c.linear_kernel = false;
+        assert!(c.validate().is_err());
     }
 
     #[test]

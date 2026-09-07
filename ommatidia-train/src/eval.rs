@@ -42,7 +42,9 @@ fn mix_stats(
 ) -> Option<MixStats> {
     let guide_channels = config.guide_mix_channels() as usize;
     let history_channels = config.history_mix_channels() as usize;
-    if guide_channels + history_channels == 0 {
+    if config.fusion == ommatidia::fusion::Mode::CandidateAware
+        || guide_channels + history_channels == 0
+    {
         return None;
     }
     let spatial = (config.tile * config.tile) as usize;
@@ -164,12 +166,13 @@ pub fn reconstruct(
         let spatial = (config.tile * config.tile) as usize;
         let start = (config.scale * config.scale * config.gather_taps()) as usize * spatial;
         let len = config.guide_mix_channels() as usize * spatial;
-        for value in &mut residual[start..start + len] {
-            // The positive head value is the odds of choosing the physical
-            // gather: the mixer maps m to m/(1+m). Scaling it here is thus a
-            // well-defined confidence calibration rather than an RGB blend.
-            *value *= guide_scale;
-        }
+        ommatidia::fusion::calibrate(
+            &mut residual[start..start + len],
+            config.fusion,
+            (config.scale * config.scale) as usize,
+            spatial,
+            guide_scale,
+        );
     }
 
     if history_scale != 1.0 && config.history_mix_channels() != 0 {
@@ -178,9 +181,13 @@ pub fn reconstruct(
             + config.guide_mix_channels()) as usize
             * spatial;
         let len = config.history_mix_channels() as usize * spatial;
-        for value in &mut residual[start..start + len] {
-            *value *= history_scale;
-        }
+        ommatidia::fusion::calibrate(
+            &mut residual[start..start + len],
+            config.fusion,
+            (config.scale * config.scale) as usize,
+            spatial,
+            history_scale,
+        );
     }
     if residual_scale != 1.0 {
         debug_assert_ne!(config.prediction, Prediction::SubpixelKernel);

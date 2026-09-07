@@ -1,5 +1,8 @@
 # Quality roadmap
 
+> Update: the [September reconstruction review](reconstruction-review-2026-09-06.md)
+> supersedes the immediate experiment order below; measured historical results remain unchanged.
+
 The objective is not merely to beat Open Image Denoise on one average metric.
 Ommatidium should look at least as clean, retain its present edge and dark-region
 advantages, and remain temporally stable on scenes that were not used to make

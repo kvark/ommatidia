@@ -11,12 +11,11 @@ use blade_graphics as gpu;
 /// Temporal reuse means the first frame after a camera cut is not what the
 /// renderer actually shows, so the input has to be a settled one.
 pub const RESTIR_FRAMES: usize = 8;
-/// Practical path depth presented to the reconstruction network.
-const INPUT_MAX_BOUNCES: u32 = 3;
-/// Reference depth: long enough for the procedural scenes to settle, with
-/// Blade's path tracer applying Russian roulette after the fourth bounce.
-/// Keeping this separate from the input avoids training against a clean but
-/// systematically truncated target.
+/// Historical ReSTIR comparison setting, not the sparse path-tracing contract.
+const RESTIR_MAX_BOUNCES: u32 = 3;
+/// Default matched path depth for sparse input and converged reference.
+/// Denoising should vary sample count, not silently train a truncated transport
+/// estimator against a different integrand. Blade uses roulette after bounce 4.
 pub const REFERENCE_MAX_BOUNCES: u32 = 8;
 /// Limit one command submission's retained scene resources. Reference captures
 /// can run for thousands of frames; keeping every transient BLAS/TLAS alive
@@ -230,8 +229,8 @@ impl NeuralTarget {
 pub enum Pass {
     /// Raw ReSTIR, without Blade's built-in SVGF pass: a comparison input.
     RealTime,
-    /// Sparse unbiased paths: the primary network input.
-    PathTrace { frames: usize },
+    /// Sparse paths: match reference transport by default, varying sample count.
+    PathTrace { frames: usize, max_bounces: u32 },
     /// Accumulated path tracing: the reference.
     Canonical {
         frames: usize,
@@ -253,7 +252,7 @@ impl Pass {
     fn frames(self) -> usize {
         match self {
             Self::RealTime => RESTIR_FRAMES,
-            Self::PathTrace { frames } => frames,
+            Self::PathTrace { frames, .. } => frames,
             Self::Canonical {
                 frames,
                 sample_offset,
@@ -288,8 +287,10 @@ impl Pass {
             // The dummy environment map carries no importance sampling data.
             environment_importance_sampling: false,
             max_bounces: match self {
-                Self::Canonical { max_bounces, .. } => max_bounces,
-                Self::RealTime | Self::PathTrace { .. } => INPUT_MAX_BOUNCES,
+                Self::Canonical { max_bounces, .. } | Self::PathTrace { max_bounces, .. } => {
+                    max_bounces
+                }
+                Self::RealTime => RESTIR_MAX_BOUNCES,
             },
             max_accumulated_samples: 0,
             tap_count: 2,
@@ -478,9 +479,13 @@ mod tests {
     use super::*;
 
     #[test]
-    fn reference_paths_are_deeper_than_realtime_inputs() {
+    fn sparse_and_reference_paths_match_transport_not_sample_count() {
         let restir = Pass::RealTime.ray_config();
-        let input = Pass::PathTrace { frames: 1 }.ray_config();
+        let input = Pass::PathTrace {
+            frames: 1,
+            max_bounces: REFERENCE_MAX_BOUNCES,
+        }
+        .ray_config();
         let reference = Pass::Canonical {
             frames: 1,
             max_bounces: REFERENCE_MAX_BOUNCES,
@@ -493,12 +498,21 @@ mod tests {
             "comparison captures must preserve energy"
         );
         assert_eq!(input.num_brdf_samples, 1);
-        assert_eq!(input.max_bounces, INPUT_MAX_BOUNCES);
+        assert_eq!(input.max_bounces, REFERENCE_MAX_BOUNCES);
         assert!(!input.jitter_primary_rays);
         assert_eq!(reference.num_brdf_samples, 4);
         assert_eq!(reference.max_bounces, REFERENCE_MAX_BOUNCES);
         assert!(reference.jitter_primary_rays);
-        assert!(reference.max_bounces > input.max_bounces);
+        assert_eq!(reference.max_bounces, input.max_bounces);
+        let truncated = Pass::PathTrace {
+            frames: 1,
+            max_bounces: 3,
+        }
+        .ray_config();
+        assert_eq!(
+            truncated.max_bounces, 3,
+            "legacy transport remains an explicit ablation"
+        );
     }
 
     #[test]
