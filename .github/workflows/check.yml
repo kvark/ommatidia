@@ -133,6 +133,7 @@ jobs:
           cargo +1.92.0 test -p ommatidia --test gpu_runtime --locked -- --ignored --nocapture --test-threads=1
           cargo +1.92.0 test -p ommatidia --test transport --locked -- --ignored --nocapture --test-threads=1
           cargo +1.92.0 test -p ommatidia --test field --locked -- --ignored --nocapture --test-threads=1
+          cargo +1.92.0 test -p ommatidia --test quality_controls --locked -- --ignored --nocapture --test-threads=1
           cargo +1.92.0 test -p ommatidia-data incident_capture --locked -- --ignored --nocapture --test-threads=1
       - name: Capture moving, jittered geometry and lighting
         working-directory: ommatidia
