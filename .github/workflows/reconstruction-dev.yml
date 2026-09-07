@@ -1,0 +1,74 @@
+name: reconstruction development
+on:
+  pull_request:
+    paths: ['.github/workflows/reconstruction-dev.yml', '.github/reconstruction-edit.py']
+permissions:
+  contents: read
+jobs:
+  verify:
+    if: github.event.pull_request.number == 18 && github.head_ref == 'reconstruction/candidate-aware-fusion' && github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          path: ommatidia
+      - uses: actions/checkout@v4
+        with:
+          repository: kvark/blade
+          ref: c24621aa6606da968fd1b3967d5993f8aa2b74e8
+          path: blade
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          repository: kvark/meganeura
+          ref: 230cab004a898d0494e0a327ef695652a98a10cc
+          path: meganeura
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          repository: kvark/blade-volume
+          ref: 27b33d117a20f7dd0eb4eba89bab1298c8056f45
+          path: blade-volume
+          persist-credentials: false
+      - name: Setup
+        run: |
+          rustup toolchain install 1.92.0 --profile minimal --component rustfmt,clippy
+          sudo apt-get update -qq
+          sudo apt-get install -y libvulkan1 mesa-vulkan-drivers
+      - name: Upgrade and format
+        working-directory: ommatidia
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path('Cargo.toml'); s=p.read_text().replace('blade-graphics = "0.8.4"','blade-graphics = "0.9"');p.write_text(s)
+          p=Path('.github/workflows/check.yml');s=p.read_text().replace('3d7a3977a047fa4f728ab62b6df1663f5a4f9627','c24621aa6606da968fd1b3967d5993f8aa2b74e8').replace('bf72c42c8639ae8b326361754fc43a478ff837d4','230cab004a898d0494e0a327ef695652a98a10cc');p.write_text(s)
+          PY
+          if test -f .github/reconstruction-edit.py; then python3 .github/reconstruction-edit.py; fi
+          cargo +1.92.0 fmt --all
+      - name: Check updated dependencies
+        working-directory: ommatidia
+        run: cargo +1.92.0 check --workspace --all-targets
+      - name: Commit checked upgrade
+        working-directory: ommatidia
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          test "$(git ls-remote origin refs/heads/reconstruction/candidate-aware-fusion | cut -f1)" = "$EXPECTED_SHA"
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -u
+          git diff --cached --check
+          if ! git diff --cached --quiet; then git commit -m 'build: adopt current Blade and Meganeura fixes'; git push origin HEAD:refs/heads/reconstruction/candidate-aware-fusion; fi
+      - name: Archive public source for inspection
+        if: always()
+        run: tar --exclude=.git --exclude=target -czf "$RUNNER_TEMP/reconstruction-source.tar.gz" ommatidia blade meganeura blade-volume
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: reconstruction-source
+          path: ${{ runner.temp }}/reconstruction-source.tar.gz
+          retention-days: 1
