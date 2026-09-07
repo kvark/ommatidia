@@ -9,6 +9,7 @@ use std::{
     path::{Path, PathBuf},
     sync::Arc,
 };
+type EvaluationHistory = ([Vec<f32>; 2], Vec<f32>, Vec<ommatidia::temporal::Surface>);
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 
 struct Corpus {
@@ -163,7 +164,7 @@ fn evaluate(
     out: &Path,
 ) -> Result<serde_json::Value> {
     let mut scores = [Score::default(), Score::default()];
-    let mut previous: Option<([Vec<f32>; 2], Vec<f32>, Vec<ommatidia::temporal::Surface>)> = None;
+    let mut previous: Option<EvaluationHistory> = None;
     let mut rows = std::fs::File::create(out.join("frames.csv"))?;
     writeln!(rows, "sequence,frame,baseline_psnr,learned_psnr")?;
     for (index, (frame, target)) in corpus.frames.iter().enumerate() {

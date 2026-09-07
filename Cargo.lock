@@ -1576,10 +1576,7 @@ name = "ommatidia-train"
 version = "0.1.0"
 dependencies = [
  "blade-graphics",
- "bytemuck",
  "env_logger",
- "half",
- "log",
  "meganeura",
  "ommatidia",
  "png",
