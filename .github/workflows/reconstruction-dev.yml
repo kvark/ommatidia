@@ -36,16 +36,8 @@ jobs:
           rustup toolchain install 1.92.0 --profile minimal --component rustfmt,clippy
           sudo apt-get update -qq
           sudo apt-get install -y libvulkan1 mesa-vulkan-drivers
-      - name: Apply verified reconstruction source
+      - name: Apply source cleanup
         run: |
-          if test -d .github/transport-payload; then
-            cat .github/transport-payload/*.txt | base64 -d > /tmp/transport.xz
-            echo '9eeb4ac5e569eb4fd8caf1cd7450fa8df3dc9ec7cc882dc30712e41a3c148557  /tmp/transport.xz' | sha256sum -c -
-            xz -dc /tmp/transport.xz > /tmp/transport.patch
-            git apply --check /tmp/transport.patch
-            git apply /tmp/transport.patch
-            git rm scripts/curriculum.sh scripts/curve.py ommatidia-train/src/bin/lobe-scale-oracle.rs ommatidia-train/src/bin/temporal-oracle.rs
-          fi
           if test -f .github/reconstruction-edit.py; then python3 .github/reconstruction-edit.py; fi
           cargo +1.92.0 fmt --all
       - name: Check updated dependencies and all targets
@@ -57,23 +49,27 @@ jobs:
           test "$(git ls-remote origin refs/heads/reconstruction/candidate-aware-fusion | cut -f1)" = "$EXPECTED_SHA"
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          if test -d .github/transport-payload; then git rm -r .github/transport-payload; fi
           if test -f .github/reconstruction-edit.py; then git rm .github/reconstruction-edit.py; fi
           git add -A
           git diff --cached --check
-          if ! git diff --cached --quiet; then git commit -m 'feat: lobe-separated multiscale reconstruction with short BPTT'; git push origin HEAD:refs/heads/reconstruction/candidate-aware-fusion; fi
+          if ! git diff --cached --quiet; then git commit -m 'refactor: finish active reconstruction trainer cleanup'; git push origin HEAD:refs/heads/reconstruction/candidate-aware-fusion; fi
       - name: Workspace tests
-        if: success() || failure()
         run: cargo +1.92.0 test --workspace --locked
       - name: Clippy
-        if: success() || failure()
         run: cargo +1.92.0 clippy --workspace --all-targets --locked -- -D warnings
-      - name: New recurrent transport GPU and training tests
-        if: success() || failure()
+      - name: Recurrent transport GPU and training tests
         env:
           VK_ICD_FILENAMES: /usr/share/vulkan/icd.d/lvp_icd.json
           OMMATIDIA_REQUIRE_GPU: 1
         run: cargo +1.92.0 test -p ommatidia --test transport --locked -- --ignored --nocapture --test-threads=1
+      - name: Render, train and audit held-out sequences on LavaPipe
+        run: bash benchmarks/transport-lavapipe.sh
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: transport-lavapipe-quality
+          path: ommatidia/target/transport-quality
+          retention-days: 7
       - name: Archive formatted source
         if: always()
         run: tar --exclude=.git --exclude=target -czf "$RUNNER_TEMP/reconstruction-source.tar.gz" .
