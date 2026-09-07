@@ -1,9 +1,6 @@
 name: transport quality (LavaPipe)
 on:
   workflow_dispatch:
-  push:
-    branches: [docs/visual-quality-roadmap]
-    paths: ['.github/workflows/transport-quality.yml']
 permissions:
   contents: read
 jobs:
