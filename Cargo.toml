@@ -12,10 +12,10 @@ repository = "https://github.com/kvark/ommatidia"
 
 [workspace.dependencies]
 ommatidia = { path = "ommatidia", version = "0.1" }
-blade-graphics = "0.8.4"
-blade-render = { path = "../blade/blade-render" }
-blade-helpers = { path = "../blade/blade-helpers" }
-blade-asset = { path = "../blade/blade-asset" }
+blade-graphics = "0.9"
+blade-render = "0.6"
+blade-helpers = "0.3"
+blade-asset = "0.2.2"
 meganeura = { path = "../meganeura" }
 bytemuck = { version = "1", features = ["derive"] }
 half = { version = "2", features = ["bytemuck"] }
@@ -27,14 +27,4 @@ png = "0.18"
 serde = { version = "1", features = ["derive"] }
 ron = "0.8"
 serde_json = "1"
-naga = { version = "29.0.0", git = "https://github.com/gfx-rs/wgpu", rev = "cefd48f6cff61d64abe1cdb4002c4e39bfc2c728", features = ["wgsl-in"] }
-
-# meganeura pins blade-graphics to a git revision; blade-render uses the
-# path dependency from its own workspace. Both have to resolve to the same
-# crate or the `blade_graphics::Context` a host renderer owns is not the
-# type meganeura's session accepts.
-[patch."https://github.com/kvark/blade"]
-blade-graphics = { path = "../blade/blade-graphics" }
-
-[patch.crates-io]
-blade-graphics = { path = "../blade/blade-graphics" }
+naga = { version = "30", features = ["wgsl-in"] }
