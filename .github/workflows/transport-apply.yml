@@ -4,6 +4,9 @@ on:
     paths: ['.github/workflows/transport-apply.yml']
 permissions:
   contents: read
+concurrency:
+  group: field-development-${{ github.ref }}
+  cancel-in-progress: true
 jobs:
   verify:
     if: github.event.pull_request.number == 18 && github.head_ref == 'reconstruction/candidate-aware-fusion' && github.event.pull_request.head.repo.full_name == github.repository
@@ -53,8 +56,10 @@ jobs:
           assert hashlib.sha256(packed).hexdigest() == 'f4c7b8ec28b71809bb85636a65bd0e21f50e280a4ce5bb8248cf518d1b81aa87'
           bundle = json.loads(lzma.decompress(packed))
           Path('/tmp/field.patch').write_text(bundle['patch'])
-          subprocess.run(['git', 'apply', '--check', '/tmp/field.patch'], check=True)
-          subprocess.run(['git', 'apply', '/tmp/field.patch'], check=True)
+          # Workflow changes are already committed through the authorized API.
+          excludes = ['--exclude=.github/workflows/check.yml', '--exclude=.github/workflows/transport-quality.yml']
+          subprocess.run(['git', 'apply', '--check', *excludes, '/tmp/field.patch'], check=True)
+          subprocess.run(['git', 'apply', *excludes, '/tmp/field.patch'], check=True)
           for name, content in bundle['files'].items():
               p = Path(name)
               assert not p.is_absolute() and '..' not in p.parts and '.git' not in p.parts
@@ -87,7 +92,8 @@ jobs:
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git rm -r .github/field-payload
           git rm --ignore-unmatch .github/field-fix.py
-          git add Cargo.lock .github/workflows/check.yml .github/workflows/transport-quality.yml README.md docs ommatidia ommatidia-data ommatidia-train benchmarks
+          git add Cargo.lock README.md docs ommatidia ommatidia-data ommatidia-train benchmarks
+          test -z "$(git diff --cached --name-only -- .github/workflows)"
           git diff --cached --check
           git commit -m 'feat: image-conditioned field variant, shared encoder, and source-light supervision'
           git push origin HEAD:refs/heads/reconstruction/candidate-aware-fusion
