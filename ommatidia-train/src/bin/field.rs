@@ -228,15 +228,20 @@ fn main() -> Result<()> {
     let mut surface_weight = None::<f32>;
     let mut emitter_fraction = 0.0f32;
     let mut diagnostics = false;
+    let mut stratified = false;
     let mut argv = std::env::args().skip(1);
     while let Some(flag) = argv.next() {
+        if flag == "--stratified" {
+            stratified = true;
+            continue;
+        }
         if flag == "--diagnostics" {
             diagnostics = true;
             continue;
         }
         if flag == "--help" || flag == "-h" {
             println!(
-                "field --data CAPTURE.omd [--data OTHER.omd] [--eval-data UNSEEN.omd]\n  --out DIR --steps N --seed N --image N --views N --channels N --hidden N\n  --rays N --samples N --probes N --rate F\n  --surface-weight F (opt-in; 0 retains matched control graph)\n  --emitter-fraction F [0] --diagnostics\n  --incident-rays N [0] --incident-weight F [0.1 when incident rays enabled]\nPosed RGB only. Final camera is held; light labels supervise separate heads.\nOutput: weights/config, RGB contexts, fixed-budget held-camera quality, PNGs."
+                "field --data CAPTURE.omd [--data OTHER.omd] [--eval-data UNSEEN.omd]\n  --out DIR --steps N --seed N --image N --views N --channels N --hidden N\n  --rays N --samples N --probes N --rate F --stratified\n  --surface-weight F (opt-in; 0 retains matched control graph)\n  --emitter-fraction F [0] --diagnostics\n  --incident-rays N [0] --incident-weight F [0.1 when incident rays enabled]\nPosed RGB only. Final camera is held; light labels supervise separate heads.\nOutput: weights/config, RGB contexts, fixed-budget held-camera quality, PNGs."
             );
             return Ok(());
         }
@@ -393,8 +398,20 @@ fn main() -> Result<()> {
             })
             .collect();
         rays.extend(chosen.iter().map(|p| p.ray()));
-        let (mut queries, deltas) =
-            data::ray_queries(example.observations.bounds, &rays, shape.steps)?;
+        // Independent stream: changing sample count/mode must not change
+        // fitting camera pixels or emission/incident-probe choices.
+        let sample_seed =
+            seed ^ 0xA24B_AED4_963E_E407 ^ (step as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15);
+        let (mut queries, deltas) = if stratified {
+            data::stratified_ray_queries(
+                example.observations.bounds,
+                &rays,
+                shape.steps,
+                sample_seed,
+            )?
+        } else {
+            data::ray_queries(example.observations.bounds, &rays, shape.steps)?
+        };
         let (emission, emission_mask) = data::append_probes(
             &mut queries,
             &example.record.lighting,
@@ -572,6 +589,10 @@ fn main() -> Result<()> {
     let report = serde_json::json!({"backend":backend,"quality_only":true,"steps":steps,"seed":seed,"first_loss":first,"last_loss":last,
         "rays":shape.rays,"samples":shape.steps,"probes":shape.probes,"incident_rays":incident_rays,"incident_weight":incident_weight,"training_files":data_files,
         "surface_weight":surface_weight,"emitter_fraction":emitter_fraction,"diagnostics":diagnostics,
+        "sampling":if stratified {"stratified-fixed-intervals"} else {"midpoint"},
+        "evaluation_sampling":"midpoint","parameter_count":model.params.iter().map(|p|p.len).sum::<usize>(),
+        "image_rays_seen":steps as u64 * shape.rays as u64,
+        "ray_queries_seen":steps as u64 * training_shape.rays as u64 * shape.steps as u64,
         "evaluation":if held.is_some(){"unseen scenes and held cameras"}else{"held cameras of fitting scenes"},"scores":scores});
     std::fs::write(
         out.join("quality.json"),
