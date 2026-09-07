@@ -2309,6 +2309,8 @@ mod cli_tests {
                 "--reconstruction-base" => {
                     vec![vec!["--reconstruction-base", "guided"]]
                 }
+                "--backbone" => vec![vec!["--backbone", "local"]],
+                "--fusion" => vec![vec!["--fusion", "candidate"]],
                 "--temporal-features" => vec![vec!["--temporal-features", "variance"]],
                 "--val-fraction" => vec![vec!["--val-fraction", "0.1"]],
                 "--no-recurrence" => vec![vec!["--eval-only", "--no-recurrence"]],
