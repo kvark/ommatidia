@@ -14,6 +14,11 @@ pub fn render(
 ) -> Result<Image> {
     let [w, h] = c.extent;
     let n = (w * h) as usize;
+    let stereo = if c.view_fusion == field::ViewFusion::StereoRgb {
+        Some(Arc::new(field::stereo::Sweep::new(obs, c)?))
+    } else {
+        None
+    };
     let mut result = Image {
         rgb: Vec::new(),
         termination: Vec::new(),
@@ -31,7 +36,7 @@ pub fn render(
             position: obs.bounds.center,
             direction: [0.0, 0.0, 1.0],
         }));
-        Prepared::new(obs, c, &queries)?.feed(session);
+        Prepared::with_stereo(obs, c, &queries, stereo.clone())?.feed(session);
         session.set_input("ray.deltas", &deltas);
         session.step();
         session.wait();
@@ -208,7 +213,7 @@ pub fn consistency(
             position: example.observations.bounds.center,
             direction: [0.0, 0.0, 1.0],
         }));
-        Prepared::new(&example.observations, c, &queries)?.feed(session);
+        example.prepare(c, &queries)?.feed(session);
         session.set_input("ray.deltas", &dt);
         session.step();
         session.wait();

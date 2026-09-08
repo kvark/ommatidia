@@ -4,18 +4,25 @@ use crate::neural::Builder;
 pub use crate::neural::Network;
 use meganeura::{Graph, NodeId};
 
-fn constant(g: &mut Graph, like: NodeId, value: f32) -> NodeId {
+pub(super) fn constant(g: &mut Graph, like: NodeId, value: f32) -> NodeId {
     let shape = g.node(like).ty.shape.clone();
     g.constant(vec![value; shape.iter().product()], &shape)
 }
-fn scaled(g: &mut Graph, x: NodeId, value: f32) -> NodeId {
+pub(super) fn scaled(g: &mut Graph, x: NodeId, value: f32) -> NodeId {
     let s = constant(g, x, value);
     g.mul(x, s)
 }
 fn add(g: &mut Graph, a: Option<NodeId>, b: NodeId) -> Option<NodeId> {
     Some(a.map_or(b, |a| g.add(a, b)))
 }
-fn columns(g: &mut Graph, a: NodeId, b: NodeId, rows: usize, ca: usize, cb: usize) -> NodeId {
+pub(super) fn columns(
+    g: &mut Graph,
+    a: NodeId,
+    b: NodeId,
+    rows: usize,
+    ca: usize,
+    cb: usize,
+) -> NodeId {
     // Channel operators use flat NCHW storage; retain explicit matrix boundaries
     // so their flat backward scatter reshapes before joining other gradients.
     let a = g.reshape(a, &[rows * ca]);
@@ -109,7 +116,7 @@ fn source_fusion(
     let weights = weight_sum.unwrap();
     let eps = constant(&mut b.g, weights, 1e-8);
     let den = b.g.add(weights, eps);
-    let support = if c.view_fusion == super::ViewFusion::VisibleRgb {
+    let support = if c.view_fusion.uses_visibility() {
         // Do not renormalize weak absolute visibility back to full copying.
         let total = views
             .iter()
@@ -163,6 +170,8 @@ fn field(b: &mut Builder, c: &Config, q: usize) -> Field {
     let mut views = Vec::new();
     let mut visibility = Vec::new();
     let mut visible_sum = None;
+    let mut tables = Vec::new();
+    let mut colors = Vec::new();
     for v in 0..c.views {
         let image = b.g.input(&format!("view{v}.rgb_rays"), &[9 * n]);
         let features = b.encode(image, "adapter.rgb_rays", 9, c.extent, c.channels);
@@ -170,8 +179,16 @@ fn field(b: &mut Builder, c: &Config, q: usize) -> Field {
         let ones = b.g.constant(vec![1.0 / (n * c.views) as f32; n], &[n, 1]);
         let pooled = b.g.matmul(matrix, ones);
         global = add(&mut b.g, global, pooled);
-        let table = b.g.transpose(matrix);
-        let probabilities = if c.view_fusion == super::ViewFusion::VisibleRgb {
+        tables.push(b.g.transpose(matrix));
+        colors.push(
+            c.view_fusion
+                .uses_rgb()
+                .then(|| b.g.input(&format!("view{v}.linear_rgb"), &[n, 3])),
+        );
+    }
+    for v in 0..c.views {
+        let table = tables[v];
+        let probabilities = if c.view_fusion.uses_visibility() {
             let logits = b.linear(
                 table,
                 "field.visibility",
@@ -183,6 +200,12 @@ fn field(b: &mut Builder, c: &Config, q: usize) -> Field {
                     p.kind = crate::model::InitKind::Zeros;
                 }
             }
+            let logits = if c.view_fusion == super::ViewFusion::StereoRgb {
+                let correction = super::stereo::correction(b, c, v, &tables, &colors);
+                b.g.add(logits, correction)
+            } else {
+                logits
+            };
             let probability = b.g.softmax(logits);
             visibility.push(probability);
             Some(probability)
@@ -192,8 +215,7 @@ fn field(b: &mut Builder, c: &Config, q: usize) -> Field {
         let mut projected_probability = None;
         let mut projected = None;
         let mut color = None;
-        let rgb =
-            (c.view_fusion.uses_rgb()).then(|| b.g.input(&format!("view{v}.linear_rgb"), &[n, 3]));
+        let rgb = colors[v];
         for k in 0..4 {
             let indices = b.g.input_u32(&format!("view{v}.index{k}"), &[q]);
             let weight = b.g.input(&format!("view{v}.weight{k}"), &[q, 1]);
@@ -322,6 +344,12 @@ fn field(b: &mut Builder, c: &Config, q: usize) -> Field {
     if !views.is_empty() {
         radiance = b.g.add(scattered, emission);
     }
+    // Additional random parameters must not perturb historical common initialization.
+    let (old, extra): (Vec<_>, Vec<_>) = std::mem::take(&mut b.params)
+        .into_iter()
+        .partition(|p| !p.name.starts_with("field.stereo."));
+    b.params = old;
+    b.params.extend(extra);
     Field {
         density,
         radiance,
@@ -478,7 +506,7 @@ pub fn build_consistent_training(
     consistency_rays: usize,
     surface: bool,
 ) -> Result<Network, String> {
-    if c.view_fusion != super::ViewFusion::VisibleRgb
+    if !c.view_fusion.uses_visibility()
         || consistency_rays == 0
         || !shape.steps.is_multiple_of(super::visibility::BINS)
         || incident_rays

@@ -11,6 +11,7 @@ pub struct SourceEvidence {
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Prepared {
+    pub stereo: Option<std::sync::Arc<stereo::Sweep>>,
     pub images: Vec<Vec<f32>>,
     pub sources: Vec<SourceEvidence>,
     pub indices: Vec<[Vec<u32>; 4]>,
@@ -26,7 +27,29 @@ impl Prepared {
         config: &Config,
         queries: &[Query],
     ) -> Result<Self, String> {
+        Self::with_stereo(observations, config, queries, None)
+    }
+    /// Reuse a checked, geometry-only projection plan across query batches.
+    pub fn with_stereo(
+        observations: &Observations,
+        config: &Config,
+        queries: &[Query],
+        cached: Option<std::sync::Arc<stereo::Sweep>>,
+    ) -> Result<Self, String> {
         observations.validate(config)?;
+        let stereo = if config.view_fusion == ViewFusion::StereoRgb {
+            let plan = cached.map_or_else(
+                || stereo::Sweep::new(observations, config).map(std::sync::Arc::new),
+                Ok,
+            )?;
+            plan.validate_for(observations, config)?;
+            Some(plan)
+        } else {
+            if cached.is_some() {
+                return Err("stereo plan supplied to non-stereo model".into());
+            }
+            None
+        };
         if queries.is_empty() || queries.len() > 1_048_576 {
             return Err("invalid query count".into());
         }
@@ -40,6 +63,7 @@ impl Prepared {
         let n = w * h;
         let q = queries.len();
         let mut result = Self {
+            stereo,
             images: Vec::new(),
             sources: Vec::new(),
             indices: Vec::new(),
@@ -90,7 +114,7 @@ impl Prepared {
                 },
                 direction: vec![0.0; 3 * q],
                 valid: vec![0.0; q],
-                survival: (config.view_fusion == ViewFusion::VisibleRgb)
+                survival: (config.view_fusion.uses_visibility())
                     .then(|| vec![0.0; q * (visibility::BINS + 1)]),
             };
             let mut indices: [Vec<u32>; 4] = std::array::from_fn(|_| vec![0; q]);
@@ -149,6 +173,9 @@ impl Prepared {
         Ok(result)
     }
     pub fn feed(&self, session: &mut meganeura::Session) {
+        if let Some(plan) = &self.stereo {
+            plan.feed(session);
+        }
         for v in 0..self.images.len() {
             session.set_input(&format!("view{v}.rgb_rays"), &self.images[v]);
             if let Some(source) = self.sources.get(v) {

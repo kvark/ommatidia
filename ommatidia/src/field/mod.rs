@@ -4,6 +4,7 @@ pub mod consistency;
 pub mod data;
 pub mod graph;
 pub mod incident;
+pub mod stereo;
 pub mod surface;
 pub mod visibility;
 
@@ -19,8 +20,13 @@ pub enum ViewFusion {
     LateRgb,
     /// RGB-predicted source termination distributions gate geometry and appearance.
     VisibleRgb,
+    /// Cross-view depth hypotheses correct RGB-predicted source visibility.
+    StereoRgb,
 }
 impl ViewFusion {
+    pub fn uses_visibility(self) -> bool {
+        matches!(self, Self::VisibleRgb | Self::StereoRgb)
+    }
     pub fn uses_rgb(self) -> bool {
         self != Self::Moments
     }
@@ -68,6 +74,15 @@ impl Config {
             || self.exposure <= 0.0
         {
             return Err("field v1 requires 1..8 views, image dimensions 4..2048 divisible by four, channels 1..256, hidden 4..512, <=8 frequencies and positive exposure".into());
+        }
+        if self.view_fusion == ViewFusion::StereoRgb {
+            let work = self.extent[0] as usize
+                * self.extent[1] as usize
+                * self.views
+                * self.views.saturating_sub(1);
+            if work > 2_097_152 {
+                return Err("stereo projection budget exceeds 2097152 sample pairs".into());
+            }
         }
         Ok(())
     }

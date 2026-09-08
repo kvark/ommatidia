@@ -115,6 +115,21 @@ pub fn build_projected(
     unroll: usize,
     projected: bool,
 ) -> Result<Network, String> {
+    build_objective(config, low, unroll, projected, false)
+}
+
+/// Spatial losses may score the actual displayed radiance. Temporal/confidence
+/// objectives retain their lobe contracts; rendering and recurrence are unchanged.
+pub fn build_objective(
+    config: Config,
+    low: [u32; 2],
+    unroll: usize,
+    projected: bool,
+    rgb_loss: bool,
+) -> Result<Network, String> {
+    if rgb_loss && unroll == 0 {
+        return Err("RGB loss is training-only".into());
+    }
     if projected && unroll == 0 {
         return Err("projected supervision is training-only".into());
     }
@@ -211,8 +226,21 @@ pub fn build_projected(
         }
         let target = b.g.input(&format!("{tag}.target"), &[6 * n]);
         let scale = b.g.input(&format!("{tag}.loss_scale"), &[6 * n]);
-        let encoded = compress(&mut b.g, image, config.exposure);
-        let encoded_target = compress(&mut b.g, target, config.exposure);
+        let (spatial_image, spatial_target, spatial_scale, color_channels) = if rgb_loss {
+            let material = b.g.input(&format!("{tag}.rgb.albedo"), &[3 * n]);
+            let emission = b.g.input(&format!("{tag}.rgb.emission"), &[3 * n]);
+            let lobes = split(&mut b.g, image, 2, 3 * slots, spatial);
+            let diffuse = b.g.mul(lobes[0], material);
+            let rgb = b.g.add(diffuse, lobes[1]);
+            let rgb = b.g.add(rgb, emission);
+            let reference = b.g.input(&format!("{tag}.rgb.target"), &[3 * n]);
+            let scale = filled(&mut b.g, rgb, config.exposure);
+            (rgb, reference, scale, 3)
+        } else {
+            (image, target, scale, 6)
+        };
+        let encoded = compress(&mut b.g, spatial_image, config.exposure);
+        let encoded_target = compress(&mut b.g, spatial_target, config.exposure);
         let [
             compressed_weight,
             physical_weight,
@@ -222,15 +250,15 @@ pub fn build_projected(
         ] = objective_weights.unwrap();
         let loss = b.g.mse_loss(encoded, encoded_target);
         let mut loss = b.g.mul(loss, compressed_weight);
-        let physical = scaled_mse(&mut b.g, image, target, scale);
+        let physical = scaled_mse(&mut b.g, spatial_image, spatial_target, spatial_scale);
         let physical = b.g.mul(physical, physical_weight);
         loss = b.g.add(loss, physical);
-        // Low-frequency physical lobe error, no loss-time change to the estimator.
-        let error = b.g.neg(target);
-        let error = b.g.add(image, error);
-        let error = b.g.mul(error, scale);
+        // Same block support in both objective spaces; no change to the estimator.
+        let error = b.g.neg(spatial_target);
+        let error = b.g.add(spatial_image, error);
+        let error = b.g.mul(error, spatial_scale);
         let block = 4;
-        let channels = 6 * slots;
+        let channels = color_channels * slots;
         let mut kernel = vec![0.0; (channels * channels * block * block) as usize];
         for c in 0..channels as usize {
             let start = (c * channels as usize + c) * (block * block) as usize;
@@ -329,4 +357,32 @@ pub fn feed(
         }
         session.set_input(&format!("{tag}.temporal_mask"), &mask);
     }
+}
+
+/// Material inputs are exact observations already available to the runtime.
+/// Only target RGB is privileged. All buffers use the native subpixel packing.
+pub fn feed_rgb(
+    session: &mut meganeura::Session,
+    tag: &str,
+    frame: &Frame,
+    target: &Target,
+    config: Config,
+) {
+    let n = frame.surfaces.len();
+    assert_eq!(target.rgb.len(), 3 * n);
+    let width = (frame.low[0] * config.scale) as usize;
+    let mut albedo = vec![0.0; 3 * n];
+    let mut emission = vec![0.0; 3 * n];
+    let mut rgb = vec![0.0; 3 * n];
+    for (p, s) in frame.surfaces.iter().enumerate() {
+        for c in 0..3 {
+            let index = config.index(frame.low, c, p % width, p / width);
+            albedo[index] = s.albedo_roughness[c];
+            emission[index] = s.emission[c];
+            rgb[index] = target.rgb[p * 3 + c];
+        }
+    }
+    session.set_input(&format!("{tag}.rgb.albedo"), &albedo);
+    session.set_input(&format!("{tag}.rgb.emission"), &emission);
+    session.set_input(&format!("{tag}.rgb.target"), &rgb);
 }

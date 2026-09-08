@@ -70,7 +70,7 @@ pub struct Ray {
     pub albedo_roughness: [f32; 4],
 }
 #[repr(C)]
-#[derive(Clone, Copy, Debug, Default, bytemuck::Pod, bytemuck::Zeroable)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct Surface {
     pub normal_depth: [f32; 4],
     pub albedo_roughness: [f32; 4],

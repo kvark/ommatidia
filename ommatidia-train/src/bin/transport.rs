@@ -15,6 +15,7 @@ type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 #[path = "transport/oracle_report.rs"]
 mod oracle_report;
 
+#[derive(Clone)]
 struct Corpus {
     frames: Vec<(Frame, Target)>,
     length: usize,
@@ -53,6 +54,20 @@ impl Corpus {
             provenance,
         })
     }
+    fn combine(corpora: &[Self]) -> Result<Self> {
+        let first = corpora.first().ok_or("empty capture list")?;
+        if corpora
+            .iter()
+            .any(|c| c.length != first.length || c.frames[0].0.low != first.frames[0].0.low)
+        {
+            return Err("capture sequence/extent mismatch".into());
+        }
+        Ok(Self {
+            frames: corpora.iter().flat_map(|c| c.frames.clone()).collect(),
+            length: first.length,
+            provenance: serde_json::json!({"captures":corpora.iter().map(|c|&c.provenance).collect::<Vec<_>>()}),
+        })
+    }
     fn disjoint(&self, other: &Self) -> Result<()> {
         let ids = |p: &serde_json::Value| -> Result<Vec<u64>> {
             Ok(p["scene_seeds"]
@@ -76,6 +91,73 @@ impl Corpus {
         }
         Ok(())
     }
+}
+fn paired_noise(corpora: &[Corpus]) -> Result<()> {
+    let first = corpora.first().ok_or("missing paired captures")?;
+    let mut ranges = Vec::new();
+    for corpus in corpora {
+        if corpus.length != first.length || corpus.frames.len() != first.frames.len() {
+            return Err("paired capture layout mismatch".into());
+        }
+        let p = &corpus.provenance;
+        if !p["reference_from"].is_null() {
+            return Err("construction requires fresh references".into());
+        }
+        for key in [
+            "scene_seeds",
+            "family_ids",
+            "capture_seed",
+            "input_max_bounces",
+            "reference_max_bounces",
+            "canonical_frames",
+            "reference_sample_offset",
+            "input_frames",
+        ] {
+            if p[key] != first.provenance[key] {
+                return Err(format!("paired provenance differs: {key}").into());
+            }
+        }
+        let start = p["input_sample_offset"]
+            .as_u64()
+            .ok_or("missing input offset")?;
+        let count = p["input_frames"]
+            .as_u64()
+            .filter(|n| *n > 0)
+            .ok_or("missing input count")?;
+        let end = start
+            .checked_add(
+                count
+                    .checked_mul(corpus.frames.len() as u64)
+                    .ok_or("sample range overflow")?,
+            )
+            .ok_or("sample range overflow")?;
+        if end
+            > p["reference_sample_offset"]
+                .as_u64()
+                .ok_or("missing reference offset")?
+        {
+            return Err("reference overlaps input sample range".into());
+        }
+        if ranges.iter().any(|&(a, b)| start < b && a < end) {
+            return Err("overlapping path streams".into());
+        }
+        ranges.push((start, end));
+        for ((f, t), (a, b)) in corpus.frames.iter().zip(&first.frames) {
+            if f.low != a.low
+                || f.jitter != a.jitter
+                || t.rgb != b.rgb
+                || t.lobes != b.lobes
+                || f.surfaces != a.surfaces
+                || f.rays.len() != a.rays.len()
+                || f.rays.iter().zip(&a.rays).any(|(r, s)| {
+                    r.normal_depth != s.normal_depth || r.albedo_roughness != s.albedo_roughness
+                })
+            {
+                return Err("paired capture changed reference or observed geometry".into());
+            }
+        }
+    }
+    Ok(())
 }
 fn save_png(path: &Path, rgb: &[f32], extent: [u32; 2]) -> Result<()> {
     let bytes: Vec<_> = rgb
@@ -103,6 +185,7 @@ struct Score {
     ssim: f64,
     low_frequency_psnr: f64,
     relative_mse: f64,
+    linear_mse: f64,
     energy_ratio: f64,
     detail_ratio: f64,
     temporal_mse: f64,
@@ -127,6 +210,12 @@ impl Score {
             .max(1e-20)
             .log10();
         self.relative_mse += metrics::relative_error(image, target);
+        self.linear_mse += image
+            .iter()
+            .zip(target)
+            .map(|(a, b)| (*a as f64 - *b as f64).powi(2))
+            .sum::<f64>()
+            / image.len() as f64;
         self.energy_ratio += image.iter().map(|v| *v as f64).sum::<f64>()
             / target.iter().map(|v| *v as f64).sum::<f64>().max(1e-12);
         self.detail_ratio += metrics::detail(image, extent[0] as usize, extent[1] as usize)
@@ -142,6 +231,7 @@ impl Score {
         self.ssim /= n;
         self.low_frequency_psnr /= n;
         self.relative_mse /= n;
+        self.linear_mse /= n;
         self.energy_ratio /= n;
         self.detail_ratio /= n;
         self.temporal_mse /= self.temporal_frames.max(1) as f64;
@@ -252,8 +342,10 @@ fn evaluate(
 }
 fn main() -> Result<()> {
     env_logger::init();
-    let mut data = None;
-    let mut eval = None;
+    let mut data = Vec::new();
+    let mut eval = Vec::new();
+    let mut construction_noise = false;
+    let mut rgb_loss = false;
     let mut out = PathBuf::from("runs/transport");
     let mut steps = 128usize;
     let mut unroll = 2usize;
@@ -269,9 +361,17 @@ fn main() -> Result<()> {
     while let Some(arg) = args.next() {
         if arg == "--help" {
             println!(
-                "transport --data TRAIN.omd --eval-data HOLDOUT.omd [--out DIR] [--steps 128] [--unroll 2] [--channels 8] [--seed 7] [--lr 0.001] [--eval-only] [--candidate-oracle] [--fixed-exposure-loss] [--projected-weight F]\n  --compressed-weight F [1] --physical-weight F [0.1] --low-frequency-weight F [0.05]\n  --confidence-weight F [0.01] --temporal-weight F [0.01]\nCaptures must have matched transport, split radiance, HR surfaces, and disjoint scene seeds."
+                "transport --data TRAIN.omd --eval-data HOLDOUT.omd [--out DIR] [--steps 128] [--unroll 2] [--channels 8] [--seed 7] [--lr 0.001] [--eval-only] [--candidate-oracle] [--fixed-exposure-loss] [--projected-weight F] [--rgb-loss] [--construction-noise]\n  --compressed-weight F [1] --physical-weight F [0.1] --low-frequency-weight F [0.05]\n  --confidence-weight F [0.01] --temporal-weight F [0.01]\nRepeat --data/--eval-data for multiple captures. Matched transport, split radiance and HR surfaces required. Scene seeds must be disjoint unless --construction-noise verifies equal truth and nonoverlapping path streams."
             );
             return Ok(());
+        }
+        if arg == "--construction-noise" {
+            construction_noise = true;
+            continue;
+        }
+        if arg == "--rgb-loss" {
+            rgb_loss = true;
+            continue;
         }
         if arg == "--candidate-oracle" {
             candidate_oracle = true;
@@ -287,8 +387,8 @@ fn main() -> Result<()> {
         }
         let v = args.next().ok_or(format!("missing value for {arg}"))?;
         match arg.as_str() {
-            "--data" => data = Some(PathBuf::from(v)),
-            "--eval-data" => eval = Some(PathBuf::from(v)),
+            "--data" => data.push(PathBuf::from(v)),
+            "--eval-data" => eval.push(PathBuf::from(v)),
             "--out" => out = v.into(),
             "--steps" => steps = v.parse()?,
             "--unroll" => unroll = v.parse()?,
@@ -305,6 +405,12 @@ fn main() -> Result<()> {
         }
     }
     weights.validate()?;
+    if rgb_loss && (!fixed_exposure_loss || eval_only) {
+        return Err("--rgb-loss requires --fixed-exposure-loss and training".into());
+    }
+    if !eval_only && out.join("model.safetensors").exists() {
+        return Err("refusing to overwrite an existing checkpoint".into());
+    }
     if projected_weight.is_some_and(|w| !w.is_finite() || w < 0.0) {
         return Err("projected weight must be finite and nonnegative".into());
     }
@@ -323,8 +429,14 @@ fn main() -> Result<()> {
             ..Config::default()
         }
     };
-    let eval_path = eval.ok_or("--eval-data required")?;
-    let holdout = Corpus::load(&eval_path, config)?;
+    if eval.is_empty() {
+        return Err("--eval-data required".into());
+    }
+    let held_corpora = eval
+        .iter()
+        .map(|p| Corpus::load(p, config))
+        .collect::<Result<Vec<_>>>()?;
+    let holdout = Corpus::combine(&held_corpora)?;
     let low = holdout.frames[0].0.low;
     let context = ommatidia::gpu::create_context(None, false);
     let mut learned = native::Native::new(Arc::clone(&context), config, low)?;
@@ -333,16 +445,34 @@ fn main() -> Result<()> {
     if eval_only {
         learned.session.load_checkpoint(&checkpoint)?;
     } else {
-        let train_path = data.ok_or("--data required")?;
-        if train_path.canonicalize()? == eval_path.canonicalize()? {
-            return Err("training and evaluation files must differ".into());
+        if data.is_empty() {
+            return Err("--data required".into());
         }
-        let train = Corpus::load(&train_path, config)?;
-        train.disjoint(&holdout)?;
+        let training = data
+            .iter()
+            .map(|p| Corpus::load(p, config))
+            .collect::<Result<Vec<_>>>()?;
+        if construction_noise {
+            paired_noise(
+                &training
+                    .iter()
+                    .chain(&held_corpora)
+                    .cloned()
+                    .collect::<Vec<_>>(),
+            )?;
+        } else {
+            for train in &training {
+                for held in &held_corpora {
+                    train.disjoint(held)?;
+                }
+            }
+        }
+        let train = Corpus::combine(&training)?;
         if unroll > train.length || train.frames.iter().any(|(f, _)| f.low != low) {
             return Err("unroll exceeds sequence or extents differ".into());
         }
-        let network = graph::build_projected(config, low, unroll, projected_weight.is_some())?;
+        let network =
+            graph::build_objective(config, low, unroll, projected_weight.is_some(), rgb_loss)?;
         let mut session = ommatidia::gpu::training_session(&network.graph, Arc::clone(&context));
         network.initialize(&mut session, seed);
         let mut rng = ommatidia::rng::Rng::new(seed);
@@ -367,6 +497,9 @@ fn main() -> Result<()> {
                 };
                 let prepared = cpu::prepare(frame, &old, config);
                 graph::feed(&mut session, &format!("f{slot}"), &prepared, target, slot);
+                if rgb_loss {
+                    graph::feed_rgb(&mut session, &format!("f{slot}"), frame, target, config);
+                }
                 if let Some(weight) = projected_weight {
                     let candidates = ommatidia::transport::oracle::Candidates {
                         spatial: prepared.candidates.clone(),
@@ -417,11 +550,11 @@ fn main() -> Result<()> {
         std::fs::write(
             out.join("training.json"),
             serde_json::to_vec_pretty(
-                &serde_json::json!({"steps":steps,"unroll":unroll,"seed":seed,"learning_rate":rate,"fixed_exposure_loss":fixed_exposure_loss,"loss_weights":weights,"projected_weight":projected_weight,"training":train.provenance,"evaluation":holdout.provenance}),
+                &serde_json::json!({"steps":steps,"unroll":unroll,"seed":seed,"learning_rate":rate,"fixed_exposure_loss":fixed_exposure_loss,"loss_weights":weights,"projected_weight":projected_weight,"rgb_loss":rgb_loss,"construction_noise":construction_noise,"training":train.provenance,"evaluation":holdout.provenance}),
             )?,
         )?;
     }
-    let report = evaluate(
+    let mut report = evaluate(
         &holdout,
         config,
         &mut learned,
@@ -429,6 +562,26 @@ fn main() -> Result<()> {
         &out,
         candidate_oracle,
     )?;
+    report["role"] = serde_json::json!(if construction_noise {
+        "same-scenes held-noise construction"
+    } else {
+        "scene-disjoint evaluation"
+    });
+    if construction_noise && !eval_only {
+        let fit = Corpus::combine(
+            &data
+                .iter()
+                .map(|p| Corpus::load(p, config))
+                .collect::<Result<Vec<_>>>()?,
+        )?;
+        let dir = out.join("fitting");
+        std::fs::create_dir_all(&dir)?;
+        let result = evaluate(&fit, config, &mut learned, &mut baseline, &dir, false)?;
+        std::fs::write(
+            dir.join("quality.json"),
+            serde_json::to_vec_pretty(&result)?,
+        )?;
+    }
     std::fs::write(
         out.join("quality.json"),
         serde_json::to_vec_pretty(&report)?,
