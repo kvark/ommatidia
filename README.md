@@ -24,7 +24,7 @@ limitations](docs/results-overview.md).
 ## Build
 
 Place `ommatidia` and `meganeura` in sibling directories. CI pins Meganeura
-`3d424e0` ([checkpoint fix](https://github.com/kvark/meganeura/pull/160));
+`43b606f` ([merged checkpoint fix](https://github.com/kvark/meganeura/pull/160));
 Blade 0.9 and Naga 30 come from crates.io and Cargo.lock. The data generator
 reads Blade's WGSL from `../blade/blade-render/code` (or `--shader-dir`);
 CI uses the matching `c24621a` source checkout for shaders and fixtures.
@@ -40,7 +40,8 @@ bash benchmarks/transport-lavapipe.sh
 Posed RGB only; no G-buffer or velocity. The wider variant shares the image
 pyramid and predicts a density/radiance field. Synthetic light and surface labels
 enter only training losses. See [field.md](docs/field.md),
-[surface supervision](docs/surface.md), and [late source-view fusion](docs/late-fusion.md).
+[surface supervision](docs/surface.md), [late source-view fusion](docs/late-fusion.md),
+and [predicted source visibility](docs/support.md).
 
 ```sh
 cargo +1.92.0 run -p ommatidia-train --bin field -- --help
