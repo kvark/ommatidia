@@ -87,8 +87,8 @@ jobs:
       - name: Check quality harness syntax
         working-directory: ommatidia
         run: |
-          python3 -m py_compile benchmarks/report-controls.py
-          bash -n benchmarks/quality-controls.sh benchmarks/cache-lavapipe.sh benchmarks/late-fusion-lavapipe.sh benchmarks/support-lavapipe.sh
+          python3 -m py_compile benchmarks/report-controls.py benchmarks/report-support.py benchmarks/report-geometry.py
+          bash -n benchmarks/quality-controls.sh benchmarks/cache-lavapipe.sh benchmarks/late-fusion-lavapipe.sh benchmarks/support-lavapipe.sh benchmarks/geometry-lavapipe.sh
       - name: Clippy
         working-directory: ommatidia
         run: cargo +1.92.0 clippy --workspace --all-targets --locked -- -D warnings
@@ -135,7 +135,7 @@ jobs:
       - name: Run GPU contract, recurrence, training and image tests
         working-directory: ommatidia
         run: |
-          cargo +1.92.0 test -p ommatidia --test gpu_runtime --test transport --test field --test quality_controls --test late_rgb --test candidate_oracle --test wide_field --test visibility --test projected --locked -- --ignored --nocapture --test-threads=1
+          cargo +1.92.0 test -p ommatidia --test gpu_runtime --test transport --test field --test quality_controls --test late_rgb --test candidate_oracle --test wide_field --test visibility --test projected --test consistency --locked -- --ignored --nocapture --test-threads=1
           cargo +1.92.0 test -p ommatidia-data incident_capture --locked -- --ignored --nocapture --test-threads=1
       - name: Check capture independence from cached textures
         working-directory: ommatidia
@@ -169,13 +169,14 @@ jobs:
           FIELD_UPDATES: '8'
           SURFACE_RESULTS: target/surface-smoke
         run: bash benchmarks/surface-lavapipe.sh
-      - name: Train and reload RGB-predicted source visibility
+      - name: Train and reload source visibility and geometry consistency
         working-directory: ommatidia
         run: |
           cargo +1.92.0 run -p ommatidia-train --bin field --locked -- \
             --data target/surface-smoke/fit.omd --out target/visibility-smoke/train \
             --image 16 --views 3 --channels 4 --hidden 16 --rays 8 --samples 16 \
-            --probes 4 --steps 8 --surface-weight 0.05 --view-fusion visible-rgb
+            --probes 4 --steps 8 --surface-weight 0.05 --view-fusion visible-rgb \
+            --consistency-rays 2 --consistency-weight 0.1
           cargo +1.92.0 run -p ommatidia-train --bin field --locked -- \
             --data target/surface-smoke/fit.omd --out target/visibility-smoke/reload \
             --eval-checkpoint target/visibility-smoke/train/model.safetensors
