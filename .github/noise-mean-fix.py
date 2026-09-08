@@ -9,6 +9,20 @@ s = p.read_text()
 s = change(s, 'impl Regression {', 'impl Regression {\n    pub fn samples(&self) -> usize { self.count }')
 s = change(s, 'let y = risk.ln_1p();', '// Predict expected linear squared risk, not expected log-risk.\n        let y = risk;')
 s = change(s, 'r.add(x, (0.3 + 2.0 * x[1]).exp_m1()).unwrap();', 'r.add(x, 0.3 + 2.0 * x[1]).unwrap();')
+s += """
+#[cfg(test)]
+mod linear_risk_tests {
+    use super::*;
+    #[test]
+    fn rare_bright_errors_retain_their_linear_risk() {
+        let mut r = Regression::default();
+        let mut x = [0.0; DIM]; x[0] = 1.0;
+        for risk in [0.0, 0.0, 0.0, 100.0] { r.add(x, risk).unwrap(); }
+        assert_eq!(r.samples(), 4);
+        assert!((predict(&r.fit(1e-8).unwrap(), &x) - 25.0).abs() < 1e-5);
+    }
+}
+"""
 p.write_text(s)
 p = Path('ommatidia-train/src/bin/noise-risk.rs');s = p.read_text()
 s = change(s, 'struct Capture {', '''const METHODS: [&str; 6] = ["learned", "fixed-prior", "observable-risk", "cross-noise-risk", "single-oracle", "convex-oracle"];
@@ -43,4 +57,34 @@ s=s[:a]+'''        for (m, name) in METHODS.iter().enumerate() {
 '''+s[z:]
 s=change(s, '"spatial_bias2_population_variance_mse":risk_by_scale,"frames":per_frame', '"native_recomposition_max_relative_difference":native_parity,"max_oracle_dual_gap":max_dual_gap,"spatial_bias2_population_variance_mse":risk_by_scale,"frames":per_frame')
 s=change(s, '"ridge":1e-3,', '"ridge":1e-3,"risk_target":"linear_lobe_mse",')
+p.write_text(s)
+
+# Freeze choices on fitting observations; a held unavailable candidate falls
+# back to the held stream's prior, without using reference-based selection.
+p = Path('ommatidia-train/src/bin/noise-risk.rs'); s = p.read_text()
+s = change(s, 'if c.frames.len() != base.frames.len() || c.length != base.length {', 'if c.frames.len() != base.frames.len() || c.length != base.length || c.frames_per_input != base.frames_per_input {')
+s = change(s, '.checked_add(c.frames.len() as u64 * c.frames_per_input)', '.checked_add((c.frames.len() as u64).checked_mul(c.frames_per_input).ok_or("path range overflow")?)')
+s = change(s, 'let mut max_dual_gap = 0.0f64;', 'let mut max_dual_gap = 0.0f64;\n        let mut cross_noise_fallbacks = [0usize; 2];')
+s = change(s, 'snapshots\n                            .iter()\n                            .all', 'snapshots[..fit]\n                            .iter()\n                            .all')
+s = change(s, '.filter(|k| available[*k])\n                                .min_by', '.filter(|k| snapshots[r][f].prior[k * 2 * n + l * n + i] > 0.0)\n                                .min_by')
+s = change(s, 'let images = [', '''let shared = if s.prior[shared_choice * 2 * n + l * n + i] > 0.0 {
+                            p[shared_choice]
+                        } else {
+                            cross_noise_fallbacks[l] += 1;
+                            prior(s, p, l, i, n)
+                        };
+                        let images = [''')
+s = change(s, 'p[shared_choice],', 'shared,')
+s = change(s, '                    let name = METHODS[m];', '''                    if rgb.iter().any(|v| !v.is_finite()) {
+                        return Err("nonfinite remodulated prediction".into());
+                    }
+                    let linear_mse = rgb.iter().zip(&target.rgb)
+                        .map(|(a,b)| (*a as f64-*b as f64).powi(2)).sum::<f64>() / rgb.len() as f64;
+                    let low_frequency_psnr = -10.0 * ommatidia::metrics::low_frequency_error(
+                        &rgb, &target.rgb, extent[0] as usize, extent[1] as usize, 8).max(1e-20).log10();
+                    let detail_ratio = ommatidia::metrics::detail(&rgb, extent[0] as usize, extent[1] as usize)
+                        / ommatidia::metrics::detail(&target.rgb, extent[0] as usize, extent[1] as usize).max(1e-12);
+                    let name = METHODS[m];''')
+s = change(s, '"psnr":psnr,"energy_ratio":energy', '"psnr":psnr,"energy_ratio":energy,"linear_mse":linear_mse,"low_frequency_psnr":low_frequency_psnr,"detail_ratio":detail_ratio')
+s = change(s, '"max_oracle_dual_gap":max_dual_gap,', '"max_oracle_dual_gap":max_dual_gap,"cross_noise_unavailable_fallbacks":cross_noise_fallbacks,')
 p.write_text(s)
