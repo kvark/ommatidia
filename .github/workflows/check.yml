@@ -16,9 +16,9 @@ concurrency:
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
-  # Blade checkout supplies capture shaders only; crates resolve through Cargo.lock.
+  # Blade checkout supplies capture shaders and fixtures; crates use Cargo.lock.
   BLADE_REV: c24621aa6606da968fd1b3967d5993f8aa2b74e8
-  MEGANEURA_REV: d903bba0a478277216133719e1eaa31b56d0be10
+  MEGANEURA_REV: 3d424e02994e69241189be907b77585091ef4347
 
 jobs:
   platform:
@@ -88,7 +88,7 @@ jobs:
         working-directory: ommatidia
         run: |
           python3 -m py_compile benchmarks/report-controls.py
-          bash -n benchmarks/quality-controls.sh benchmarks/cache-lavapipe.sh
+          bash -n benchmarks/quality-controls.sh benchmarks/cache-lavapipe.sh benchmarks/late-fusion-lavapipe.sh
       - name: Clippy
         working-directory: ommatidia
         run: cargo +1.92.0 clippy --workspace --all-targets --locked -- -D warnings
@@ -135,10 +135,7 @@ jobs:
       - name: Run GPU contract, recurrence, training and image tests
         working-directory: ommatidia
         run: |
-          cargo +1.92.0 test -p ommatidia --test gpu_runtime --locked -- --ignored --nocapture --test-threads=1
-          cargo +1.92.0 test -p ommatidia --test transport --locked -- --ignored --nocapture --test-threads=1
-          cargo +1.92.0 test -p ommatidia --test field --locked -- --ignored --nocapture --test-threads=1
-          cargo +1.92.0 test -p ommatidia --test quality_controls --locked -- --ignored --nocapture --test-threads=1
+          cargo +1.92.0 test -p ommatidia --test gpu_runtime --test transport --test field --test quality_controls --test late_rgb --test candidate_oracle --test wide_field --locked -- --ignored --nocapture --test-threads=1
           cargo +1.92.0 test -p ommatidia-data incident_capture --locked -- --ignored --nocapture --test-threads=1
       - name: Check capture independence from cached textures
         working-directory: ommatidia

@@ -26,7 +26,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           repository: kvark/meganeura
-          ref: d903bba0a478277216133719e1eaa31b56d0be10
+          ref: 3d424e02994e69241189be907b77585091ef4347
           path: meganeura
           persist-credentials: false
       - uses: actions/checkout@v4
