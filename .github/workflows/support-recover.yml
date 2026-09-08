@@ -1,0 +1,64 @@
+name: recover completed selector training
+on:
+  pull_request:
+    paths: ['.github/workflows/support-recover.yml']
+permissions:
+  contents: read
+jobs:
+  recover:
+    if: github.event.pull_request.number == 19 && github.head_ref == 'docs/visual-quality-roadmap' && github.event.pull_request.head.repo.full_name == github.repository
+    strategy:
+      fail-fast: false
+      matrix:
+        seed: [7, 11]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      VK_ICD_FILENAMES: /usr/share/vulkan/icd.d/lvp_icd.json
+      OMMATIDIA_REQUIRE_GPU: '1'
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          run-id: 34173774738
+          github-token: ${{ github.token }}
+          name: support-binaries
+          path: bin
+      - uses: actions/download-artifact@v4
+        with:
+          run-id: 34174073455
+          github-token: ${{ github.token }}
+          name: support-selector-linear-${{ matrix.seed }}
+          path: original
+      - uses: actions/download-artifact@v4
+        with:
+          run-id: 34153941146
+          github-token: ${{ github.token }}
+          name: corrected-control-data
+          path: data
+      - name: Finish all-frame scoring, without optimization
+        shell: bash
+        env:
+          SEED: ${{ matrix.seed }}
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y libvulkan1 mesa-vulkan-drivers
+          chmod +x bin/transport
+          (cd data && sha256sum -c SHA256SUMS)
+          from="original/selector-linear-$SEED"
+          out="results/selector-linear-$SEED"
+          mkdir -p "$out"
+          test "$(wc -l < "$from/loss.csv")" = 513
+          cp "$from/model.safetensors" "$from/model.transport.ron" "$from/training.json" "$from/loss.csv" "$from/recipe.txt" "$out/"
+          cp "$from/run.log" "$out/training.log"
+          sha256sum "$from/model.safetensors" > "$out/original.sha256"
+          args=(bin/transport --eval-data data/validation.omd --out "$out" --eval-only --candidate-oracle)
+          printf '%q ' "${args[@]}" > "$out/recovery-command.txt"
+          "${args[@]}" 2>&1 | tee "$out/recovery.log"
+          cmp "$from/model.safetensors" "$out/model.safetensors"
+          sha256sum "$out/model.safetensors" "$out/quality.json" > "$out/results.sha256"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: recovered-selector-linear-${{ matrix.seed }}
+          path: results
+          retention-days: 7
