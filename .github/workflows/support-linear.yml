@@ -1,0 +1,60 @@
+name: projection strength control
+on:
+  pull_request:
+    paths: ['.github/workflows/support-linear.yml']
+permissions:
+  contents: read
+jobs:
+  quality:
+    if: github.event.pull_request.number == 19 && github.head_ref == 'docs/visual-quality-roadmap' && github.event.pull_request.head.repo.full_name == github.repository
+    strategy:
+      fail-fast: false
+      matrix:
+        seed: [7, 11]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: bash
+        working-directory: ommatidia
+    env:
+      VK_ICD_FILENAMES: /usr/share/vulkan/icd.d/lvp_icd.json
+      OMMATIDIA_REQUIRE_GPU: '1'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: 3d961fbbf1931bcd51ee152c93f1b992b5cbcb90
+          path: ommatidia
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          run-id: 34173774738
+          github-token: ${{ github.token }}
+          name: support-binaries
+          path: ommatidia/target/support-bin
+      - uses: actions/download-artifact@v4
+        with:
+          run-id: 34153941146
+          github-token: ${{ github.token }}
+          name: corrected-control-data
+          path: ommatidia/target/quality-control-data
+      - name: Identical binary and capture, extra ordinary linear objective
+        env:
+          SEED: ${{ matrix.seed }}
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y libvulkan1 mesa-vulkan-drivers
+          chmod +x target/support-bin/transport
+          (cd target/quality-control-data && sha256sum -c SHA256SUMS)
+          out="target/support/selector-linear-$SEED"
+          mkdir -p "$out"
+          args=(target/support-bin/transport --data target/quality-control-data/train.omd --eval-data target/quality-control-data/validation.omd --out "$out" --channels 8 --unroll 2 --steps 512 --seed "$SEED" --fixed-exposure-loss --confidence-weight 0 --physical-weight 0.2 --projected-weight 0 --candidate-oracle)
+          { git rev-parse HEAD; printf '%q ' "${args[@]}"; echo; sha256sum target/quality-control-data/*.omd target/quality-control-data/*.json; } > "$out/recipe.txt"
+          "${args[@]}" 2>&1 | tee "$out/run.log"
+          sha256sum "$out/model.safetensors" "$out/quality.json" > "$out/results.sha256"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: support-selector-linear-${{ matrix.seed }}
+          path: ommatidia/target/support
+          retention-days: 7
