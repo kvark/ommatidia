@@ -195,3 +195,45 @@ fn visibility_trains_reloads_and_is_view_permutation_invariant() {
     std::fs::remove_file(path).unwrap();
     println!("visibility loss {first} -> {last}");
 }
+
+#[test]
+#[ignore = "requires Vulkan or Metal"]
+fn source_distributions_normalize_and_common_initialization_matches() {
+    let c = config();
+    let obs = observations(&c);
+    let queries = [Query {
+        position: [0.0; 3],
+        direction: [0.0, 0.0, -1.0],
+    }];
+    let context = ommatidia::gpu::create_context(None, false);
+    let model = graph::build_points(&c, queries.len()).unwrap();
+    let control = graph::build_points(
+        &Config {
+            view_fusion: ViewFusion::LateRgb,
+            ..c.clone()
+        },
+        queries.len(),
+    )
+    .unwrap();
+    let mut session = ommatidia::gpu::inference_session(&model.graph, Arc::clone(&context));
+    let mut other = ommatidia::gpu::inference_session(&control.graph, context);
+    model.initialize(&mut session, 11);
+    control.initialize(&mut other, 11);
+    for p in &control.params {
+        let mut actual = vec![0.0; p.len];
+        let mut expected = vec![0.0; p.len];
+        session.read_param(&p.name, &mut actual);
+        other.read_param(&p.name, &mut expected);
+        assert_eq!(actual, expected, "shared initialization changed: {}", p.name);
+    }
+    Prepared::new(&obs, &c, &queries).unwrap().feed(&mut session);
+    session.step();
+    session.wait();
+    let bins = visibility::BINS + 1;
+    for view in 0..c.views {
+        let mut mass = vec![0.0; (c.extent[0] * c.extent[1]) as usize * bins];
+        session.read_output_by_index(4 + view, &mut mass);
+        assert!(mass.iter().all(|v| (*v - 1.0 / bins as f32).abs() < 1e-6));
+        assert!(mass.chunks_exact(bins).all(|p| (p.iter().sum::<f32>() - 1.0).abs() < 1e-6));
+    }
+}
