@@ -287,12 +287,13 @@ pub fn reconstruct(p: &Prepared, multipliers: &[f32]) -> (Vec<f32>, Vec<f32>) {
         for i in 0..n {
             let sum = (0..CANDIDATES)
                 .map(|k| {
-                    p.prior[k * 2 * n + l * n + i] * multipliers[k * 2 * n + l * n + i].max(1e-8)
+                    p.prior[k * 2 * n + l * n + i]
+                        * multipliers[k * 2 * n + l * n + i].max(MIN_MULTIPLIER)
                 })
                 .sum::<f32>();
             for k in 0..CANDIDATES {
                 let w = p.prior[k * 2 * n + l * n + i]
-                    * multipliers[k * 2 * n + l * n + i].max(1e-8)
+                    * multipliers[k * 2 * n + l * n + i].max(MIN_MULTIPLIER)
                     / sum.max(1e-12);
                 weights[k * 2 * n + l * n + i] = w;
                 for c in 0..3 {

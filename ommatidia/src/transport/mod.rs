@@ -15,6 +15,8 @@ use serde::{Deserialize, Serialize};
 pub const SCALES: usize = 5;
 pub const CANDIDATES: usize = SCALES + 1;
 pub const FEATURES: usize = 44;
+/// Positive selector multipliers must survive activation underflow.
+pub const MIN_MULTIPLIER: f32 = 1e-8;
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
 pub struct Config {
