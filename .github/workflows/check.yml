@@ -87,8 +87,8 @@ jobs:
       - name: Check quality harness syntax
         working-directory: ommatidia
         run: |
-          python3 -m py_compile benchmarks/report-controls.py benchmarks/report-support.py benchmarks/report-geometry.py
-          bash -n benchmarks/quality-controls.sh benchmarks/cache-lavapipe.sh benchmarks/late-fusion-lavapipe.sh benchmarks/support-lavapipe.sh benchmarks/geometry-lavapipe.sh
+          python3 -m py_compile benchmarks/report-controls.py benchmarks/report-support.py benchmarks/report-geometry.py benchmarks/report-correspondence.py
+          bash -n benchmarks/quality-controls.sh benchmarks/cache-lavapipe.sh benchmarks/late-fusion-lavapipe.sh benchmarks/support-lavapipe.sh benchmarks/geometry-lavapipe.sh benchmarks/correspondence-lavapipe.sh benchmarks/correspondence-smoke.sh
       - name: Clippy
         working-directory: ommatidia
         run: cargo +1.92.0 clippy --workspace --all-targets --locked -- -D warnings
@@ -135,7 +135,7 @@ jobs:
       - name: Run GPU contract, recurrence, training and image tests
         working-directory: ommatidia
         run: |
-          cargo +1.92.0 test -p ommatidia --test gpu_runtime --test transport --test field --test quality_controls --test late_rgb --test candidate_oracle --test wide_field --test visibility --test projected --test consistency --locked -- --ignored --nocapture --test-threads=1
+          cargo +1.92.0 test -p ommatidia --test gpu_runtime --test transport --test field --test quality_controls --test late_rgb --test candidate_oracle --test wide_field --test visibility --test projected --test consistency --test stereo --test remodulated --locked -- --ignored --nocapture --test-threads=1
           cargo +1.92.0 test -p ommatidia-data incident_capture --locked -- --ignored --nocapture --test-threads=1
       - name: Check capture independence from cached textures
         working-directory: ommatidia
@@ -180,6 +180,9 @@ jobs:
           cargo +1.92.0 run -p ommatidia-train --bin field --locked -- \
             --data target/surface-smoke/fit.omd --out target/visibility-smoke/reload \
             --eval-checkpoint target/visibility-smoke/train/model.safetensors
+      - name: Stereo and remodulated RGB training, reload and admission
+        working-directory: ommatidia
+        run: bash benchmarks/correspondence-smoke.sh
       - name: Upload field quality evidence
         if: always()
         uses: actions/upload-artifact@v4
@@ -190,6 +193,7 @@ jobs:
             ommatidia/target/surface-smoke
             ommatidia/target/visibility-smoke
             ommatidia/target/cache-regression/comparison.json
+            ommatidia/target/correspondence-smoke
           retention-days: 7
       - name: Upload changed image
         if: failure()
