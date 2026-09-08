@@ -1,0 +1,142 @@
+name: positive mixture validation
+on:
+  pull_request:
+    paths: ['.github/workflows/fit-normalization.yml', '.github/normalize-fit.py']
+permissions:
+  contents: read
+concurrency:
+  group: mixture-development-${{ github.ref }}
+  cancel-in-progress: true
+env:
+  VK_ICD_FILENAMES: /usr/share/vulkan/icd.d/lvp_icd.json
+  OMMATIDIA_REQUIRE_GPU: '1'
+jobs:
+  prepare:
+    if: github.event.pull_request.number == 19 && github.head_ref == 'docs/visual-quality-roadmap' && github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    permissions:
+      contents: write
+    outputs:
+      sha: ${{ steps.commit.outputs.sha }}
+    defaults:
+      run:
+        shell: bash
+        working-directory: ommatidia
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          path: ommatidia
+      - uses: actions/checkout@v4
+        with:
+          repository: kvark/meganeura
+          ref: 43b606ff45b99d23e7e57b5f120f5fc347039082
+          path: meganeura
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          repository: kvark/blade
+          ref: c24621aa6606da968fd1b3967d5993f8aa2b74e8
+          path: blade
+          persist-credentials: false
+      - name: Setup
+        run: |
+          rustup toolchain install 1.92.0 --profile minimal --component rustfmt,clippy
+          sudo apt-get update -qq -o Acquire::Retries=3
+          sudo apt-get install -y libvulkan1 mesa-vulkan-drivers
+          mkdir -p target/mixture-validation
+      - name: Reproduce the old failure
+        run: |
+          if cargo +1.92.0 test -p ommatidia --test mixture_mass --locked -- --ignored --nocapture --test-threads=1 > target/mixture-validation/before.log 2>&1; then
+            echo 'old normalization did not reproduce the defect' >&2; exit 1
+          fi
+          grep 'lost candidate mass' target/mixture-validation/before.log
+      - name: Fix and validate
+        run: |
+          python3 .github/normalize-fit.py
+          cargo +1.92.0 fmt --all
+          cargo +1.92.0 check --workspace --all-targets --locked 2>&1 | tee target/mixture-validation/check.log
+          cargo +1.92.0 test --workspace --locked 2>&1 | tee target/mixture-validation/unit.log
+          cargo +1.92.0 clippy --workspace --all-targets --locked -- -D warnings 2>&1 | tee target/mixture-validation/clippy.log
+          cargo +1.92.0 test -p ommatidia --test mixture_mass --test transport --test remodulated --test projected --locked -- --ignored --nocapture --test-threads=1 2>&1 | tee target/mixture-validation/after.log
+      - name: Build diagnostic binary
+        env:
+          CARGO_PROFILE_DEV_OPT_LEVEL: '1'
+          CARGO_PROFILE_DEV_DEBUG: '0'
+        run: |
+          cargo +1.92.0 build -p ommatidia-train --bin fit --locked
+          mkdir -p target/fit-bin
+          cp target/debug/fit target/fit-bin/
+          strip target/fit-bin/fit
+      - name: Commit checked source only
+        id: commit
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          test "$(git ls-remote origin refs/heads/docs/visual-quality-roadmap | cut -f1)" = "$EXPECTED_SHA"
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git rm .github/normalize-fit.py
+          git add ommatidia/src/transport ommatidia/tests/mixture_mass.rs ommatidia-train/src/bin/fit
+          git diff --cached --check
+          git commit -m 'fix: preserve convex radiance mixtures when selector activations underflow'
+          git push origin HEAD:refs/heads/docs/visual-quality-roadmap
+          git rev-parse HEAD | tee target/mixture-validation/source-sha.txt
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: normalized-fit-binary
+          path: ommatidia/target/fit-bin
+          retention-days: 7
+      - name: Archive source and validation
+        if: always()
+        run: tar --exclude=.git --exclude=target/debug --exclude=target/release -czf "$RUNNER_TEMP/normalized-fitting-source.tar.gz" .
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: normalized-fitting-validation
+          path: ${{ runner.temp }}/normalized-fitting-source.tar.gz
+          retention-days: 7
+  fit:
+    needs: prepare
+    strategy:
+      fail-fast: false
+      matrix:
+        task: [selector-lobes, selector-rgb]
+        frame: [0, 3]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: normalized-fit-binary
+          path: bin
+      - uses: actions/download-artifact@v4
+        with:
+          run-id: 34178844726
+          github-token: ${{ github.token }}
+          name: geometry-noise-risk
+          path: noise
+      - name: Repeat the same fixed observations and budget
+        shell: bash
+        env:
+          TASK: ${{ matrix.task }}
+          FRAME: ${{ matrix.frame }}
+          SOURCE: ${{ needs.prepare.outputs.sha }}
+        run: |
+          sudo apt-get update -qq -o Acquire::Retries=3
+          sudo apt-get install -y libvulkan1 mesa-vulkan-drivers
+          chmod +x bin/fit
+          capture=noise/noise-7/data/noise0.omd
+          mkdir -p evidence
+          args=(bin/fit --task "$TASK" --data "$capture" --out "evidence/$TASK-$FRAME" --frame "$FRAME" --seed 7 --steps 512)
+          { echo "$SOURCE"; printf '%q ' "${args[@]}"; echo; sha256sum "$capture" "${capture%.omd}."*json; } > evidence/recipe.txt
+          "${args[@]}" 2>&1 | tee evidence/run.log
+          find evidence -name diagnostic.safetensors -o -name quality.json | sort | xargs sha256sum > evidence/results.sha256
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: normalized-${{ matrix.task }}-${{ matrix.frame }}
+          path: evidence
+          retention-days: 7
