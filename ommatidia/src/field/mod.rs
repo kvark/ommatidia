@@ -1,5 +1,6 @@
 //! Experimental image-conditioned radiance field. Posed RGB in; density/radiance out.
 //! Light-source labels are a separate training contract, never observations.
+pub mod consistency;
 pub mod data;
 pub mod graph;
 pub mod incident;

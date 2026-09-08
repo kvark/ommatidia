@@ -440,7 +440,7 @@ fn masked_loss(g: &mut Graph, a: NodeId, b: NodeId, mask: NodeId, e: f32) -> Nod
 /// Training uses volume-rendered RGB plus separately masked source-emission and environment losses.
 /// Inference output is [rendered RGB, density, radiance, emission, environment].
 pub fn build_render(c: &Config, shape: RenderShape, training: bool) -> Result<Network, String> {
-    build(c, shape, training, 0, false)
+    build(c, shape, training, 0, false, 0)
 }
 /// Last `incident_rays` in each ray-sample block supervise incident light;
 /// preceding rays supervise camera RGB. They share density, visibility,
@@ -454,7 +454,7 @@ pub fn build_training(
     if incident_rays >= shape.rays {
         return Err("incident training must retain at least one image ray".into());
     }
-    build(c, shape, true, incident_rays, false)
+    build(c, shape, true, incident_rays, false, 0)
 }
 /// Training-only termination NLL; weight-zero targets preserve the entire graph.
 pub fn build_surface_training(
@@ -465,15 +465,40 @@ pub fn build_surface_training(
     if incident_rays >= shape.rays {
         return Err("surface training needs image rays".into());
     }
-    build(c, shape, true, incident_rays, true)
+    build(c, shape, true, incident_rays, true, 0)
+}
+/// Couple source termination distributions to the same implicit density that renders RGB.
+/// Last `consistency_rays` are independently sampled source-camera rays; before them
+/// are `incident_rays`, and the remaining prefix is the original fitting-camera batch.
+/// No target depth positions those samples. Coefficient zero retains the paired graph.
+pub fn build_consistent_training(
+    c: &Config,
+    shape: RenderShape,
+    incident_rays: usize,
+    consistency_rays: usize,
+    surface: bool,
+) -> Result<Network, String> {
+    if c.view_fusion != super::ViewFusion::VisibleRgb
+        || consistency_rays == 0
+        || !shape.steps.is_multiple_of(super::visibility::BINS)
+        || incident_rays
+            .checked_add(consistency_rays)
+            .is_none_or(|n| n >= shape.rays)
+    {
+        return Err("consistency requires visible-rgb, source rays, image rays and a sample count divisible by 16".into());
+    }
+    build(c, shape, true, incident_rays, surface, consistency_rays)
 }
 /// Inference diagnostics: RGB and step-major termination masses, including escape.
+/// VisibleRgb additionally exposes per-source pixel-major distributions. No labels are read.
 pub fn build_diagnostics(c: &Config, shape: RenderShape) -> Result<Network, String> {
     c.validate()?;
     let mut b = Builder::new();
     let f = field(&mut b, c, shape.queries()?);
     let r = render(&mut b.g, &f, shape);
-    b.g.set_outputs(vec![r.total, r.termination]);
+    let mut outputs = vec![r.total, r.termination];
+    outputs.extend(f.visibility);
+    b.g.set_outputs(outputs);
     Ok(Network {
         graph: b.g,
         params: b.params,
@@ -485,6 +510,7 @@ fn build(
     training: bool,
     incident_rays: usize,
     surface: bool,
+    consistency_rays: usize,
 ) -> Result<Network, String> {
     c.validate()?;
     let q = shape.queries()?;
@@ -492,7 +518,7 @@ fn build(
     let f = field(&mut b, c, q);
     let rendered = render(&mut b.g, &f, shape);
     if training {
-        let image_rays = shape.rays - incident_rays;
+        let image_rays = shape.rays - incident_rays - consistency_rays;
         let rgb = rows(&mut b.g, rendered.total, 0, image_rays, 3);
         let target = b.g.input("target.rgb", &[image_rays, 3]);
         let a = log_radiance(&mut b.g, rgb, c.exposure);
@@ -547,6 +573,16 @@ fn build(
                 let auxiliary = scaled(&mut b.g, auxiliary, 0.5);
                 loss = b.g.add(loss, auxiliary);
             }
+        }
+        if consistency_rays != 0 {
+            let pair = super::consistency::loss(
+                &mut b.g,
+                &f.visibility,
+                rendered.termination,
+                shape,
+                consistency_rays,
+            );
+            loss = b.g.add(loss, pair);
         }
         b.g.set_outputs(vec![loss]);
     } else {

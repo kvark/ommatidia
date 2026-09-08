@@ -5,6 +5,7 @@
 pub mod cpu;
 pub mod graph;
 pub mod native;
+pub mod noise;
 pub mod olat;
 pub mod oracle;
 
