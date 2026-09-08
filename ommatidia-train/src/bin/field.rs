@@ -32,6 +32,17 @@ struct Example {
     held: TargetView,
     record: field::SceneRecord,
     context_surfaces: Vec<Option<surface::Capture>>,
+    stereo: Option<Arc<field::stereo::Sweep>>,
+}
+impl Example {
+    fn prepare(&self, c: &Config, q: &[field::Query]) -> Result<Prepared> {
+        Ok(Prepared::with_stereo(
+            &self.observations,
+            c,
+            q,
+            self.stereo.clone(),
+        )?)
+    }
 }
 fn load(path: &Path, c: &Config) -> Result<Vec<Example>> {
     let manifest: Manifest =
@@ -111,7 +122,13 @@ fn load(path: &Path, c: &Config) -> Result<Vec<Example>> {
             views: context,
         };
         observations.validate(c)?;
+        let stereo = if c.view_fusion == field::ViewFusion::StereoRgb {
+            Some(Arc::new(field::stereo::Sweep::new(&observations, c)?))
+        } else {
+            None
+        };
         examples.push(Example {
+            stereo,
             observations,
             train,
             held,
@@ -146,7 +163,7 @@ fn score_incident(
             .map(|i| batch[i.min(batch.len() - 1)].ray())
             .collect();
         let (q, dt) = data::ray_queries(example.observations.bounds, &rays, shape.steps)?;
-        Prepared::new(&example.observations, c, &q)?.feed(session);
+        example.prepare(c, &q)?.feed(session);
         session.set_input("ray.deltas", &dt);
         session.step();
         session.wait();
@@ -251,7 +268,7 @@ fn main() -> Result<()> {
         }
         if flag == "--help" || flag == "-h" {
             println!(
-                "field --data CAPTURE.omd [--data OTHER.omd] [--eval-data UNSEEN.omd]\n  --out DIR --steps N --seed N --image N --views N --channels N --hidden N\n  --rays N --samples N --probes N --rate F --stratified\n  --view-fusion moments|late-rgb|visible-rgb --visibility-weight F [0.05] --eval-checkpoint PATH\n  --surface-weight F (opt-in; 0 retains matched control graph)\n  --consistency-rays N [0] --consistency-weight F [0.05]\n  --emitter-fraction F [0] --diagnostics\n  --incident-rays N [0] --incident-weight F [0.1 when incident rays enabled]\nPosed RGB only. Final camera is held; light labels supervise separate heads.\nOutput: weights/config, RGB contexts, fixed-budget held-camera quality, PNGs."
+                "field --data CAPTURE.omd [--data OTHER.omd] [--eval-data UNSEEN.omd]\n  --out DIR --steps N --seed N --image N --views N --channels N --hidden N\n  --rays N --samples N --probes N --rate F --stratified\n  --view-fusion moments|late-rgb|visible-rgb|stereo-rgb --visibility-weight F [0.05] --eval-checkpoint PATH\n  --surface-weight F (opt-in; 0 retains matched control graph)\n  --consistency-rays N [0] --consistency-weight F [0.05]\n  --emitter-fraction F [0] --diagnostics\n  --incident-rays N [0] --incident-weight F [0.1 when incident rays enabled]\nPosed RGB only. Final camera is held; light labels supervise separate heads.\nOutput: weights/config, RGB contexts, fixed-budget held-camera quality, PNGs."
             );
             return Ok(());
         }
@@ -268,7 +285,13 @@ fn main() -> Result<()> {
                     "moments" => field::ViewFusion::Moments,
                     "late-rgb" => field::ViewFusion::LateRgb,
                     "visible-rgb" => field::ViewFusion::VisibleRgb,
-                    _ => return Err("view fusion must be moments, late-rgb or visible-rgb".into()),
+                    "stereo-rgb" => field::ViewFusion::StereoRgb,
+                    _ => {
+                        return Err(
+                            "view fusion must be moments, late-rgb, visible-rgb or stereo-rgb"
+                                .into(),
+                        );
+                    }
                 }
             }
             "--out" => out = v.into(),
@@ -323,7 +346,7 @@ fn main() -> Result<()> {
     if !consistency_weight.is_finite()
         || consistency_weight < 0.0
         || (consistency_rays != 0
-            && (c.view_fusion != field::ViewFusion::VisibleRgb
+            && (!c.view_fusion.uses_visibility()
                 || !shape.steps.is_multiple_of(field::visibility::BINS)
                 || eval_checkpoint.is_some()))
     {
@@ -367,22 +390,21 @@ fn main() -> Result<()> {
     if !visibility_weight.is_finite() || visibility_weight < 0.0 {
         return Err("visibility weight must be finite and nonnegative".into());
     }
-    let visibility_targets =
-        if c.view_fusion == field::ViewFusion::VisibleRgb && eval_checkpoint.is_none() {
-            train
-                .iter()
-                .map(|e| {
-                    field::visibility::Targets::new(
-                        &e.observations,
-                        &c,
-                        &e.context_surfaces,
-                        visibility_weight,
-                    )
-                })
-                .collect::<std::result::Result<Vec<_>, _>>()?
-        } else {
-            Vec::new()
-        };
+    let visibility_targets = if c.view_fusion.uses_visibility() && eval_checkpoint.is_none() {
+        train
+            .iter()
+            .map(|e| {
+                field::visibility::Targets::new(
+                    &e.observations,
+                    &c,
+                    &e.context_surfaces,
+                    visibility_weight,
+                )
+            })
+            .collect::<std::result::Result<Vec<_>, _>>()?
+    } else {
+        Vec::new()
+    };
     let held = eval.as_ref().map(|p| load(p, &c)).transpose()?;
     if held.as_ref().is_some_and(|held| {
         held.iter().any(|a| {
@@ -521,7 +543,7 @@ fn main() -> Result<()> {
             environment: example.record.lighting.environment,
             environment_mask: [1.0; 3],
         };
-        Prepared::new(&example.observations, &c, &queries)?.feed(&mut session);
+        example.prepare(&c, &queries)?.feed(&mut session);
         session.set_input("ray.deltas", &deltas);
         targets.feed(&mut session);
         if let Some(batch) = &source_batch {
@@ -688,7 +710,7 @@ fn main() -> Result<()> {
         }
         scores.push(serde_json::json!({"scene_seed":example.record.scene_seed,"learned":score(&prediction.rgb,&example.held.rgb),
             "untrained":score(&initial.rgb,&example.held.rgb),"context_mean":score(&constant,&example.held.rgb),"black":score(&vec![0.0;3*n],&example.held.rgb),
-            "source_consistency":if diagnostics && c.view_fusion == field::ViewFusion::VisibleRgb {
+            "source_consistency":if diagnostics && c.view_fusion.uses_visibility() {
                 diagnostics::consistency(&mut learned,&c,shape,example)?
             } else { serde_json::Value::Null },
             "diagnostics":diagnostic,"incident":score_incident(&mut incident_session,&c,incident_shape,example)?}));
