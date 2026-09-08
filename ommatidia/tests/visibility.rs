@@ -224,9 +224,15 @@ fn source_distributions_normalize_and_common_initialization_matches() {
         let mut expected = vec![0.0; p.len];
         session.read_param(&p.name, &mut actual);
         other.read_param(&p.name, &mut expected);
-        assert_eq!(actual, expected, "shared initialization changed: {}", p.name);
+        assert_eq!(
+            actual, expected,
+            "shared initialization changed: {}",
+            p.name
+        );
     }
-    Prepared::new(&obs, &c, &queries).unwrap().feed(&mut session);
+    Prepared::new(&obs, &c, &queries)
+        .unwrap()
+        .feed(&mut session);
     session.step();
     session.wait();
     let bins = visibility::BINS + 1;
@@ -234,6 +240,9 @@ fn source_distributions_normalize_and_common_initialization_matches() {
         let mut mass = vec![0.0; (c.extent[0] * c.extent[1]) as usize * bins];
         session.read_output_by_index(4 + view, &mut mass);
         assert!(mass.iter().all(|v| (*v - 1.0 / bins as f32).abs() < 1e-6));
-        assert!(mass.chunks_exact(bins).all(|p| (p.iter().sum::<f32>() - 1.0).abs() < 1e-6));
+        assert!(
+            mass.chunks_exact(bins)
+                .all(|p| (p.iter().sum::<f32>() - 1.0).abs() < 1e-6)
+        );
     }
 }
