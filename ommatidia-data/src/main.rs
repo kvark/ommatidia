@@ -40,6 +40,7 @@ struct Args {
     canonical_bounces: u32,
     input_bounces: Option<u32>,
     reference_sample_offset: usize,
+    input_sample_offset: usize,
     input_frames: usize,
     sequence_frames: usize,
     camera_motion: f32,
@@ -89,6 +90,7 @@ impl Default for Args {
             canonical_bounces: render::REFERENCE_MAX_BOUNCES,
             input_bounces: None,
             reference_sample_offset: 0,
+            input_sample_offset: 0,
             input_frames: 1,
             sequence_frames: 1,
             camera_motion: 0.0,
@@ -145,11 +147,10 @@ usage: ommatidia-data [options]
   --reference-sample-offset N
                             discard N canonical frames before each reference,
                             for an independent finite-sample noise audit [0]
+  --input-sample-offset N   skip N path frames before the first LR capture [0]
+                            scene, camera, HR reference and guides stay unchanged
   --input-frames N          sparse path-traced input samples per pixel [1]
   --sequence-frames N       consecutive frames per scene [1]
-  --field-views N           static posed RGB orbit for field reconstruction, N>=3
-  --scene-labels            export static procedural cameras and emitter labels
-  --lighting-seed N         vary only source emission; requires scene labels
   --camera-motion F         world-X camera translation per sequence frame [0]
   --random-camera-motion F  deterministic curved camera motion, with nominal
                             translation F per frame [0]
@@ -319,6 +320,11 @@ fn parse_args() -> Result<Args, String> {
                     .parse()
                     .map_err(|e| format!("--ground-patches: {e}"))?
             }
+            "--input-sample-offset" => {
+                args.input_sample_offset = value()?
+                    .parse()
+                    .map_err(|e| format!("--input-sample-offset: {e}"))?
+            }
             "--seed" => args.seed = value()?.parse().map_err(|e| format!("--seed: {e}"))?,
             "--device-id" => args.device_id = Some(ommatidia::gpu::parse_device_id(&value()?)?),
             "--shader-dir" => args.shader_dir = Some(PathBuf::from(value()?)),
@@ -404,6 +410,23 @@ fn parse_args() -> Result<Args, String> {
     }
     if args.samples == 0 {
         return Err("--samples must be positive".into());
+    }
+    if args.input_sample_offset != 0
+        && (args.svgf_input || args.restir_input || args.checkpoint.is_some())
+    {
+        return Err(
+            "--input-sample-offset requires independent paths, not ReSTIR or checkpoint capture"
+                .into(),
+        );
+    }
+    if args
+        .samples
+        .checked_mul(args.sequence_frames)
+        .and_then(|n| n.checked_mul(args.input_frames))
+        .and_then(|n| n.checked_add(args.input_sample_offset))
+        .is_none_or(|n| n >= u32::MAX as usize)
+    {
+        return Err("input path stream would overflow the renderer frame index".into());
     }
     if args.canonical_bounces == 0 || args.input_bounces == Some(0) {
         return Err("path depths must be positive".into());
@@ -1385,6 +1408,11 @@ fn main() {
             render::Pass::RealTime
         } else {
             render::Pass::PathTrace {
+                sample_offset: if index == 0 {
+                    args.input_sample_offset
+                } else {
+                    0
+                },
                 frames: args.input_frames,
                 max_bounces: args.input_bounces.unwrap_or(args.canonical_bounces),
             }
@@ -1440,6 +1468,7 @@ fn main() {
                     &mut sequence.objects,
                     &camera,
                     render::Pass::PathTrace {
+                        sample_offset: 0,
                         frames: 1,
                         max_bounces: args.input_bounces.unwrap_or(args.canonical_bounces),
                     },
@@ -1663,6 +1692,11 @@ fn main() {
         "schema": 1,
         "records": count,
         "capture_seed": args.seed,
+        "input_sample_offset": args.input_sample_offset,
+        "input_frames": args.input_frames,
+        "reference_sample_offset": args.reference_sample_offset,
+        "canonical_frames": args.canonical_frames,
+        "input_rng_schedule": "blade-frame-index; prefix-discard-once; retained [offset+1,offset+records*input_frames]",
         "scene_seeds": (0..args.samples).map(|i|args.seed ^ (i as u64).wrapping_mul(0x9E37_79B9)).collect::<Vec<_>>(),
         "family_ids": scene_records.iter().flat_map(|s|s.families.iter().cloned()).collect::<Vec<_>>(),
         "light_motion": args.light_motion,

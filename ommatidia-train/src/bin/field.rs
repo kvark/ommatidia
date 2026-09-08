@@ -233,6 +233,8 @@ fn main() -> Result<()> {
     let mut incident_weight = 0.1f32;
     let mut surface_weight = None::<f32>;
     let mut visibility_weight = 0.05f32;
+    let mut consistency_rays = 0usize;
+    let mut consistency_weight = 0.05f32;
     let mut emitter_fraction = 0.0f32;
     let mut diagnostics = false;
     let mut stratified = false;
@@ -249,7 +251,7 @@ fn main() -> Result<()> {
         }
         if flag == "--help" || flag == "-h" {
             println!(
-                "field --data CAPTURE.omd [--data OTHER.omd] [--eval-data UNSEEN.omd]\n  --out DIR --steps N --seed N --image N --views N --channels N --hidden N\n  --rays N --samples N --probes N --rate F --stratified\n  --view-fusion moments|late-rgb|visible-rgb --visibility-weight F [0.05] --eval-checkpoint PATH\n  --surface-weight F (opt-in; 0 retains matched control graph)\n  --emitter-fraction F [0] --diagnostics\n  --incident-rays N [0] --incident-weight F [0.1 when incident rays enabled]\nPosed RGB only. Final camera is held; light labels supervise separate heads.\nOutput: weights/config, RGB contexts, fixed-budget held-camera quality, PNGs."
+                "field --data CAPTURE.omd [--data OTHER.omd] [--eval-data UNSEEN.omd]\n  --out DIR --steps N --seed N --image N --views N --channels N --hidden N\n  --rays N --samples N --probes N --rate F --stratified\n  --view-fusion moments|late-rgb|visible-rgb --visibility-weight F [0.05] --eval-checkpoint PATH\n  --surface-weight F (opt-in; 0 retains matched control graph)\n  --consistency-rays N [0] --consistency-weight F [0.05]\n  --emitter-fraction F [0] --diagnostics\n  --incident-rays N [0] --incident-weight F [0.1 when incident rays enabled]\nPosed RGB only. Final camera is held; light labels supervise separate heads.\nOutput: weights/config, RGB contexts, fixed-budget held-camera quality, PNGs."
             );
             return Ok(());
         }
@@ -259,6 +261,8 @@ fn main() -> Result<()> {
             "--eval-data" => eval = Some(PathBuf::from(v)),
             "--eval-checkpoint" => eval_checkpoint = Some(PathBuf::from(v)),
             "--visibility-weight" => visibility_weight = v.parse()?,
+            "--consistency-rays" => consistency_rays = v.parse()?,
+            "--consistency-weight" => consistency_weight = v.parse()?,
             "--view-fusion" => {
                 c.view_fusion = match v.as_str() {
                     "moments" => field::ViewFusion::Moments,
@@ -311,10 +315,20 @@ fn main() -> Result<()> {
         rays: shape
             .rays
             .checked_add(incident_rays)
+            .and_then(|n| n.checked_add(consistency_rays))
             .ok_or("too many rays")?,
         ..shape
     };
     training_shape.queries()?;
+    if !consistency_weight.is_finite()
+        || consistency_weight < 0.0
+        || (consistency_rays != 0
+            && (c.view_fusion != field::ViewFusion::VisibleRgb
+                || !shape.steps.is_multiple_of(field::visibility::BINS)
+                || eval_checkpoint.is_some()))
+    {
+        return Err("consistency needs visible-rgb training, samples divisible by 16, and finite nonnegative weight".into());
+    }
     if !incident_weight.is_finite() || incident_weight < 0.0 {
         return Err("incident weight must be finite and nonnegative".into());
     }
@@ -388,6 +402,14 @@ fn main() -> Result<()> {
     println!("field backend {backend}; quality only");
     let model = if eval_checkpoint.is_some() {
         graph::build_diagnostics(&c, shape)?
+    } else if consistency_rays != 0 {
+        graph::build_consistent_training(
+            &c,
+            training_shape,
+            incident_rays,
+            consistency_rays,
+            surface_weight.is_some(),
+        )?
     } else if surface_weight.is_some() {
         graph::build_surface_training(&c, training_shape, incident_rays)?
     } else {
@@ -456,6 +478,19 @@ fn main() -> Result<()> {
             })
             .collect();
         rays.extend(chosen.iter().map(|p| p.ray()));
+        let source_batch = if consistency_rays != 0 {
+            Some(field::consistency::Batch::new(
+                &example.observations,
+                &c,
+                consistency_rays,
+                seed ^ 0xBE54_66CF_34E9_0C6C ^ (step as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15),
+            )?)
+        } else {
+            None
+        };
+        if let Some(batch) = &source_batch {
+            rays.extend_from_slice(&batch.rays);
+        }
         // Independent stream: changing sample count/mode must not change
         // fitting camera pixels or emission/incident-probe choices.
         let sample_seed =
@@ -489,6 +524,9 @@ fn main() -> Result<()> {
         Prepared::new(&example.observations, &c, &queries)?.feed(&mut session);
         session.set_input("ray.deltas", &deltas);
         targets.feed(&mut session);
+        if let Some(batch) = &source_batch {
+            batch.feed(&mut session, consistency_weight)?;
+        }
         if !visibility_targets.is_empty() {
             visibility_targets[step % train.len()].feed(&mut session);
         }
@@ -498,7 +536,7 @@ fn main() -> Result<()> {
                 .iter()
                 .map(|p| Some((labels.distance[*p], labels.ray_limit)))
                 .collect();
-            chosen.extend((0..incident_rays).map(|_| None));
+            chosen.extend((0..incident_rays + consistency_rays).map(|_| None));
             let termination = surface::Targets::new(
                 example.observations.bounds,
                 &rays,
@@ -650,11 +688,15 @@ fn main() -> Result<()> {
         }
         scores.push(serde_json::json!({"scene_seed":example.record.scene_seed,"learned":score(&prediction.rgb,&example.held.rgb),
             "untrained":score(&initial.rgb,&example.held.rgb),"context_mean":score(&constant,&example.held.rgb),"black":score(&vec![0.0;3*n],&example.held.rgb),
+            "source_consistency":if diagnostics && c.view_fusion == field::ViewFusion::VisibleRgb {
+                diagnostics::consistency(&mut learned,&c,shape,example)?
+            } else { serde_json::Value::Null },
             "diagnostics":diagnostic,"incident":score_incident(&mut incident_session,&c,incident_shape,example)?}));
     }
     let report = serde_json::json!({"backend":backend,"quality_only":true,"eval_checkpoint":eval_checkpoint,"view_fusion":c.view_fusion,"steps":steps,"seed":seed,"first_loss":first,"last_loss":last,
         "rays":shape.rays,"samples":shape.steps,"probes":shape.probes,"incident_rays":incident_rays,"incident_weight":incident_weight,"training_files":data_files,
-        "surface_weight":surface_weight,"visibility_weight":visibility_weight,"emitter_fraction":emitter_fraction,"diagnostics":diagnostics,
+        "surface_weight":surface_weight,"visibility_weight":visibility_weight,
+        "consistency_rays":consistency_rays,"consistency_weight":consistency_weight,"emitter_fraction":emitter_fraction,"diagnostics":diagnostics,
         "sampling":if stratified {"stratified-fixed-intervals"} else {"midpoint"},
         "evaluation_sampling":"midpoint","parameter_count":model.params.iter().map(|p|p.len).sum::<usize>(),
         "image_rays_seen":steps as u64 * shape.rays as u64,

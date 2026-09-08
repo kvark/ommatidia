@@ -177,3 +177,75 @@ pub fn ablated(obs: &Observations, zero: bool) -> Observations {
     }
     out
 }
+
+/// Truth-free disagreement on a fixed source-camera ray set, after reload.
+/// Source truth is only scored separately by `geometry`; it never chooses rays.
+pub fn consistency(
+    session: &mut meganeura::Session,
+    c: &Config,
+    shape: RenderShape,
+    example: &Example,
+) -> Result<serde_json::Value> {
+    use field::consistency::{Batch, cdf_error, coarsen};
+    let bins = field::visibility::BINS + 1;
+    if !shape.steps.is_multiple_of(bins - 1) {
+        return Ok(serde_json::Value::Null);
+    }
+    let mut values = Vec::new();
+    let mut tv = 0.0;
+    let mut escape = 0.0;
+    let mut rows = Vec::new();
+    for batch in 0..(512usize.div_ceil(shape.rays)) {
+        let samples = Batch::new(
+            &example.observations,
+            c,
+            shape.rays,
+            0x32A7_4DA9 ^ batch as u64,
+        )?;
+        let (mut queries, dt) =
+            data::ray_queries(example.observations.bounds, &samples.rays, shape.steps)?;
+        queries.extend((0..shape.probes).map(|_| field::Query {
+            position: example.observations.bounds.center,
+            direction: [0.0, 0.0, 1.0],
+        }));
+        Prepared::new(&example.observations, c, &queries)?.feed(session);
+        session.set_input("ray.deltas", &dt);
+        session.step();
+        session.wait();
+        let mut mass = vec![0.0; (shape.steps + 1) * shape.rays];
+        session.read_output_by_index(1, &mut mass);
+        let mut sources = vec![vec![0.0; (c.extent[0] * c.extent[1]) as usize * bins]; c.views];
+        for (v, out) in sources.iter_mut().enumerate() {
+            session.read_output_by_index(2 + v, out);
+        }
+        for r in 0..shape.rays {
+            if samples.valid[r] == 0.0 {
+                continue;
+            }
+            let volume: Vec<_> = (0..=shape.steps)
+                .map(|s| mass[s * shape.rays + r])
+                .collect();
+            let volume = coarsen(&volume)?;
+            let p = samples.pixels[r];
+            let v = samples.views[r];
+            let source = &sources[v][p * bins..(p + 1) * bins];
+            let e = cdf_error(source, &volume)?;
+            values.push(e);
+            tv += source
+                .iter()
+                .zip(&volume)
+                .map(|(a, b)| 0.5 * (*a as f64 - *b as f64).abs())
+                .sum::<f64>();
+            escape += (source[bins - 1] - volume[bins - 1]).abs() as f64;
+            rows.push(
+                serde_json::json!({"source":v,"pixel":p,"source_mass":source,"volume_mass":volume}),
+            );
+        }
+    }
+    let n = values.len().max(1) as f64;
+    Ok(
+        serde_json::json!({"rays":values.len(),"cdf_mse":values.iter().sum::<f64>()/n,
+        "total_variation":tv/n,"escape_absolute_difference":escape/n,
+        "sampling":"fixed random source pixels; no truth depth; duplicate pixels allowed","distributions":rows}),
+    )
+}

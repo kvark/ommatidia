@@ -230,7 +230,11 @@ pub enum Pass {
     /// Raw ReSTIR, without Blade's built-in SVGF pass: a comparison input.
     RealTime,
     /// Sparse paths: match reference transport by default, varying sample count.
-    PathTrace { frames: usize, max_bounces: u32 },
+    PathTrace {
+        frames: usize,
+        max_bounces: u32,
+        sample_offset: usize,
+    },
     /// Accumulated path tracing: the reference.
     Canonical {
         frames: usize,
@@ -252,7 +256,11 @@ impl Pass {
     fn frames(self) -> usize {
         match self {
             Self::RealTime => RESTIR_FRAMES,
-            Self::PathTrace { frames, .. } => frames,
+            Self::PathTrace {
+                frames,
+                sample_offset,
+                ..
+            } => frames + sample_offset,
             Self::Canonical {
                 frames,
                 sample_offset,
@@ -263,7 +271,7 @@ impl Pass {
 
     fn reset_accumulation(self, frame: usize) -> bool {
         frame == 0
-            || matches!(self, Self::Canonical { sample_offset, .. } if sample_offset != 0 && frame == sample_offset)
+            || matches!(self, Self::Canonical { sample_offset, .. } | Self::PathTrace { sample_offset, .. } if sample_offset != 0 && frame == sample_offset)
     }
 
     fn ray_config(self) -> blade_render::RayConfig {
@@ -482,6 +490,7 @@ mod tests {
     fn sparse_and_reference_paths_match_transport_not_sample_count() {
         let restir = Pass::RealTime.ray_config();
         let input = Pass::PathTrace {
+            sample_offset: 0,
             frames: 1,
             max_bounces: REFERENCE_MAX_BOUNCES,
         }
@@ -505,6 +514,7 @@ mod tests {
         assert!(reference.jitter_primary_rays);
         assert_eq!(reference.max_bounces, input.max_bounces);
         let truncated = Pass::PathTrace {
+            sample_offset: 0,
             frames: 1,
             max_bounces: 3,
         }
@@ -527,5 +537,26 @@ mod tests {
         assert!(!pass.reset_accumulation(1023));
         assert!(pass.reset_accumulation(1024));
         assert!(!pass.reset_accumulation(1025));
+    }
+}
+
+#[cfg(test)]
+mod noise_tests {
+    use super::*;
+    #[test]
+    fn discarded_path_prefix_is_not_accumulated_or_antialiased() {
+        let p = Pass::PathTrace {
+            frames: 2,
+            max_bounces: 8,
+            sample_offset: 17,
+        };
+        assert_eq!(p.frames(), 19);
+        assert!(p.reset_accumulation(0));
+        assert!(!p.reset_accumulation(16));
+        assert!(p.reset_accumulation(17));
+        assert!(!p.reset_accumulation(18));
+        let rays = p.ray_config();
+        assert_eq!(rays.num_brdf_samples, 1);
+        assert!(!rays.jitter_primary_rays);
     }
 }
