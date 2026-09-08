@@ -6,6 +6,7 @@ pub struct SourceEvidence {
     pub rgb: Vec<f32>,
     pub direction: Vec<f32>,
     pub valid: Vec<f32>,
+    pub survival: Option<Vec<f32>>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -82,13 +83,15 @@ impl Prepared {
                 }
             }
             let mut source = SourceEvidence {
-                rgb: if config.view_fusion == ViewFusion::LateRgb {
+                rgb: if config.view_fusion.uses_rgb() {
                     view.rgb.clone()
                 } else {
                     Vec::new()
                 },
                 direction: vec![0.0; 3 * q],
                 valid: vec![0.0; q],
+                survival: (config.view_fusion == ViewFusion::VisibleRgb)
+                    .then(|| vec![0.0; q * (visibility::BINS + 1)]),
             };
             let mut indices: [Vec<u32>; 4] = std::array::from_fn(|_| vec![0; q]);
             let mut weights: [Vec<f32>; 4] = std::array::from_fn(|_| vec![0.0; q]);
@@ -122,8 +125,17 @@ impl Prepared {
                     query.position[c] - view.camera.origin[c]
                 }));
                 source.direction[3 * i..3 * i + 3].copy_from_slice(&direction);
+                if let Some(coefficients) = &mut source.survival {
+                    let row = visibility::survival(
+                        observations.bounds,
+                        view.camera.origin,
+                        query.position,
+                    );
+                    coefficients[i * (visibility::BINS + 1)..(i + 1) * (visibility::BINS + 1)]
+                        .copy_from_slice(&row);
+                }
             }
-            if config.view_fusion == ViewFusion::LateRgb {
+            if config.view_fusion.uses_rgb() {
                 result.sources.push(source);
             }
             result.images.push(image);
@@ -142,7 +154,12 @@ impl Prepared {
             if let Some(source) = self.sources.get(v) {
                 session.set_input(&format!("view{v}.linear_rgb"), &source.rgb);
                 session.set_input(&format!("view{v}.source_direction"), &source.direction);
-                session.set_input(&format!("view{v}.valid"), &source.valid);
+                if source.survival.is_none() {
+                    session.set_input(&format!("view{v}.valid"), &source.valid);
+                }
+                if let Some(survival) = &source.survival {
+                    session.set_input(&format!("view{v}.survival"), survival);
+                }
             }
             for k in 0..4 {
                 session.set_input_u32(&format!("view{v}.index{k}"), &self.indices[v][k]);
@@ -151,8 +168,10 @@ impl Prepared {
         }
         session.set_input("query.position", &self.positions);
         session.set_input("query.direction", &self.directions);
-        session.set_input("query.inverse_count", &self.inverse_count);
-        session.set_input("query.coverage", &self.coverage);
+        if !self.sources.iter().any(|s| s.survival.is_some()) {
+            session.set_input("query.inverse_count", &self.inverse_count);
+            session.set_input("query.coverage", &self.coverage);
+        }
     }
 }
 #[derive(Clone, Copy, Debug)]

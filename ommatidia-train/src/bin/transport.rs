@@ -262,13 +262,14 @@ fn main() -> Result<()> {
     let mut rate = 0.001f32;
     let mut eval_only = false;
     let mut candidate_oracle = false;
+    let mut projected_weight = None::<f32>;
     let mut fixed_exposure_loss = false;
     let mut weights = graph::LossWeights::default();
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
         if arg == "--help" {
             println!(
-                "transport --data TRAIN.omd --eval-data HOLDOUT.omd [--out DIR] [--steps 128] [--unroll 2] [--channels 8] [--seed 7] [--lr 0.001] [--eval-only] [--candidate-oracle] [--fixed-exposure-loss]\n  --compressed-weight F [1] --physical-weight F [0.1] --low-frequency-weight F [0.05]\n  --confidence-weight F [0.01] --temporal-weight F [0.01]\nCaptures must have matched transport, split radiance, HR surfaces, and disjoint scene seeds."
+                "transport --data TRAIN.omd --eval-data HOLDOUT.omd [--out DIR] [--steps 128] [--unroll 2] [--channels 8] [--seed 7] [--lr 0.001] [--eval-only] [--candidate-oracle] [--fixed-exposure-loss] [--projected-weight F]\n  --compressed-weight F [1] --physical-weight F [0.1] --low-frequency-weight F [0.05]\n  --confidence-weight F [0.01] --temporal-weight F [0.01]\nCaptures must have matched transport, split radiance, HR surfaces, and disjoint scene seeds."
             );
             return Ok(());
         }
@@ -294,6 +295,7 @@ fn main() -> Result<()> {
             "--channels" => channels = v.parse()?,
             "--seed" => seed = v.parse()?,
             "--lr" => rate = v.parse()?,
+            "--projected-weight" => projected_weight = Some(v.parse()?),
             "--compressed-weight" => weights.compressed = v.parse()?,
             "--physical-weight" => weights.physical = v.parse()?,
             "--low-frequency-weight" => weights.low_frequency = v.parse()?,
@@ -303,6 +305,12 @@ fn main() -> Result<()> {
         }
     }
     weights.validate()?;
+    if projected_weight.is_some_and(|w| !w.is_finite() || w < 0.0) {
+        return Err("projected weight must be finite and nonnegative".into());
+    }
+    if projected_weight.is_some() && eval_only {
+        return Err("projected targets are training-only".into());
+    }
     if !(1..=8).contains(&unroll) || !rate.is_finite() || rate <= 0.0 {
         return Err("invalid unroll or learning rate".into());
     }
@@ -334,7 +342,7 @@ fn main() -> Result<()> {
         if unroll > train.length || train.frames.iter().any(|(f, _)| f.low != low) {
             return Err("unroll exceeds sequence or extents differ".into());
         }
-        let network = graph::build(config, low, unroll)?;
+        let network = graph::build_projected(config, low, unroll, projected_weight.is_some())?;
         let mut session = ommatidia::gpu::training_session(&network.graph, Arc::clone(&context));
         network.initialize(&mut session, seed);
         let mut rng = ommatidia::rng::Rng::new(seed);
@@ -359,6 +367,18 @@ fn main() -> Result<()> {
                 };
                 let prepared = cpu::prepare(frame, &old, config);
                 graph::feed(&mut session, &format!("f{slot}"), &prepared, target, slot);
+                if let Some(weight) = projected_weight {
+                    let candidates = ommatidia::transport::oracle::Candidates {
+                        spatial: prepared.candidates.clone(),
+                        history: prepared.history.clone(),
+                        prior: prepared.prior.clone(),
+                        selected: Vec::new(),
+                    };
+                    let projection =
+                        ommatidia::transport::oracle::reconstruct(&candidates, &target.lobes)?;
+                    session.set_input(&format!("f{slot}.projected"), &projection.lobes);
+                    session.set_input("loss.projected_weight", &[weight]);
+                }
                 if fixed_exposure_loss {
                     // Override only loss inputs: same graph, queries and initialization.
                     session.set_input(
@@ -397,7 +417,7 @@ fn main() -> Result<()> {
         std::fs::write(
             out.join("training.json"),
             serde_json::to_vec_pretty(
-                &serde_json::json!({"steps":steps,"unroll":unroll,"seed":seed,"learning_rate":rate,"fixed_exposure_loss":fixed_exposure_loss,"loss_weights":weights,"training":train.provenance,"evaluation":holdout.provenance}),
+                &serde_json::json!({"steps":steps,"unroll":unroll,"seed":seed,"learning_rate":rate,"fixed_exposure_loss":fixed_exposure_loss,"loss_weights":weights,"projected_weight":projected_weight,"training":train.provenance,"evaluation":holdout.provenance}),
             )?,
         )?;
     }

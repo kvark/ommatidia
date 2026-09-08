@@ -31,6 +31,7 @@ struct Example {
     train: Vec<TargetView>,
     held: TargetView,
     record: field::SceneRecord,
+    context_surfaces: Vec<Option<surface::Capture>>,
 }
 fn load(path: &Path, c: &Config) -> Result<Vec<Example>> {
     let manifest: Manifest =
@@ -85,6 +86,10 @@ fn load(path: &Path, c: &Config) -> Result<Vec<Example>> {
             .iter()
             .map(|i| views[*i].view.clone())
             .collect();
+        let context_surfaces = context_indices
+            .iter()
+            .map(|i| views[*i].surface.clone())
+            .collect();
         let train: Vec<_> = views
             .into_iter()
             .enumerate()
@@ -111,6 +116,7 @@ fn load(path: &Path, c: &Config) -> Result<Vec<Example>> {
             train,
             held,
             record,
+            context_surfaces,
         });
     }
     Ok(examples)
@@ -226,6 +232,7 @@ fn main() -> Result<()> {
     let mut incident_rays = 0usize;
     let mut incident_weight = 0.1f32;
     let mut surface_weight = None::<f32>;
+    let mut visibility_weight = 0.05f32;
     let mut emitter_fraction = 0.0f32;
     let mut diagnostics = false;
     let mut stratified = false;
@@ -242,7 +249,7 @@ fn main() -> Result<()> {
         }
         if flag == "--help" || flag == "-h" {
             println!(
-                "field --data CAPTURE.omd [--data OTHER.omd] [--eval-data UNSEEN.omd]\n  --out DIR --steps N --seed N --image N --views N --channels N --hidden N\n  --rays N --samples N --probes N --rate F --stratified\n  --view-fusion moments|late-rgb --eval-checkpoint PATH\n  --surface-weight F (opt-in; 0 retains matched control graph)\n  --emitter-fraction F [0] --diagnostics\n  --incident-rays N [0] --incident-weight F [0.1 when incident rays enabled]\nPosed RGB only. Final camera is held; light labels supervise separate heads.\nOutput: weights/config, RGB contexts, fixed-budget held-camera quality, PNGs."
+                "field --data CAPTURE.omd [--data OTHER.omd] [--eval-data UNSEEN.omd]\n  --out DIR --steps N --seed N --image N --views N --channels N --hidden N\n  --rays N --samples N --probes N --rate F --stratified\n  --view-fusion moments|late-rgb|visible-rgb --visibility-weight F [0.05] --eval-checkpoint PATH\n  --surface-weight F (opt-in; 0 retains matched control graph)\n  --emitter-fraction F [0] --diagnostics\n  --incident-rays N [0] --incident-weight F [0.1 when incident rays enabled]\nPosed RGB only. Final camera is held; light labels supervise separate heads.\nOutput: weights/config, RGB contexts, fixed-budget held-camera quality, PNGs."
             );
             return Ok(());
         }
@@ -251,11 +258,13 @@ fn main() -> Result<()> {
             "--data" => data_files.push(v.into()),
             "--eval-data" => eval = Some(PathBuf::from(v)),
             "--eval-checkpoint" => eval_checkpoint = Some(PathBuf::from(v)),
+            "--visibility-weight" => visibility_weight = v.parse()?,
             "--view-fusion" => {
                 c.view_fusion = match v.as_str() {
                     "moments" => field::ViewFusion::Moments,
                     "late-rgb" => field::ViewFusion::LateRgb,
-                    _ => return Err("view fusion must be moments or late-rgb".into()),
+                    "visible-rgb" => field::ViewFusion::VisibleRgb,
+                    _ => return Err("view fusion must be moments, late-rgb or visible-rgb".into()),
                 }
             }
             "--out" => out = v.into(),
@@ -341,6 +350,25 @@ fn main() -> Result<()> {
                 .into(),
         );
     }
+    if !visibility_weight.is_finite() || visibility_weight < 0.0 {
+        return Err("visibility weight must be finite and nonnegative".into());
+    }
+    let visibility_targets =
+        if c.view_fusion == field::ViewFusion::VisibleRgb && eval_checkpoint.is_none() {
+            train
+                .iter()
+                .map(|e| {
+                    field::visibility::Targets::new(
+                        &e.observations,
+                        &c,
+                        &e.context_surfaces,
+                        visibility_weight,
+                    )
+                })
+                .collect::<std::result::Result<Vec<_>, _>>()?
+        } else {
+            Vec::new()
+        };
     let held = eval.as_ref().map(|p| load(p, &c)).transpose()?;
     if held.as_ref().is_some_and(|held| {
         held.iter().any(|a| {
@@ -461,6 +489,9 @@ fn main() -> Result<()> {
         Prepared::new(&example.observations, &c, &queries)?.feed(&mut session);
         session.set_input("ray.deltas", &deltas);
         targets.feed(&mut session);
+        if !visibility_targets.is_empty() {
+            visibility_targets[step % train.len()].feed(&mut session);
+        }
         if let Some(weight) = surface_weight {
             let labels = target.surface.as_ref().unwrap();
             let mut chosen: Vec<_> = pixels
@@ -623,7 +654,7 @@ fn main() -> Result<()> {
     }
     let report = serde_json::json!({"backend":backend,"quality_only":true,"eval_checkpoint":eval_checkpoint,"view_fusion":c.view_fusion,"steps":steps,"seed":seed,"first_loss":first,"last_loss":last,
         "rays":shape.rays,"samples":shape.steps,"probes":shape.probes,"incident_rays":incident_rays,"incident_weight":incident_weight,"training_files":data_files,
-        "surface_weight":surface_weight,"emitter_fraction":emitter_fraction,"diagnostics":diagnostics,
+        "surface_weight":surface_weight,"visibility_weight":visibility_weight,"emitter_fraction":emitter_fraction,"diagnostics":diagnostics,
         "sampling":if stratified {"stratified-fixed-intervals"} else {"midpoint"},
         "evaluation_sampling":"midpoint","parameter_count":model.params.iter().map(|p|p.len).sum::<usize>(),
         "image_rays_seen":steps as u64 * shape.rays as u64,
