@@ -221,7 +221,7 @@ fn main() -> Result<()> {
     let mut data_files = Vec::<PathBuf>::new();
     let mut eval = None;
     let mut out = PathBuf::from("target/field");
-    let mut steps = 256;
+    let mut steps = 256usize;
     let mut seed = 7u64;
     let mut shape = RenderShape {
         rays: 16,
