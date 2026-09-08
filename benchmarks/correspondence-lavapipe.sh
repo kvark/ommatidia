@@ -4,7 +4,27 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 export VK_ICD_FILENAMES="${VK_ICD_FILENAMES:-/usr/share/vulkan/icd.d/lvp_icd.json}"
 export OMMATIDIA_REQUIRE_GPU=1
-arm="${1:?field-visible, field-stereo, selector-lobes or selector-rgb}"
+arm="${1:?capture, field-visible, field-stereo, selector-lobes or selector-rgb}"
+if [[ "$arm" == capture ]]; then
+  field_data="${CORRESPONDENCE_FIELD_DATA:-target/quality-control-data/field.omd}"
+  noise_data="${CORRESPONDENCE_NOISE_DATA:-target/noise-data}"
+  if [[ -e "$field_data" || -e "$noise_data" ]]; then
+    echo 'capture destinations must be new; set explicit paths to avoid overwriting evidence' >&2; exit 2
+  fi
+  mkdir -p "$(dirname "$field_data")" "$noise_data"
+  capture=(cargo +1.92.0 run -p ommatidia-data --locked --)
+  args=("${capture[@]}" --out "$field_data" --samples 1 --field-views 8 --surface-labels --lr 64x64 --scale 1 --canonical-frames 64 --seed 20260907 --lighting-seed 43)
+  printf '%q ' "${args[@]}" > "$noise_data/capture-recipe.txt"; echo >> "$noise_data/capture-recipe.txt"
+  "${args[@]}" 2>&1 | tee "$noise_data/field-capture.log"
+  common=(--samples 2 --sequence-frames 4 --lr 16x16 --input-frames 1 --canopy --textures --gloss --ground-patches 4 --random-camera-motion 0.03 --object-motion 0.03 --light-motion 0.05 --projection-jitter --hr-gbuffer --split-radiance --canonical-frames 64 --reference-sample-offset 128 --seed 20260908)
+  for i in {0..5}; do
+    args=("${capture[@]}" --out "$noise_data/noise$i.omd" --input-sample-offset "$((8*i))" "${common[@]}")
+    printf '%q ' "${args[@]}" >> "$noise_data/capture-recipe.txt"; echo >> "$noise_data/capture-recipe.txt"
+    "${args[@]}" 2>&1 | tee "$noise_data/capture$i.log"
+  done
+  sha256sum "$field_data" "${field_data%.omd}.scene.json" "$noise_data"/*.omd "$noise_data"/*.json > "$noise_data/capture.sha256"
+  exit 0
+fi
 seed="${CORRESPONDENCE_SEED:-7}"
 out="${CORRESPONDENCE_RESULTS:-target/correspondence/$arm-$seed}"
 if [[ -e "$out" ]]; then echo "refusing to overwrite $out" >&2; exit 2; fi
