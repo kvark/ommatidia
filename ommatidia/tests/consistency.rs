@@ -117,7 +117,7 @@ fn consistency_matches_cpu_and_backpropagates_into_density_and_visibility() {
         })
         .collect();
     let targets = Targets {
-        rgb: vec![0.2; 6],
+        rgb: inf.read_output(shape.rays * 3)[..6].to_vec(),
         emission: vec![0.0; q.len() * 3],
         emission_mask: vec![0.0; q.len() * 3],
         environment: [0.0; 3],
@@ -135,6 +135,7 @@ fn consistency_matches_cpu_and_backpropagates_into_density_and_visibility() {
     forward.step();
     forward.wait();
     let zero = forward.read_loss();
+    assert!(zero.abs() < 1e-6, "non-consistency losses must be zero");
     batch.feed(&mut forward, 1.0).unwrap();
     forward.step();
     forward.wait();
@@ -153,11 +154,19 @@ fn consistency_matches_cpu_and_backpropagates_into_density_and_visibility() {
     batch.feed(&mut train, 1.0).unwrap();
     let mut old_density = [0.0];
     train.read_param("field.density.bias", &mut old_density);
-    for _ in 0..16 {
+    for step in 0..16 {
         train.set_adam(1e-3, 0.9, 0.999, 1e-8);
         train.step();
         train.wait();
         assert!(train.read_loss().is_finite());
+        if step == 0 {
+            let mut density = [0.0];
+            train.read_param("field.density.bias", &mut density);
+            assert_ne!(old_density, density, "isolated CDF loss must reach density");
+            let mut visibility = vec![0.0; c.channels as usize * 17];
+            train.read_param("field.visibility.weight", &mut visibility);
+            assert!(visibility.iter().any(|v| v.abs() > 1e-6));
+        }
     }
     assert!(train.read_loss() < one);
     let mut density = [0.0];
