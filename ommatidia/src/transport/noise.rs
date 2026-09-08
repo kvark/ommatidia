@@ -37,11 +37,15 @@ impl Default for Regression {
     }
 }
 impl Regression {
+    pub fn samples(&self) -> usize {
+        self.count
+    }
     pub fn add(&mut self, x: [f64; DIM], risk: f64) -> Result<(), String> {
         if x.iter().any(|v| !v.is_finite()) || !risk.is_finite() || risk < 0.0 {
             return Err("nonfinite risk regression row".into());
         }
-        let y = risk.ln_1p();
+        // Predict expected linear squared risk, not expected log-risk.
+        let y = risk;
         for i in 0..DIM {
             self.xy[i] += x[i] * y;
             for j in 0..DIM {
@@ -152,7 +156,7 @@ mod tests {
             let mut x = [0.0; DIM];
             x[0] = 1.0;
             x[1] = i as f64 / 100.0;
-            r.add(x, (0.3 + 2.0 * x[1]).exp_m1()).unwrap();
+            r.add(x, 0.3 + 2.0 * x[1]).unwrap();
         }
         let w = r.fit(1e-6).unwrap();
         let mut x = [0.0; DIM];
@@ -160,5 +164,21 @@ mod tests {
         x[1] = 0.35;
         assert!((predict(&w, &x) - 1.0).abs() < 1e-4);
         assert!(r.add(x, f64::NAN).is_err());
+    }
+}
+
+#[cfg(test)]
+mod linear_risk_tests {
+    use super::*;
+    #[test]
+    fn rare_bright_errors_retain_their_linear_risk() {
+        let mut r = Regression::default();
+        let mut x = [0.0; DIM];
+        x[0] = 1.0;
+        for risk in [0.0, 0.0, 0.0, 100.0] {
+            r.add(x, risk).unwrap();
+        }
+        assert_eq!(r.samples(), 4);
+        assert!((predict(&r.fit(1e-8).unwrap(), &x) - 25.0).abs() < 1e-5);
     }
 }

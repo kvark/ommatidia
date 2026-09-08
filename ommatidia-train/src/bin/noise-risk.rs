@@ -8,6 +8,14 @@ use std::{
     sync::Arc,
 };
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
+const METHODS: [&str; 6] = [
+    "learned",
+    "fixed-prior",
+    "observable-risk",
+    "cross-noise-risk",
+    "single-oracle",
+    "convex-oracle",
+];
 struct Capture {
     frames: Vec<(Frame, Target)>,
     length: usize,
@@ -56,12 +64,19 @@ fn load(path: &Path, c: Config) -> Result<Capture> {
 fn validate(captures: &[Capture]) -> Result<()> {
     let base = &captures[0];
     for (a, c) in captures.iter().enumerate() {
-        if c.frames.len() != base.frames.len() || c.length != base.length {
+        if c.frames.len() != base.frames.len()
+            || c.length != base.length
+            || c.frames_per_input != base.frames_per_input
+        {
             return Err("capture layout/sequence mismatch".into());
         }
         let end = c
             .offset
-            .checked_add(c.frames.len() as u64 * c.frames_per_input)
+            .checked_add(
+                (c.frames.len() as u64)
+                    .checked_mul(c.frames_per_input)
+                    .ok_or("path range overflow")?,
+            )
             .ok_or("path range overflow")?;
         let ref_start = c.provenance["reference_sample_offset"]
             .as_u64()
@@ -149,6 +164,23 @@ fn selected(
             .sum()
     })
 }
+fn prior(
+    s: &oracle::Candidates,
+    p: &[[f32; 3]; CANDIDATES],
+    l: usize,
+    i: usize,
+    n: usize,
+) -> [f32; 3] {
+    let total: f32 = (0..CANDIDATES)
+        .map(|k| s.prior[k * 2 * n + l * n + i])
+        .sum();
+    std::array::from_fn(|c| {
+        (0..CANDIDATES)
+            .map(|k| s.prior[k * 2 * n + l * n + i] * p[k][c])
+            .sum::<f32>()
+            / total
+    })
+}
 fn write_png(path: &Path, rgb: &[f32], extent: [u32; 2]) -> Result<()> {
     let bytes: Vec<_> = rgb
         .iter()
@@ -217,18 +249,24 @@ fn main() -> Result<()> {
         let dir = out.join(mode);
         std::fs::create_dir(&dir)?;
         let mut snapshots = Vec::new();
+        let mut native_images = Vec::new();
+        let mut native_parity = 0.0f64;
+        let mut max_dual_gap = 0.0f64;
+        let mut cross_noise_fallbacks = [0usize; 2];
         for capture in &captures {
             let mut runtime = native::Native::new(Arc::clone(&context), c, low)?;
             runtime.session.load_checkpoint(&checkpoint)?;
             let mut frames = Vec::new();
+            let mut native_frames = Vec::new();
             for (i, (f, _)) in capture.frames.iter().enumerate() {
                 if !causal || i % capture.length == 0 {
                     runtime.reset();
                 }
-                runtime.process(f)?;
+                native_frames.push(runtime.process(f)?);
                 frames.push(runtime.read_candidates());
             }
             snapshots.push(frames);
+            native_images.push(native_frames);
         }
         let mut regressions = vec![noise::Regression::default(); 2 * CANDIDATES];
         // Fit only designated noisy observations. Targets identify risk, never features.
@@ -250,12 +288,21 @@ fn main() -> Result<()> {
                 }
             }
         }
-        let weights: Vec<_> = regressions.iter().map(|r| r.fit(1e-3).ok()).collect();
+        let weights: Vec<_> = regressions
+            .iter()
+            .map(|r| {
+                if r.samples() == 0 {
+                    Ok(None)
+                } else {
+                    r.fit(1e-3).map(Some)
+                }
+            })
+            .collect::<std::result::Result<_, String>>()?;
         std::fs::write(
             dir.join("risk-model.json"),
             serde_json::to_vec_pretty(&weights)?,
         )?;
-        let mut errors = [[0.0f64; 5]; 2];
+        let mut errors = [[0.0f64; METHODS.len()]; 2];
         let mut signed = [[0.0f64; 3]; 2];
         let mut counts = [0usize; 2];
         let mut agree = [0usize; 2];
@@ -265,13 +312,14 @@ fn main() -> Result<()> {
         let mut per_frame = Vec::new();
         for (f, (frame, target)) in captures[0].frames.iter().enumerate() {
             let n = frame.surfaces.len();
-            let mut predictions = vec![vec![vec![0.0f32; 6 * n]; 5]; captures.len() - fit];
+            let mut predictions =
+                vec![vec![vec![0.0f32; 6 * n]; METHODS.len()]; captures.len() - fit];
             for l in 0..2 {
                 for i in 0..n {
                     let ps: Vec<_> = snapshots.iter().map(|r| points(&r[f], l, i, n)).collect();
                     let truth = std::array::from_fn(|ch| target.lobes[(3 * l + ch) * n + i]);
                     let available = std::array::from_fn(|k| {
-                        snapshots
+                        snapshots[..fit]
                             .iter()
                             .all(|r| r[f].prior[k * 2 * n + l * n + i] > 0.0)
                     });
@@ -280,7 +328,7 @@ fn main() -> Result<()> {
                     for r in 0..captures.len() {
                         winners.push(
                             (0..CANDIDATES)
-                                .filter(|k| available[*k])
+                                .filter(|k| snapshots[r][f].prior[k * 2 * n + l * n + i] > 0.0)
                                 .min_by(|a, b| {
                                     noise::mse(ps[r][*a], truth)
                                         .total_cmp(&noise::mse(ps[r][*b], truth))
@@ -336,6 +384,7 @@ fn main() -> Result<()> {
                             .collect();
                         let optimum =
                             oracle::project(&ids.iter().map(|k| p[*k]).collect::<Vec<_>>(), truth)?;
+                        max_dual_gap = max_dual_gap.max(optimum.dual_gap);
                         let predicted_choice = ids
                             .iter()
                             .copied()
@@ -350,10 +399,17 @@ fn main() -> Result<()> {
                                 score(*a).total_cmp(&score(*b))
                             })
                             .unwrap();
+                        let shared = if s.prior[shared_choice * 2 * n + l * n + i] > 0.0 {
+                            p[shared_choice]
+                        } else {
+                            cross_noise_fallbacks[l] += 1;
+                            prior(s, p, l, i, n)
+                        };
                         let images = [
                             selected(s, p, l, i, n),
+                            prior(s, p, l, i, n),
                             p[predicted_choice],
-                            p[shared_choice],
+                            shared,
                             p[winners[r]],
                             optimum.point,
                         ];
@@ -383,20 +439,50 @@ fn main() -> Result<()> {
                                 + frame.surfaces[i].emission[ch];
                         }
                     }
-                    let name = [
-                        "learned",
-                        "observable-risk",
-                        "cross-noise-risk",
-                        "single-oracle",
-                        "convex-oracle",
-                    ][m];
+                    if m == 0 {
+                        for (a, b) in rgb.iter().zip(&native_images[r + fit][f]) {
+                            native_parity = native_parity
+                                .max((*a as f64 - *b as f64).abs() / (1.0 + (*b as f64).abs()));
+                        }
+                        if native_parity > 1e-5 {
+                            return Err(format!("candidate recomposition differs from native output: {native_parity}").into());
+                        }
+                    }
+                    if rgb.iter().any(|v| !v.is_finite()) {
+                        return Err("nonfinite remodulated prediction".into());
+                    }
+                    let linear_mse = rgb
+                        .iter()
+                        .zip(&target.rgb)
+                        .map(|(a, b)| (*a as f64 - *b as f64).powi(2))
+                        .sum::<f64>()
+                        / rgb.len() as f64;
+                    let low_frequency_psnr = -10.0
+                        * ommatidia::metrics::low_frequency_error(
+                            &rgb,
+                            &target.rgb,
+                            extent[0] as usize,
+                            extent[1] as usize,
+                            8,
+                        )
+                        .max(1e-20)
+                        .log10();
+                    let detail_ratio =
+                        ommatidia::metrics::detail(&rgb, extent[0] as usize, extent[1] as usize)
+                            / ommatidia::metrics::detail(
+                                &target.rgb,
+                                extent[0] as usize,
+                                extent[1] as usize,
+                            )
+                            .max(1e-12);
+                    let name = METHODS[m];
                     let psnr = -10.0
                         * (ommatidia::metrics::error(&rgb, &target.rgb) as f64)
                             .max(1e-20)
                             .log10();
                     let energy = rgb.iter().map(|v| *v as f64).sum::<f64>()
                         / target.rgb.iter().map(|v| *v as f64).sum::<f64>().max(1e-12);
-                    per_frame.push(serde_json::json!({"stream":r+fit,"frame":f,"method":name,"psnr":psnr,"energy_ratio":energy}));
+                    per_frame.push(serde_json::json!({"stream":r+fit,"frame":f,"method":name,"psnr":psnr,"energy_ratio":energy,"linear_mse":linear_mse,"low_frequency_psnr":low_frequency_psnr,"detail_ratio":detail_ratio}));
                     write_png(
                         &dir.join(format!("{f:03}-noise{}-{name}.png", r + fit)),
                         &rgb,
@@ -411,16 +497,7 @@ fn main() -> Result<()> {
             )?;
         }
         let mut methods = serde_json::Map::new();
-        for (m, name) in [
-            "learned",
-            "observable-risk",
-            "cross-noise-risk",
-            "single-oracle",
-            "convex-oracle",
-        ]
-        .iter()
-        .enumerate()
-        {
+        for (m, name) in METHODS.iter().enumerate() {
             methods.insert(
                 (*name).into(),
                 serde_json::json!(std::array::from_fn::<_, 2, _>(
@@ -436,14 +513,14 @@ fn main() -> Result<()> {
         }
         let result = serde_json::json!({"mode":mode,"lobe_mse":methods,"learned_signed_rgb_bias":std::array::from_fn::<_,2,_>(|l|signed[l].map(|v|v/counts[l].max(1) as f64)),
             "winner_agreement":std::array::from_fn::<_,2,_>(|l|agree[l] as f64/comparisons[l].max(1) as f64),"winner_comparisons":comparisons,
-            "spatial_bias2_population_variance_mse":risk_by_scale,"frames":per_frame});
+            "native_recomposition_max_relative_difference":native_parity,"max_oracle_dual_gap":max_dual_gap,"cross_noise_unavailable_fallbacks":cross_noise_fallbacks,"spatial_bias2_population_variance_mse":risk_by_scale,"frames":per_frame});
         std::fs::write(dir.join("report.json"), serde_json::to_vec_pretty(&result)?)?;
         summaries.push(result);
     }
     std::fs::write(
         out.join("quality.json"),
         serde_json::to_vec_pretty(
-            &serde_json::json!({"backend":device,"role":"construction cross-noise diagnostic, not unseen-scene generalization","fit_realizations":fit,"held_realizations":captures.len()-fit,"checkpoint":checkpoint,"files":files,"ridge":1e-3,
+            &serde_json::json!({"backend":device,"role":"construction cross-noise diagnostic, not unseen-scene generalization","fit_realizations":fit,"held_realizations":captures.len()-fit,"checkpoint":checkpoint,"files":files,"ridge":1e-3,"risk_target":"linear_lobe_mse",
         "limits":"cross-noise-risk uses true scene reference in fitting streams; oracle rows use held targets and are not deployable; observable-risk has no pixel/scene identifiers; causal streams retain their own learned histories; unobserved noise seeds only, not unseen geometry","results":summaries}),
         )?,
     )?;
