@@ -104,6 +104,20 @@ fn scaled_mse(g: &mut Graph, a: NodeId, b: NodeId, scale: NodeId) -> NodeId {
 /// `unroll == 0` builds inference; positive values build a tied-weight training
 /// graph. Geometry, rejection maps and moments are detached, radiance is not.
 pub fn build(config: Config, low: [u32; 2], unroll: usize) -> Result<Network, String> {
+    build_projected(config, low, unroll, false)
+}
+
+/// Target-only projected-colour supervision, without new inference parameters.
+/// A zero coefficient retains the paired training graph.
+pub fn build_projected(
+    config: Config,
+    low: [u32; 2],
+    unroll: usize,
+    projected: bool,
+) -> Result<Network, String> {
+    if projected && unroll == 0 {
+        return Err("projected supervision is training-only".into());
+    }
     config.validate(low)?;
     if unroll > 8 {
         return Err("unroll must be at most eight".into());
@@ -116,6 +130,7 @@ pub fn build(config: Config, low: [u32; 2], unroll: usize) -> Result<Network, St
         let input = b.g.input("loss.weights", &[5]);
         split(&mut b.g, input, 5, 1, 1).try_into().unwrap()
     });
+    let projected_weight = projected.then(|| b.g.input("loss.projected_weight", &[1]));
     let mut previous = None;
     let mut previous_target = None;
     let mut total_loss = None;
@@ -249,6 +264,13 @@ pub fn build(config: Config, low: [u32; 2], unroll: usize) -> Result<Network, St
             let tl = scaled_mse(&mut b.g, change, expected, masked);
             let tl = b.g.mul(tl, temporal_weight);
             loss = b.g.add(loss, tl);
+        }
+        if let Some(weight) = projected_weight {
+            let teacher = b.g.input(&format!("{tag}.projected"), &[6 * n]);
+            let fixed_scale = filled(&mut b.g, image, config.exposure);
+            let auxiliary = scaled_mse(&mut b.g, image, teacher, fixed_scale);
+            let auxiliary = b.g.mul(auxiliary, weight);
+            loss = b.g.add(loss, auxiliary);
         }
         previous_target = Some(target);
         total_loss = Some(match total_loss {

@@ -4,6 +4,7 @@ pub mod data;
 pub mod graph;
 pub mod incident;
 pub mod surface;
+pub mod visibility;
 
 use serde::{Deserialize, Serialize};
 
@@ -15,6 +16,13 @@ pub enum ViewFusion {
     #[default]
     Moments,
     LateRgb,
+    /// RGB-predicted source termination distributions gate geometry and appearance.
+    VisibleRgb,
+}
+impl ViewFusion {
+    pub fn uses_rgb(self) -> bool {
+        self != Self::Moments
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

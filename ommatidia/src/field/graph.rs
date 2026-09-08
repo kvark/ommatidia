@@ -109,7 +109,16 @@ fn source_fusion(
     let weights = weight_sum.unwrap();
     let eps = constant(&mut b.g, weights, 1e-8);
     let den = b.g.add(weights, eps);
-    let support = b.g.div(weights, den);
+    let support = if c.view_fusion == super::ViewFusion::VisibleRgb {
+        // Do not renormalize weak absolute visibility back to full copying.
+        let total = views
+            .iter()
+            .fold(None, |a, v| add(&mut b.g, a, v.valid))
+            .unwrap();
+        scaled(&mut b.g, total, 1.0 / c.views as f32)
+    } else {
+        b.g.div(weights, den)
+    };
     let den = b.g.broadcast_inner(den, 3);
     let color = b.g.div(rgb_sum.unwrap(), den);
     // Source RGB already contains emission. Subtract before mixing scattered
@@ -142,6 +151,7 @@ struct Field {
     scattered: NodeId,
     emission: NodeId,
     environment: NodeId,
+    visibility: Vec<NodeId>,
 }
 fn field(b: &mut Builder, c: &Config, q: usize) -> Field {
     let [w, h] = c.extent;
@@ -151,6 +161,8 @@ fn field(b: &mut Builder, c: &Config, q: usize) -> Field {
     let mut squared = None;
     let mut global = None;
     let mut views = Vec::new();
+    let mut visibility = Vec::new();
+    let mut visible_sum = None;
     for v in 0..c.views {
         let image = b.g.input(&format!("view{v}.rgb_rays"), &[9 * n]);
         let features = b.encode(image, "adapter.rgb_rays", 9, c.extent, c.channels);
@@ -159,14 +171,40 @@ fn field(b: &mut Builder, c: &Config, q: usize) -> Field {
         let pooled = b.g.matmul(matrix, ones);
         global = add(&mut b.g, global, pooled);
         let table = b.g.transpose(matrix);
+        let probabilities = if c.view_fusion == super::ViewFusion::VisibleRgb {
+            let logits = b.linear(
+                table,
+                "field.visibility",
+                c.channels,
+                (super::visibility::BINS + 1) as u32,
+            );
+            for p in &mut b.params {
+                if p.name == "field.visibility.weight" {
+                    p.kind = crate::model::InitKind::Zeros;
+                }
+            }
+            let probability = b.g.softmax(logits);
+            visibility.push(probability);
+            Some(probability)
+        } else {
+            None
+        };
+        let mut projected_probability = None;
         let mut projected = None;
         let mut color = None;
-        let rgb = (c.view_fusion == super::ViewFusion::LateRgb)
-            .then(|| b.g.input(&format!("view{v}.linear_rgb"), &[n, 3]));
+        let rgb =
+            (c.view_fusion.uses_rgb()).then(|| b.g.input(&format!("view{v}.linear_rgb"), &[n, 3]));
         for k in 0..4 {
             let indices = b.g.input_u32(&format!("view{v}.index{k}"), &[q]);
             let weight = b.g.input(&format!("view{v}.weight{k}"), &[q, 1]);
             let scalar_weight = weight;
+            if let Some(table) = probabilities {
+                let tap = b.g.embedding(indices, table);
+                let weight =
+                    b.g.broadcast_inner(scalar_weight, super::visibility::BINS + 1);
+                let tap = b.g.mul(tap, weight);
+                projected_probability = add(&mut b.g, projected_probability, tap);
+            }
             let weight = b.g.broadcast_inner(weight, ch);
             let feature = b.g.embedding(indices, table);
             let feature = b.g.mul(feature, weight);
@@ -179,19 +217,44 @@ fn field(b: &mut Builder, c: &Config, q: usize) -> Field {
             }
         }
         let projected = projected.unwrap();
+        let visible = projected_probability.map(|probability| {
+            let survival = b.g.input(
+                &format!("view{v}.survival"),
+                &[q, super::visibility::BINS + 1],
+            );
+            let mass = b.g.mul(probability, survival);
+            let mass = b.g.sum_inner(mass);
+            b.g.reshape(mass, &[q, 1])
+        });
+        if let Some(weight) = visible {
+            visible_sum = add(&mut b.g, visible_sum, weight);
+        }
         if let Some(rgb) = color {
             views.push(ViewEvidence {
                 features: projected,
                 rgb,
                 direction: b.g.input(&format!("view{v}.source_direction"), &[q, 3]),
-                valid: b.g.input(&format!("view{v}.valid"), &[q, 1]),
+                valid: visible.unwrap_or_else(|| b.g.input(&format!("view{v}.valid"), &[q, 1])),
             });
         }
         let sq = b.g.mul(projected, projected);
+        let (projected, sq) = if let Some(weight) = visible {
+            let weight = b.g.broadcast_inner(weight, ch);
+            (b.g.mul(projected, weight), b.g.mul(sq, weight))
+        } else {
+            (projected, sq)
+        };
         sum = add(&mut b.g, sum, projected);
         squared = add(&mut b.g, squared, sq);
     }
-    let inv = b.g.input("query.inverse_count", &[q, 1]);
+    let inv = if let Some(total) = visible_sum {
+        let eps = constant(&mut b.g, total, 1e-6);
+        let den = b.g.add(total, eps);
+        let one = constant(&mut b.g, total, 1.0);
+        b.g.div(one, den)
+    } else {
+        b.g.input("query.inverse_count", &[q, 1])
+    };
     let inv = b.g.broadcast_inner(inv, ch);
     let mean = b.g.mul(sum.unwrap(), inv);
     let second = b.g.mul(squared.unwrap(), inv);
@@ -209,7 +272,11 @@ fn field(b: &mut Builder, c: &Config, q: usize) -> Field {
         2 * ch,
         c.position_channels(),
     );
-    let coverage = b.g.input("query.coverage", &[q, 1]);
+    let coverage = if let Some(total) = visible_sum {
+        scaled(&mut b.g, total, 1.0 / c.views as f32)
+    } else {
+        b.g.input("query.coverage", &[q, 1])
+    };
     let dim = 2 * ch + c.position_channels();
     let combined = columns(&mut b.g, combined, coverage, q, dim, 1);
     let mut latent = b.linear(combined, "field.geometry.in", (dim + 1) as u32, c.hidden);
@@ -261,6 +328,7 @@ fn field(b: &mut Builder, c: &Config, q: usize) -> Field {
         scattered,
         emission,
         environment,
+        visibility,
     }
 }
 /// Query output order: density [Q,1], radiance [Q,3], emission [Q,3], environment [1,3].
@@ -272,7 +340,9 @@ pub fn build_points(c: &Config, queries: usize) -> Result<Network, String> {
     }
     let mut b = Builder::new();
     let f = field(&mut b, c, queries);
-    b.g.set_outputs(vec![f.density, f.radiance, f.emission, f.environment]);
+    let mut outputs = vec![f.density, f.radiance, f.emission, f.environment];
+    outputs.extend(f.visibility); // VisibleRgb: source pixel-major probabilities.
+    b.g.set_outputs(outputs);
     Ok(Network {
         graph: b.g,
         params: b.params,
@@ -428,6 +498,22 @@ fn build(
         let a = log_radiance(&mut b.g, rgb, c.exposure);
         let target = log_radiance(&mut b.g, target, c.exposure);
         let mut loss = b.g.mse_loss(a, target);
+        for (v, probability) in f.visibility.iter().enumerate() {
+            let labels = b.g.input(
+                &format!("target.view{v}.termination"),
+                &[
+                    (c.extent[0] * c.extent[1]) as usize,
+                    super::visibility::BINS + 1,
+                ],
+            );
+            let eps = constant(&mut b.g, *probability, 1e-8);
+            let p = b.g.add(*probability, eps);
+            let log = b.g.log(p);
+            let weighted = b.g.mul(labels, log);
+            let ce = b.g.sum_all(weighted);
+            let ce = b.g.neg(ce);
+            loss = b.g.add(loss, ce);
+        }
         if surface {
             let target =
                 b.g.input("target.termination", &[(shape.steps + 1) * shape.rays]);
