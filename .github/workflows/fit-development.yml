@@ -1,0 +1,171 @@
+name: frozen fitting diagnostics
+on:
+  pull_request:
+    paths: ['.github/workflows/fit-development.yml', '.github/fit-source.txt', '.github/fit-fix.py']
+permissions:
+  contents: read
+concurrency:
+  group: fitting-development-${{ github.ref }}
+  cancel-in-progress: true
+env:
+  VK_ICD_FILENAMES: /usr/share/vulkan/icd.d/lvp_icd.json
+  OMMATIDIA_REQUIRE_GPU: '1'
+jobs:
+  prepare:
+    if: github.event.pull_request.number == 19 && github.head_ref == 'docs/visual-quality-roadmap' && github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    permissions:
+      contents: write
+    outputs:
+      sha: ${{ steps.commit.outputs.sha }}
+    defaults:
+      run:
+        shell: bash
+        working-directory: ommatidia
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          path: ommatidia
+      - uses: actions/checkout@v4
+        with:
+          repository: kvark/meganeura
+          ref: 43b606ff45b99d23e7e57b5f120f5fc347039082
+          path: meganeura
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          repository: kvark/blade
+          ref: c24621aa6606da968fd1b3967d5993f8aa2b74e8
+          path: blade
+          persist-credentials: false
+      - name: Install and prepare
+        run: |
+          rustup toolchain install 1.92.0 --profile minimal --component rustfmt,clippy
+          sudo apt-get update -qq
+          sudo apt-get install -y libvulkan1 mesa-vulkan-drivers
+          python3 - <<'PY'
+          import json, lzma, base64, hashlib
+          from pathlib import Path
+          source=Path('.github/fit-source.txt')
+          if source.exists():
+              packed=base64.b64decode(source.read_text())
+              assert hashlib.sha256(packed).hexdigest()=='b5d6f4ba457f0ee5e613eb6bb6209397f36f7d7e27380cba59edd5c84682b18b'
+              for name,content in json.loads(lzma.decompress(packed)).items():
+                  path=Path(name)
+                  assert not path.is_absolute() and '..' not in path.parts and str(path).startswith('ommatidia-train/src/bin/fit') and not path.exists()
+                  path.parent.mkdir(parents=True,exist_ok=True)
+                  path.write_text(content)
+          PY
+          if test -f .github/fit-fix.py; then python3 .github/fit-fix.py; fi
+          cargo +1.92.0 fmt --all
+          mkdir -p target/fitting-validation
+      - name: Workspace checks
+        run: |
+          cargo +1.92.0 check --workspace --all-targets --locked 2>&1 | tee target/fitting-validation/check.log
+          cargo +1.92.0 test --workspace --locked 2>&1 | tee target/fitting-validation/tests.log
+          cargo +1.92.0 clippy --workspace --all-targets --locked -- -D warnings 2>&1 | tee target/fitting-validation/clippy.log
+      - name: Build diagnostic binary
+        env:
+          CARGO_PROFILE_DEV_OPT_LEVEL: '1'
+          CARGO_PROFILE_DEV_DEBUG: '0'
+        run: |
+          cargo +1.92.0 build -p ommatidia-train --bin fit --locked
+          mkdir -p target/fit-bin
+          cp target/debug/fit target/fit-bin/
+          strip target/fit-bin/fit
+      - name: Commit checked diagnostic source
+        id: commit
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          test "$(git ls-remote origin refs/heads/docs/visual-quality-roadmap | cut -f1)" = "$EXPECTED_SHA"
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git rm --ignore-unmatch .github/fit-source.txt .github/fit-fix.py
+          git add ommatidia-train/src/bin/fit.rs ommatidia-train/src/bin/fit
+          git diff --cached --check
+          if ! git diff --cached --quiet; then
+            git commit -m 'test: isolate frozen native logits, network, depth and appearance fitting'
+            git push origin HEAD:refs/heads/docs/visual-quality-roadmap
+          fi
+          git rev-parse HEAD | tee target/fitting-validation/source-sha.txt
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: fit-binary
+          path: ommatidia/target/fit-bin
+          retention-days: 7
+      - name: Archive source and validation
+        if: always()
+        run: tar --exclude=.git --exclude=target/debug --exclude=target/release -czf "$RUNNER_TEMP/fitting-source.tar.gz" .
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: fitting-source-validation
+          path: ${{ runner.temp }}/fitting-source.tar.gz
+          retention-days: 7
+  experiment:
+    needs: prepare
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - task: selector-lobes
+            frame: 0
+          - task: selector-rgb
+            frame: 0
+          - task: selector-lobes
+            frame: 3
+          - task: selector-rgb
+            frame: 3
+          - task: source-depth
+            frame: 0
+          - task: volume-depth
+            frame: 0
+          - task: surface-appearance
+            frame: 0
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: fit-binary
+          path: bin
+      - uses: actions/download-artifact@v4
+        with:
+          run-id: 34153941146
+          github-token: ${{ github.token }}
+          name: corrected-control-data
+          path: data
+      - uses: actions/download-artifact@v4
+        with:
+          run-id: 34178844726
+          github-token: ${{ github.token }}
+          name: geometry-noise-risk
+          path: noise
+      - name: Fit frozen observations and inspect gradients
+        shell: bash
+        env:
+          TASK: ${{ matrix.task }}
+          FRAME: ${{ matrix.frame }}
+          SOURCE: ${{ needs.prepare.outputs.sha }}
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y libvulkan1 mesa-vulkan-drivers
+          chmod +x bin/fit
+          (cd data && sha256sum -c SHA256SUMS)
+          capture=data/field.omd
+          [[ "$TASK" == selector-* ]] && capture=noise/noise-7/data/noise0.omd
+          mkdir -p evidence
+          args=(bin/fit --task "$TASK" --data "$capture" --out "evidence/$TASK-$FRAME" --frame "$FRAME" --seed 7 --steps 512)
+          { echo "$SOURCE"; printf '%q ' "${args[@]}"; echo; sha256sum "$capture" "${capture%.omd}."*json; } > evidence/recipe.txt
+          "${args[@]}" 2>&1 | tee evidence/run.log
+          find evidence -name diagnostic.safetensors -o -name quality.json | sort | xargs sha256sum > evidence/results.sha256
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: fit-${{ matrix.task }}-${{ matrix.frame }}
+          path: evidence
+          retention-days: 7
