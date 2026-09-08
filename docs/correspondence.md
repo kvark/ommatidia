@@ -1,7 +1,7 @@
 # Correspondence and final-RGB construction
 
 Both paths are opt-in. Runtime observations, production checkpoints and default
-selection are unchanged.
+selection are unchanged. [Completed paired study and limitations](results/correspondence-lavapipe-2026-09-08.md).
 
 ## Field: `--view-fusion stereo-rgb`
 
@@ -53,10 +53,10 @@ pixels, observed surfaces, motion, jitter and provenance, and nonoverlapping
 recorded path ranges that end before the reference range. This is held-noise
 construction fitting, never a claim of unseen-scene generalization.
 
-Each evaluated model now runs its own causal history in this comparison. A
-construction run also saves fitting-stream images/scores in `fitting/`; both
-fitting and held evaluation use the serialized checkpoint. Do not confuse these
-end-to-end results with the previous same-history candidate-risk diagnostic.
+Each evaluated model runs its own causal history in this comparison. A construction
+run also saves fitting-stream images/scores in `fitting/`; both fitting and held
+evaluation use the serialized checkpoint. Do not confuse these end-to-end results
+with the previous same-history candidate-risk diagnostic.
 
 ## Reproduce
 
@@ -71,8 +71,9 @@ six recorded noise streams from the geometry study. Input paths and update budge
 can be overridden explicitly; exact commands, captures and checkpoint hashes are
 saved. No existing output directory is overwritten.
 
-The planned selector pair uses physical weight 1 and all other weights 0. It
+The completed selector pair uses physical weight 1 and all other weights 0. It
 isolates objective space, not loss-weight tuning or a production-ready balance.
-All metrics remain in their named evaluation spaces, including final RGB MSE,
-energy, broad lighting, detail and temporal error. Software Vulkan tests establish
-correctness and quality only.
+All metrics retain their named evaluation spaces, including final RGB MSE, energy,
+broad lighting, detail and temporal error. Software Vulkan tests establish
+correctness and quality only. `benchmarks/report-correspondence.py ROOT` requires
+all eight complete paired runs before producing a summary.
