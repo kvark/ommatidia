@@ -185,6 +185,13 @@ pub fn build_objective(
             true,
         );
         let multiplier = b.g.softplus(logits, 1.0);
+        // Match the scalar reference. Softplus can round to zero for negative
+        // logits; dividing zero weights by an added epsilon invents black.
+        let floor = filled(&mut b.g, multiplier, MIN_MULTIPLIER);
+        let negative_floor = b.g.neg(floor);
+        let above_floor = b.g.add(multiplier, negative_floor);
+        let above_floor = b.g.relu(above_floor);
+        let multiplier = b.g.add(above_floor, floor);
         let prior = b.g.input(&format!("{tag}.prior"), &[CANDIDATES * 2 * n]);
         let weights = b.g.mul(prior, multiplier);
         let ws = split(&mut b.g, weights, CANDIDATES as u32, 2 * slots, spatial);
@@ -193,7 +200,10 @@ pub fn build_objective(
             sum = b.g.add(sum, w);
         }
         let eps = filled(&mut b.g, sum, 1e-12);
-        sum = b.g.add(sum, eps);
+        let negative_eps = b.g.neg(eps);
+        let above_eps = b.g.add(sum, negative_eps);
+        let above_eps = b.g.relu(above_eps);
+        sum = b.g.add(above_eps, eps);
         let candidates = b.g.input(&format!("{tag}.candidates"), &[SCALES * 6 * n]);
         let mut candidates = split(&mut b.g, candidates, SCALES as u32, 6 * slots, spatial);
         candidates.push(history);

@@ -91,19 +91,20 @@ impl Batch {
         for l in 0..2 {
             for i in 0..n {
                 let a = l * n + i;
-                let total = 1e-12
-                    + (0..CANDIDATES)
-                        .map(|k| {
-                            let z = logits[k * 2 * n + a] as f64;
-                            let sp = z.max(0.0) + (-z.abs()).exp().ln_1p();
-                            self.candidates.prior[k * 2 * n + a] as f64 * sp
-                        })
-                        .sum::<f64>();
+                let total = (0..CANDIDATES)
+                    .map(|k| {
+                        let z = logits[k * 2 * n + a] as f64;
+                        let sp = (z.max(0.0) + (-z.abs()).exp().ln_1p())
+                            .max(ommatidia::transport::MIN_MULTIPLIER as f64);
+                        self.candidates.prior[k * 2 * n + a] as f64 * sp
+                    })
+                    .sum::<f64>();
                 den[a] = total;
                 for k in 0..CANDIDATES {
                     let j = k * 2 * n + a;
                     let z = logits[j] as f64;
-                    let sp = z.max(0.0) + (-z.abs()).exp().ln_1p();
+                    let sp = (z.max(0.0) + (-z.abs()).exp().ln_1p())
+                        .max(ommatidia::transport::MIN_MULTIPLIER as f64);
                     weights[j] = (self.candidates.prior[j] as f64 * sp / total) as f32;
                     for c in 0..3 {
                         lobes[(3 * l + c) * n + i] += weights[j] * self.point(k, l, i)[c];
@@ -124,7 +125,13 @@ impl Batch {
                 for k in 0..CANDIDATES {
                     let j = k * 2 * n + l * n + i;
                     let z = logits[j] as f64;
-                    let dp = self.candidates.prior[j] as f64 / (1.0 + (-z).exp()) / den[l * n + i];
+                    let active = z.max(0.0) + (-z.abs()).exp().ln_1p()
+                        > ommatidia::transport::MIN_MULTIPLIER as f64;
+                    let dp = if active {
+                        self.candidates.prior[j] as f64 / (1.0 + (-z).exp()) / den[l * n + i]
+                    } else {
+                        0.0
+                    };
                     let mut g = 0.0;
                     for c in 0..3 {
                         let idx = if rgb { c * n + i } else { (3 * l + c) * n + i };
@@ -433,6 +440,24 @@ pub(super) fn run(o: &Options, ctx: Arc<blade_graphics::Context>) -> Result<Valu
         let image = output(&inf, 1, 6 * n);
         let weights = output(&inf, 2, 2 * n * CANDIDATES);
         let z = output(&inf, 3, 2 * n * CANDIDATES);
+        let mass: Vec<f64> = (0..2 * n)
+            .map(|i| (0..CANDIDATES).map(|k| weights[k * 2 * n + i] as f64).sum())
+            .collect();
+        let min_mass = mass.iter().copied().fold(f64::INFINITY, f64::min);
+        let max_mass = mass.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+        if mass
+            .iter()
+            .any(|v| !v.is_finite() || (v - 1.0).abs() > 2e-6)
+        {
+            return Err(
+                format!("selector left the candidate hull: mass {min_mass}..{max_mass}").into(),
+            );
+        }
+        report["normalization"] = json!({"minimum":min_mass,"maximum":max_mass});
+        write(
+            o.out.join(name).join("prediction.json"),
+            &json!({"logits":z,"weights":weights,"lobes":image}),
+        )?;
         let actual = b.pixels(&b.compose(&image));
         png(&o.out.join(format!("{name}.png")), &actual, extent)?;
         report["name"] = json!(name);
