@@ -286,6 +286,13 @@ fn main() -> Result<()> {
         return Err("surface weight must be nonnegative; emitter fraction must be in [0,1]".into());
     }
     if let Some(path) = &eval_checkpoint {
+        let source = path.canonicalize()?;
+        let directory = source
+            .parent()
+            .ok_or("checkpoint has no parent directory")?;
+        if out.exists() && out.canonicalize()? == directory {
+            return Err("checkpoint recovery requires a separate output directory".into());
+        }
         c = serde_json::from_slice(&std::fs::read(path.with_file_name("model.field.json"))?)?;
         steps = 0;
     }
