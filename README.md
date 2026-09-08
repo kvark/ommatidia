@@ -24,9 +24,10 @@ limitations](docs/results-overview.md).
 ## Build
 
 Place `ommatidia` and `meganeura` in sibling directories. CI pins Meganeura
-`d903bba`; Blade 0.9 and Naga 30 come from crates.io and Cargo.lock. The data
-generator additionally reads Blade's WGSL from `../blade/blade-render/code`
-(or `--shader-dir`); CI uses the matching `c24621a` source checkout.
+`3d424e0` ([checkpoint fix](https://github.com/kvark/meganeura/pull/160));
+Blade 0.9 and Naga 30 come from crates.io and Cargo.lock. The data generator
+reads Blade's WGSL from `../blade/blade-render/code` (or `--shader-dir`);
+CI uses the matching `c24621a` source checkout for shaders and fixtures.
 
 ```sh
 cargo +1.92.0 test --workspace --locked
@@ -38,8 +39,8 @@ bash benchmarks/transport-lavapipe.sh
 
 Posed RGB only; no G-buffer or velocity. The wider variant shares the image
 pyramid and predicts a density/radiance field. Synthetic light and surface labels
-enter only training losses. See [field.md](docs/field.md) and
-[surface supervision](docs/surface.md).
+enter only training losses. See [field.md](docs/field.md),
+[surface supervision](docs/surface.md), and [late source-view fusion](docs/late-fusion.md).
 
 ```sh
 cargo +1.92.0 run -p ommatidia-train --bin field -- --help
@@ -48,12 +49,11 @@ FIELD_UPDATES=2048 bash benchmarks/surface-lavapipe.sh
 
 One construction scene, separate validation camera, **64x64 native pixels
 enlarged**, 2048 updates. Surface supervision improves geometry and colour, but
-object detail remains poor. This is not an unseen-scene result or a production
-checkpoint. [Measured protocol and limitations](docs/results/surface-lavapipe-2026-09-07.md).
+both fields remain blurry. [Protocol, metrics and limitations](docs/results/surface-lavapipe-2026-09-07.md).
 
 | RGB/source supervision | + surface termination | Reference |
 |---|---|---|
-| <img src="docs/surface-preview/control.png" alt="Field without surface supervision; blurred construction scene" width="256" height="256"> | <img src="docs/surface-preview/surface.png" alt="Same field with target-only surface termination supervision" width="256" height="256"> | <img src="docs/surface-preview/reference.png" alt="Validation camera of the same construction scene at native 64 by 64 pixels" width="256" height="256"> |
+| <img src="docs/surface-preview/control.png" alt="Construction field without surface targets; still blurry" width="256" height="256"> | <img src="docs/surface-preview/surface.png" alt="Surface-supervised field; improved geometry but still blurry" width="256" height="256"> | <img src="docs/surface-preview/reference.png" alt="Validation camera of the 64 by 64 construction scene" width="256" height="256"> |
 
 ## Quality and integration
 
