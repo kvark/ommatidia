@@ -4,64 +4,63 @@ Two tracks: realtime denoising and posed-RGB fields. Shared implementation is no
 proven weight transfer. Keep [README comparisons](../README.md) visible and
 [historical results](results-overview.md) separate. No new checkpoint is promoted.
 
-## Latest finding: correct normalization before more architecture
+## Latest: numerical correctness before another architecture
 
-[Frozen fitting](results/frozen-fitting-lavapipe-2026-09-08.md) found that the native
-selector could lose all candidate mass and invent black at negative logits.
-The GPU graph now matches the scalar positive-multiplier floor and denominator
-clamp. This changes affected experimental transport outputs, not published legacy
-Upscaler behavior. The regression reproduces the old failure and checks the fix.
-Historical scores remain tied to their recorded runtime.
+[Stable-softplus study](results/stable-softplus-lavapipe-2026-09-09.md) closes the
+frozen-fitting audit. The native mixture's missing multiplier floor could invent
+black; Meganeura separately lost representable negative-tail values and gradients.
+Both are fixed. All saved mixture weights now match an independent f64 reference
+within 2.4e-7. Old reports remain evidence of their recorded runtime, not the fix.
+Checkpoint schemas remain supported, but numerical fixes can change old outputs.
 
-With the guard, free logits close about 99% of the frozen candidate improvement
-gap. The native network closes 84%/96% for RGB on reset/history frames. This is
-fitting, not generalization; even the candidate optimum is not the reference.
-Do not interpret a violated candidate constraint as superior reconstruction.
+The seven repeated frozen fits and four own-history held-noise runs are complete.
+Free logits realize about 99% of the attainable loss reduction, while the native
+network ranges from 40% to 96% for RGB. The candidate optimum still loses detail.
+Held-noise quality is essentially unchanged; no default or checkpoint is selected.
 
-## Realtime: corrected native recurrence, then conditioning
+## Realtime: saturation and candidate support are separate problems
 
-Repeat held-noise and full causal evaluation with corrected normalization before
-claiming a quality gain. Every method must own its recurrent state. Keep energy,
-broad lighting, detail and temporal gates together, not just compressed PSNR.
+The reset-RGB fit drives 72% of legal multipliers to their floor and selects the
+broadest scale with mean weight 0.923. First compare a centered, masked-softmax
+parameterization against the corrected softplus control on the same frozen batch.
+Preserve legal candidates and initial priors; measure saturation, gradient scale,
+finite differences and loss relative to the actual attainable optimum. This is
+not evidence for another auxiliary target or more backbone capacity.
 
-Use frozen logits/network controls to measure saturation, feature magnitudes and
-remaining attainable loss. The native network still reaches extreme logits;
-compare stabilized parameterization/scales only against the corrected control.
-Expand candidate evidence only where its conditional optimum remains inadequate.
-Do not repeat rejected auxiliary-loss sweeps without a changed diagnosis.
+Keep the direct-logit control. Expand candidate evidence only where its conditional
+optimum remains inadequate. Then repeat independent held noise and full native
+rollout, with every method owning its history. Require linear energy, broad-lighting,
+detail and temporal gates together, not a compressed-PSNR increase alone.
 
-After construction works, train on real meshes and audit fresh families, longer
-histories, cuts, moving lights, thin geometry and reflections. SVGF gets identical
-noisy inputs; ReSTIR+SVGF is a separate pipeline comparison. DLSS RR follows with
-explicit quality and production-GPU runtime limits.
+After construction succeeds, train on real meshes and audit fresh families,
+longer histories, cuts, thin geometry, moving lights and reflections. SVGF gets
+identical noisy inputs; ReSTIR+SVGF remains a separate pipeline comparison.
+Production-device runtime is measured separately from LavaPipe correctness.
 
-## Field: improve geometry fitting before another head
+## Field: stabilize geometry fitting
 
-Isolated known-surface appearance fits 48 colours to 42.5 dB, but this privileged
-point test is not a sharp full-frame reconstruction. Source depth reaches 88%
-correct bins on 12,288 fitted pixels; volume termination reaches 70% on 64 rays.
-Its loss still fluctuates and gradients are connected. Source feature magnitudes
-and finite-difference curvature also flag conditioning to investigate.
+At 48 known surface points appearance reaches 42.67 dB. That is privileged point
+fitting, not a full image or novel view. Source depth fits 88% of 12,288 bins;
+volume termination is unstable even on 64 fixed rays. The corrected-runtime
+repeat ends at 39% correct bins after earlier loss dips and late spikes. Do not
+select an earlier minimum or mistake agreement between estimates for truth.
 
-First improve fixed-ray volume fitting and track per-ray errors, mass and gradient
-scales. Then restore joint RGB/geometry training at declared adequate ray budgets.
-Compare schedules/stabilization with equal observations and keep isolated controls;
-more parameters or supervision must earn a measured improvement. Truth positions
-belong only to the explicitly privileged diagnostic; deployment queries remain
-observation-selected. Require sharp fitting cameras, then separate cameras, then
-fresh scene families. No single-scene probe establishes cross-scene capacity.
+First stabilize fixed-ray volume optimization and record complete per-ray errors,
+probability mass, feature magnitudes and gradient scales. Compare learning-rate
+schedules and conditioning at equal observation budgets before changing field
+representation. Preserve source-depth and known-surface appearance controls, with
+truth positions explicitly excluded from deployment. Only then restore joint
+RGB/geometry fitting, require sharp fitting cameras, test separate cameras, and
+expand to fresh scene families. The current short fits do not bound capacity.
 
-The prior stereo/visibility/consistency and light-supervision results remain
-negative or mixed. Do not add another correspondence or illumination head before
-resolving geometry optimization. Relighting, OLATverse and blade-volume integration
-are deferred, not prerequisites.
+More correspondence/illumination heads, relighting, OLATverse and blade-volume
+integration are deferred. The earlier mixed/negative controls remain documented.
 
 ## Evidence and shared weights
 
 Construction data debug; validation selects; fresh families audit. Inspected
 holdouts become development data. Keep a geometry's cameras and lighting variants
-in one split; retain captures, hashes, complete outputs and failures. Reload fixed-
-budget weights before scoring. LavaPipe establishes correctness/quality, not speed.
-
-Compare independent training, field-pretrained initialization and joint weights
-only after useful standalone baselines. Supplied realtime geometry stays authoritative.
+in one split; retain captures, hashes, full outputs and failures. Reload fixed-budget
+weights before scoring. Numerical correctness and quality promotion are different
+gates. Compare independent, pretrained and jointly trained weights only after
+useful standalone baselines. Supplied realtime geometry remains authoritative.
