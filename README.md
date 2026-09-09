@@ -27,7 +27,7 @@ limitations](docs/results-overview.md).
 ## Build
 
 Place `ommatidia` and `meganeura` in sibling directories. CI pins Meganeura 0.3
-at `8c6a545` ([softplus correctness fix](https://github.com/kvark/meganeura/pull/164));
+at `185b101` ([merged softplus correctness fix](https://github.com/kvark/meganeura/pull/164));
 Blade 0.9 and Naga 30 come from crates.io and Cargo.lock. The data generator
 reads Blade's WGSL from `../blade/blade-render/code` (or `--shader-dir`);
 CI uses the matching `c24621a` source checkout for shaders and fixtures.

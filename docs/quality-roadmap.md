@@ -10,6 +10,21 @@ field/relighting work unless it directly tests transfer to denoising. Keep the
 Rust/Meganeura/Blade path portable. Quality comes before latency: a larger model
 is allowed; LavaPipe speed is not a quality gate.
 
+## Latest: the masked-selector control is complete
+
+[Eight paired experiments](results/masked-selector-lavapipe-2026-09-09.md) now use
+merged Meganeura and the installed, versioned masked-softmax path. Independent
+weight/gradient tests pass, but softmax does not fix the reset network's saturation.
+It improves free-logit fitting and some held-noise errors, not the joint quality
+gates. Softplus remains the default. No work is waiting on the earlier write
+failure or on Meganeura #164; that PR is merged and the patch is installed.
+
+Do not repeat a normalization or auxiliary-loss sweep. Separate unstable network
+optimization from the candidate hull's demonstrated loss of detail. The next
+quality-first model must preserve raw spatial/temporal evidence and have a decoder
+that is not limited to selecting already filtered images. Keep the corrected
+mixture model as a controlled fallback, not an architectural requirement.
+
 ## Completion contract
 
 First declared envelope: **960x540 input to 1920x1080 output**, 2x per axis,
@@ -48,32 +63,27 @@ sequence/family, not correlated pixels. A nonsignificant difference alone is not
 equivalence. Publish every sequence and the worst cases. Actual DLSS comparator
 capture and the final audit have **not** been performed.
 
-## Next: optimization and comparator, in parallel
+## Next implementation: raw evidence and a genuine comparator
 
-The [numerical audit](results/stable-softplus-lavapipe-2026-09-09.md) fixed lost
-mixture mass and softplus-tail arithmetic. Use the corrected pinned runtime.
-Reset-frame selection still saturates, and even optimal candidates lose detail.
+Preserve sparse radiance, sample phase and surface guides beside deterministic
+fallback estimates. Test multiscale temporal features, lobe-aware recurrent state
+and a reconstruction decoder capable of sharp fitting images. Do not confuse a
+larger receptive field in a selector with wider radiance support at its output.
+A learned residual decoder or local temporal attention must beat the corrected
+control, not just resemble a paper or add parameters.
 
-Compare centered, prior-aware masked softmax with corrected softplus on identical
-frozen batches. Preserve legal candidates, initial priors and common weights;
-measure gradients, saturation and attainable-loss gaps. Retain direct-logit
-controls, then test each model's own recurrence on held noise. Softmax is a
-hypothesis, not a presumed fix or permission to reinterpret old checkpoints.
+Use fixed observations first to separate representation from optimization. The
+independent CPU replay reproduced the reset-softmax saturation; numerically
+correct normalization alone cannot rescue that trajectory. Inspect feature/logit
+scales, gradients and update size before widening a failed fitting configuration.
+Retain direct-logit/candidate bounds as diagnostics, not deployable targets or
+claims of 99% image accuracy. Then test each model's own held-noise recurrence.
 
 In parallel, build the recorded-input DLSS/SVGF adapter and reference-convergence
-checks. Comparator infrastructure must not remain an indefinitely deferred last
-step. Use construction clips to validate integration; keep final-audit families
-unseen until the protocol is frozen.
-
-## Raise the reconstruction ceiling
-
-Separate selector failure from missing evidence using the candidate bound. Do
-not restrict the quality-first model to already blurred candidates when perfect
-selection cannot recover detail. Preserve sparse radiance, sample phase and
-surface guides beside deterministic fallback estimates. Test multiscale temporal
-features, lobe-aware recurrent state and a decoder capable of sharp fitting
-images. Learned residual reconstruction or local temporal attention must beat the
-corrected control, not just resemble a paper or add parameters.
+checks. Record complete camera/jitter/exposure conventions and real comparator
+signals; do not substitute arbitrary existing buffers for missing semantics.
+Comparator infrastructure must not remain an indefinitely deferred last step.
+Use construction clips for integration, not the sealed audit families.
 
 Train on real meshes/materials early, with camera/object/light trajectories,
 independent noise, matched transport and converged HDR targets. Increase capacity,
