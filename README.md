@@ -5,6 +5,9 @@
 Portable neural reconstruction from sparse path samples. Rust,
 [Meganeura](https://github.com/kvark/meganeura), Vulkan and Metal.
 
+**Goal: [DLSS 4 Ray Reconstruction-level quality](docs/quality-roadmap.md).**
+Quality-first, matched-input moving-sequence comparisons; not frame generation.
+
 **Research prototype—not a demonstrated DLSS replacement.** The active model
 reconstructs diffuse illumination and specular radiance separately, selects
 among multiscale and reprojected candidates, and preserves known surface albedo
@@ -37,9 +40,9 @@ bash benchmarks/transport-lavapipe.sh
 
 ## Offline field experiment
 
-Posed RGB only; no G-buffer or velocity. The wider variant shares the image
-pyramid and predicts a density/radiance field. Synthetic light and surface labels
-enter only training losses. See [field.md](docs/field.md),
+Secondary to the denoising quality goal. Posed RGB only; no G-buffer or velocity.
+The wider variant shares the image pyramid and predicts a density/radiance field.
+Synthetic light and surface labels enter only training losses. See [field.md](docs/field.md),
 [surface supervision](docs/surface.md), [late source-view fusion](docs/late-fusion.md),
 and [predicted source visibility](docs/support.md).
 
@@ -59,8 +62,8 @@ both fields remain blurry. [Protocol, metrics and limitations](docs/results/surf
 ## Quality and integration
 
 See [the architecture and input contract](docs/design.md),
-[the quality harness](benchmarks/README.md), and
-[the quality roadmap](docs/quality-roadmap.md).
+[the historical comparison harness](benchmarks/README.md), and
+[the quality goal and roadmap](docs/quality-roadmap.md).
 `ommatidia::transport::native::Native` exposes the new Rust GPU path;
 `process` adds synchronous upload/readback for tests. Existing `Upscaler`/C ABI
 clients retain legacy checkpoint schemas. Numerical fixes can change outputs
