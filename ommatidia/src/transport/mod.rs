@@ -4,6 +4,7 @@
 //! No ground-truth geometry, light or radiance can enter through the target API.
 pub mod cpu;
 pub mod graph;
+pub mod mixture;
 pub mod native;
 pub mod noise;
 pub mod olat;
@@ -21,6 +22,8 @@ pub const MIN_MULTIPLIER: f32 = 1e-8;
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
 pub struct Config {
     pub version: u32,
+    #[serde(default)]
+    pub mixture: mixture::Mode,
     pub scale: u32,
     pub channels: u32,
     /// Fixed feature/loss exposure. State and output remain scene-linear.
@@ -32,6 +35,7 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             version: 1,
+            mixture: mixture::Mode::Softplus,
             scale: 2,
             channels: 8,
             exposure: 1.0,
@@ -42,7 +46,7 @@ impl Default for Config {
 }
 impl Config {
     pub fn validate(self, low: [u32; 2]) -> Result<(), String> {
-        if self.version != 1
+        if self.version != self.mixture.version()
             || !(1..=4).contains(&self.scale)
             || self.channels == 0
             || !self.exposure.is_finite()
@@ -52,7 +56,7 @@ impl Config {
                 .any(|v| !v.is_finite() || *v < 1.0)
             || low.iter().any(|v| *v < 4 || v % 4 != 0)
         {
-            return Err("transport requires v1, positive exposure/history, scale 1..4, and LR dimensions divisible by four".into());
+            return Err("transport requires a matching mixture/version, positive exposure/history, scale 1..4, and LR dimensions divisible by four".into());
         }
         Ok(())
     }

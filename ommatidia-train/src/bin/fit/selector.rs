@@ -91,11 +91,26 @@ impl Batch {
         for l in 0..2 {
             for i in 0..n {
                 let a = l * n + i;
+                let center = (0..CANDIDATES)
+                    .filter(|&k| self.candidates.prior[k * 2 * n + a] > 0.0)
+                    .map(|k| logits[k * 2 * n + a] as f64)
+                    .fold(f64::NEG_INFINITY, f64::max);
+                let multiplier = |z: f64| match self.config.mixture {
+                    ommatidia::transport::mixture::Mode::Softplus => (z.max(0.0)
+                        + (-z.abs()).exp().ln_1p())
+                    .max(ommatidia::transport::MIN_MULTIPLIER as f64),
+                    ommatidia::transport::mixture::Mode::MaskedSoftmax => {
+                        ((z - center) * ommatidia::transport::mixture::SOFTMAX_GAIN as f64).exp()
+                    }
+                };
                 let total = (0..CANDIDATES)
                     .map(|k| {
                         let z = logits[k * 2 * n + a] as f64;
-                        let sp = (z.max(0.0) + (-z.abs()).exp().ln_1p())
-                            .max(ommatidia::transport::MIN_MULTIPLIER as f64);
+                        let sp = if self.candidates.prior[k * 2 * n + a] > 0.0 {
+                            multiplier(z)
+                        } else {
+                            0.0
+                        };
                         self.candidates.prior[k * 2 * n + a] as f64 * sp
                     })
                     .sum::<f64>();
@@ -103,8 +118,11 @@ impl Batch {
                 for k in 0..CANDIDATES {
                     let j = k * 2 * n + a;
                     let z = logits[j] as f64;
-                    let sp = (z.max(0.0) + (-z.abs()).exp().ln_1p())
-                        .max(ommatidia::transport::MIN_MULTIPLIER as f64);
+                    let sp = if self.candidates.prior[j] > 0.0 {
+                        multiplier(z)
+                    } else {
+                        0.0
+                    };
                     weights[j] = (self.candidates.prior[j] as f64 * sp / total) as f32;
                     for c in 0..3 {
                         lobes[(3 * l + c) * n + i] += weights[j] * self.point(k, l, i)[c];
@@ -127,7 +145,11 @@ impl Batch {
                     let z = logits[j] as f64;
                     let active = z.max(0.0) + (-z.abs()).exp().ln_1p()
                         > ommatidia::transport::MIN_MULTIPLIER as f64;
-                    let dp = if active {
+                    let dp = if self.config.mixture
+                        == ommatidia::transport::mixture::Mode::MaskedSoftmax
+                    {
+                        weights[j] as f64 * ommatidia::transport::mixture::SOFTMAX_GAIN as f64
+                    } else if active {
                         self.candidates.prior[j] as f64 / (1.0 + (-z).exp()) / den[l * n + i]
                     } else {
                         0.0
@@ -346,7 +368,11 @@ fn checks(b: &Batch, ctx: Arc<blade_graphics::Context>, rgb: bool) -> Result<Val
     )
 }
 pub(super) fn run(o: &Options, ctx: Arc<blade_graphics::Context>) -> Result<Value> {
-    let config = Config::default();
+    let config = Config {
+        version: o.mixture.version(),
+        mixture: o.mixture,
+        ..Config::default()
+    };
     let mut reader = dataset::Reader::open(&o.data)?;
     let layout = *reader.layout();
     if o.frame >= reader.len() {
@@ -361,7 +387,11 @@ pub(super) fn run(o: &Options, ctx: Arc<blade_graphics::Context>) -> Result<Valu
     }
     let mut runtime = native::Native::new(
         Arc::clone(&ctx),
-        config,
+        Config {
+            version: 1,
+            mixture: Default::default(),
+            ..config
+        },
         [layout.lr_width, layout.lr_height],
     )?;
     let start = if reader.sequence_length() > 0 {
@@ -480,7 +510,7 @@ pub(super) fn run(o: &Options, ctx: Arc<blade_graphics::Context>) -> Result<Valu
         arms.push(report);
     }
     Ok(
-        json!({"objective":if rgb{"linear remodulated RGB"}else{"linear illumination lobes"},"history":"frozen native zero-head recurrence; not updated during fitting","analytic_check":analytic,"native_replay_mse":parity,"conditional_bound":bound,"max_dual_gap":gap,"arms":arms}),
+        json!({"mixture":config.mixture,"config":config,"objective":if rgb{"linear remodulated RGB"}else{"linear illumination lobes"},"history":"frozen native zero-head recurrence; not updated during fitting","analytic_check":analytic,"native_replay_mse":parity,"conditional_bound":bound,"max_dual_gap":gap,"arms":arms}),
     )
 }
 

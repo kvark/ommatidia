@@ -20,6 +20,7 @@ struct Options {
     steps: usize,
     seed: u64,
     frame: usize,
+    mixture: ommatidia::transport::mixture::Mode,
 }
 fn parse() -> Result<Option<Options>> {
     let mut o = Options {
@@ -29,12 +30,13 @@ fn parse() -> Result<Option<Options>> {
         steps: 512,
         seed: 7,
         frame: 0,
+        mixture: Default::default(),
     };
     let mut args = std::env::args().skip(1);
     while let Some(flag) = args.next() {
         if flag == "--help" || flag == "-h" {
             println!(
-                "fit --task selector-lobes|selector-rgb|source-depth|volume-depth|surface-appearance --data CAPTURE.omd --out DIR [--steps 512 --seed 7 --frame 0]\nFrozen fitting observations only; surface-appearance deliberately uses true positions. Diagnostic weights are NOT trained deployment models."
+                "fit --task selector-lobes|selector-rgb|source-depth|volume-depth|surface-appearance --data CAPTURE.omd --out DIR [--steps 512 --seed 7 --frame 0 --mixture softplus|masked-softmax]\nFrozen fitting observations only; surface-appearance deliberately uses true positions. Diagnostic weights are NOT trained deployment models."
             );
             return Ok(None);
         }
@@ -46,6 +48,7 @@ fn parse() -> Result<Option<Options>> {
             "--steps" => o.steps = v.parse()?,
             "--seed" => o.seed = v.parse()?,
             "--frame" => o.frame = v.parse()?,
+            "--mixture" => o.mixture = v.parse()?,
             _ => return Err(format!("unknown flag: {flag}").into()),
         }
     }
@@ -66,6 +69,9 @@ fn parse() -> Result<Option<Options>> {
             "require a supported task, existing capture, fresh output directory and 1..16384 steps"
                 .into(),
         );
+    }
+    if !o.task.starts_with("selector-") && o.mixture != Default::default() {
+        return Err("--mixture only applies to selector tasks".into());
     }
     if o.out.exists() {
         return Err("refusing to overwrite a diagnostic run".into());

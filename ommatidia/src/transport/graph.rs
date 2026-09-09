@@ -184,26 +184,35 @@ pub fn build_objective(
             1,
             true,
         );
-        let multiplier = b.g.softplus(logits, 1.0);
-        // Match the scalar reference. Softplus can round to zero for negative
-        // logits; dividing zero weights by an added epsilon invents black.
-        let floor = filled(&mut b.g, multiplier, MIN_MULTIPLIER);
-        let negative_floor = b.g.neg(floor);
-        let above_floor = b.g.add(multiplier, negative_floor);
-        let above_floor = b.g.relu(above_floor);
-        let multiplier = b.g.add(above_floor, floor);
         let prior = b.g.input(&format!("{tag}.prior"), &[CANDIDATES * 2 * n]);
-        let weights = b.g.mul(prior, multiplier);
-        let ws = split(&mut b.g, weights, CANDIDATES as u32, 2 * slots, spatial);
-        let mut sum = ws[0];
-        for &w in &ws[1..] {
-            sum = b.g.add(sum, w);
-        }
-        let eps = filled(&mut b.g, sum, 1e-12);
-        let negative_eps = b.g.neg(eps);
-        let above_eps = b.g.add(sum, negative_eps);
-        let above_eps = b.g.relu(above_eps);
-        sum = b.g.add(above_eps, eps);
+        let ws = match config.mixture {
+            mixture::Mode::Softplus => {
+                let multiplier = b.g.softplus(logits, 1.0);
+                // Match the scalar reference. Softplus can round to zero for negative
+                // logits; dividing zero weights by an added epsilon invents black.
+                let floor = filled(&mut b.g, multiplier, MIN_MULTIPLIER);
+                let negative_floor = b.g.neg(floor);
+                let above_floor = b.g.add(multiplier, negative_floor);
+                let above_floor = b.g.relu(above_floor);
+                let multiplier = b.g.add(above_floor, floor);
+                let weights = b.g.mul(prior, multiplier);
+                let ws = split(&mut b.g, weights, CANDIDATES as u32, 2 * slots, spatial);
+                let mut sum = ws[0];
+                for &w in &ws[1..] {
+                    sum = b.g.add(sum, w);
+                }
+                let eps = filled(&mut b.g, sum, 1e-12);
+                let negative_eps = b.g.neg(eps);
+                let above_eps = b.g.add(sum, negative_eps);
+                let above_eps = b.g.relu(above_eps);
+                sum = b.g.add(above_eps, eps);
+                ws.iter().map(|&w| b.g.div(w, sum)).collect::<Vec<_>>()
+            }
+            mixture::Mode::MaskedSoftmax => {
+                let weights = mixture::build(&mut b.g, logits, prior, 2 * slots, spatial);
+                split(&mut b.g, weights, CANDIDATES as u32, 2 * slots, spatial)
+            }
+        };
         let candidates = b.g.input(&format!("{tag}.candidates"), &[SCALES * 6 * n]);
         let mut candidates = split(&mut b.g, candidates, SCALES as u32, 6 * slots, spatial);
         candidates.push(history);
@@ -211,7 +220,7 @@ pub fn build_objective(
         let mut normalized = None;
         let mut history_share = None;
         for k in 0..CANDIDATES {
-            let w = b.g.div(ws[k], sum);
+            let w = ws[k];
             if k == SCALES {
                 history_share = Some(w);
             }
