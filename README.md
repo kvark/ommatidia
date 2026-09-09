@@ -23,8 +23,8 @@ limitations](docs/results-overview.md).
 
 ## Build
 
-Place `ommatidia` and `meganeura` in sibling directories. CI pins Meganeura
-`43b606f` ([merged checkpoint fix](https://github.com/kvark/meganeura/pull/160));
+Place `ommatidia` and `meganeura` in sibling directories. CI pins Meganeura 0.3
+at `8c6a545` ([softplus correctness fix](https://github.com/kvark/meganeura/pull/164));
 Blade 0.9 and Naga 30 come from crates.io and Cargo.lock. The data generator
 reads Blade's WGSL from `../blade/blade-render/code` (or `--shader-dir`);
 CI uses the matching `c24621a` source checkout for shaders and fixtures.
@@ -63,7 +63,8 @@ See [the architecture and input contract](docs/design.md),
 [the quality roadmap](docs/quality-roadmap.md).
 `ommatidia::transport::native::Native` exposes the new Rust GPU path;
 `process` adds synchronous upload/readback for tests. Existing `Upscaler`/C ABI
-clients retain legacy checkpoint behavior.
+clients retain legacy checkpoint schemas. Numerical fixes can change outputs
+at extreme logits; supported weights are not silently reinterpreted or promoted.
 
 [Published weights](https://huggingface.co/mad-bot/ommatidia) ·
 [Historical datasets](https://huggingface.co/datasets/mad-bot/ommatidia) ·
