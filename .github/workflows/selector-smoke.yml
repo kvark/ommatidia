@@ -1,0 +1,79 @@
+name: selector implementation check
+on:
+  pull_request:
+    paths: ['.github/workflows/selector-smoke.yml']
+permissions:
+  contents: read
+jobs:
+  test:
+    if: github.event.pull_request.number == 19 && github.head_ref == 'docs/visual-quality-roadmap' && github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: write
+    defaults:
+      run:
+        shell: bash
+        working-directory: ommatidia
+    env:
+      VK_ICD_FILENAMES: /usr/share/vulkan/icd.d/lvp_icd.json
+      OMMATIDIA_REQUIRE_GPU: '1'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          path: ommatidia
+      - uses: actions/checkout@v4
+        with:
+          repository: kvark/meganeura
+          ref: 8c6a545c2533c39e60111979fa47bf21591796b3
+          path: meganeura
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          repository: kvark/blade
+          ref: c24621aa6606da968fd1b3967d5993f8aa2b74e8
+          path: blade
+          persist-credentials: false
+      - name: Apply exact inspected blobs
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          for entry in ommatidia/src/transport/mixture.rs:311c58fc7a34053a984f5f3bbcad12b6b921c514 ommatidia/tests/masked_softmax.rs:94bd2c04f49cb948d4284d2c6cc5a01d74a45275 .github/selector-edit.py:161abf0da791f3c9056f3dd719c3ac8d57e2cef0; do
+            path="${entry%:*}"; sha="${entry##*:}"
+            test ! -e "$path"
+            gh api "repos/kvark/ommatidia/git/blobs/$sha" --jq .content | base64 -d > "$path"
+            test "$(git hash-object "$path")" = "$sha"
+          done
+          python3 .github/selector-edit.py
+          rm .github/selector-edit.py
+      - name: Compile and test mathematical contracts
+        run: |
+          rustup toolchain install 1.92.0 --profile minimal --component rustfmt,clippy
+          sudo apt-get update -qq -o Acquire::Retries=3
+          sudo apt-get install -y libvulkan1 mesa-vulkan-drivers
+          cargo +1.92.0 fmt --all
+          mkdir -p target/selector-validation
+          cargo +1.92.0 test --workspace --locked 2>&1 | tee target/selector-validation/unit.log
+          cargo +1.92.0 clippy --workspace --all-targets --locked -- -D warnings 2>&1 | tee target/selector-validation/clippy.log
+          cargo +1.92.0 test -p ommatidia --test masked_softmax --test mixture_mass --locked -- --ignored --nocapture --test-threads=1 2>&1 | tee target/selector-validation/gpu.log
+      - name: Commit validated source only
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          test "$(git ls-remote origin refs/heads/docs/visual-quality-roadmap | cut -f1)" = "$EXPECTED_SHA"
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add ommatidia ommatidia-train
+          git diff --cached --check
+          git commit -m 'feat: versioned prior-aware masked-softmax selector'
+          git push origin HEAD:refs/heads/docs/visual-quality-roadmap
+      - name: Archive inspected source and checks
+        if: always()
+        run: tar --exclude=.git --exclude=target/debug --exclude=target/release -czf "$RUNNER_TEMP/selector-validation.tar.gz" .
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: selector-validation
+          path: ${{ runner.temp }}/selector-validation.tar.gz
+          retention-days: 7
