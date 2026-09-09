@@ -350,6 +350,7 @@ fn main() -> Result<()> {
     let mut steps = 128usize;
     let mut unroll = 2usize;
     let mut channels = 8;
+    let mut mixture = None::<ommatidia::transport::mixture::Mode>;
     let mut seed = 7u64;
     let mut rate = 0.001f32;
     let mut eval_only = false;
@@ -361,7 +362,7 @@ fn main() -> Result<()> {
     while let Some(arg) = args.next() {
         if arg == "--help" {
             println!(
-                "transport --data TRAIN.omd --eval-data HOLDOUT.omd [--out DIR] [--steps 128] [--unroll 2] [--channels 8] [--seed 7] [--lr 0.001] [--eval-only] [--candidate-oracle] [--fixed-exposure-loss] [--projected-weight F] [--rgb-loss] [--construction-noise]\n  --compressed-weight F [1] --physical-weight F [0.1] --low-frequency-weight F [0.05]\n  --confidence-weight F [0.01] --temporal-weight F [0.01]\nRepeat --data/--eval-data for multiple captures. Matched transport, split radiance and HR surfaces required. Scene seeds must be disjoint unless --construction-noise verifies equal truth and nonoverlapping path streams."
+                "transport --data TRAIN.omd --eval-data HOLDOUT.omd [--out DIR] [--steps 128] [--unroll 2] [--channels 8] [--mixture softplus|masked-softmax] [--seed 7] [--lr 0.001] [--eval-only] [--candidate-oracle] [--fixed-exposure-loss] [--projected-weight F] [--rgb-loss] [--construction-noise]\n  --compressed-weight F [1] --physical-weight F [0.1] --low-frequency-weight F [0.05]\n  --confidence-weight F [0.01] --temporal-weight F [0.01]\nRepeat --data/--eval-data for multiple captures. Matched transport, split radiance and HR surfaces required. Scene seeds must be disjoint unless --construction-noise verifies equal truth and nonoverlapping path streams."
             );
             return Ok(());
         }
@@ -393,6 +394,7 @@ fn main() -> Result<()> {
             "--steps" => steps = v.parse()?,
             "--unroll" => unroll = v.parse()?,
             "--channels" => channels = v.parse()?,
+            "--mixture" => mixture = Some(v.parse()?),
             "--seed" => seed = v.parse()?,
             "--lr" => rate = v.parse()?,
             "--projected-weight" => projected_weight = Some(v.parse()?),
@@ -405,6 +407,9 @@ fn main() -> Result<()> {
         }
     }
     weights.validate()?;
+    if eval_only && mixture.is_some() {
+        return Err("evaluation reads mixture from the checkpoint sidecar".into());
+    }
     if rgb_loss && (!fixed_exposure_loss || eval_only) {
         return Err("--rgb-loss requires --fixed-exposure-loss and training".into());
     }
@@ -425,6 +430,8 @@ fn main() -> Result<()> {
         ron::from_str(&std::fs::read_to_string(out.join("model.transport.ron"))?)?
     } else {
         Config {
+            version: mixture.unwrap_or_default().version(),
+            mixture: mixture.unwrap_or_default(),
             channels,
             ..Config::default()
         }
@@ -440,7 +447,15 @@ fn main() -> Result<()> {
     let low = holdout.frames[0].0.low;
     let context = ommatidia::gpu::create_context(None, false);
     let mut learned = native::Native::new(Arc::clone(&context), config, low)?;
-    let mut baseline = native::Native::new(Arc::clone(&context), config, low)?;
+    let mut baseline = native::Native::new(
+        Arc::clone(&context),
+        Config {
+            version: 1,
+            mixture: Default::default(),
+            ..config
+        },
+        low,
+    )?;
     let checkpoint = out.join("model.safetensors");
     if eval_only {
         learned.session.load_checkpoint(&checkpoint)?;
