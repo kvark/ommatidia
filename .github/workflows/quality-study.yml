@@ -19,7 +19,7 @@ permissions:
 env:
   VK_ICD_FILENAMES: /usr/share/vulkan/icd.d/lvp_icd.json
   OMMATIDIA_REQUIRE_GPU: '1'
-  MEGANEURA_REV: 8c6a545c2533c39e60111979fa47bf21591796b3
+  MEGANEURA_REV: 185b1014bba05e760d4679e1db4fde38ece2e056
 jobs:
   capture:
     runs-on: ubuntu-latest
