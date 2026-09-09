@@ -1,0 +1,210 @@
+name: corrected-tail reconstruction validation
+on:
+  pull_request:
+    paths: ['.github/workflows/tail-integration.yml']
+permissions:
+  contents: read
+concurrency:
+  group: tail-integration-${{ github.ref }}
+  cancel-in-progress: true
+env:
+  VK_ICD_FILENAMES: /usr/share/vulkan/icd.d/lvp_icd.json
+  OMMATIDIA_REQUIRE_GPU: '1'
+  MEGANEURA_REV: 8c6a545c2533c39e60111979fa47bf21591796b3
+jobs:
+  prepare:
+    if: github.event.pull_request.number == 19 && github.head_ref == 'docs/visual-quality-roadmap' && github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    permissions:
+      contents: write
+    outputs:
+      sha: ${{ steps.commit.outputs.sha }}
+    defaults:
+      run:
+        shell: bash
+        working-directory: ommatidia
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          path: ommatidia
+      - uses: actions/checkout@v4
+        with:
+          repository: kvark/meganeura
+          ref: ${{ env.MEGANEURA_REV }}
+          path: meganeura
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          repository: kvark/blade
+          ref: c24621aa6606da968fd1b3967d5993f8aa2b74e8
+          path: blade
+          persist-credentials: false
+      - name: Setup and update only Meganeura lock metadata
+        run: |
+          rustup toolchain install 1.92.0 --profile minimal --component rustfmt,clippy
+          sudo apt-get update -qq -o Acquire::Retries=3
+          sudo apt-get install -y libvulkan1 mesa-vulkan-drivers
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path('Cargo.lock');s=p.read_text();old='name = "meganeura"\nversion = "0.2.0"'
+          assert s.count(old)==1
+          p.write_text(s.replace(old,'name = "meganeura"\nversion = "0.3.0"'))
+          PY
+          cargo +1.92.0 fmt --all
+          mkdir -p target/tail-validation
+      - name: Workspace and GPU regression checks
+        run: |
+          cargo +1.92.0 check --workspace --all-targets --locked 2>&1 | tee target/tail-validation/check.log
+          cargo +1.92.0 test --workspace --locked 2>&1 | tee target/tail-validation/unit.log
+          cargo +1.92.0 clippy --workspace --all-targets --locked -- -D warnings 2>&1 | tee target/tail-validation/clippy.log
+          cargo +1.92.0 test -p ommatidia --test gpu_runtime --test transport --test field --test quality_controls --test late_rgb --test candidate_oracle --test wide_field --test visibility --test projected --test consistency --test stereo --test remodulated --test mixture_mass --locked -- --ignored --nocapture --test-threads=1 2>&1 | tee target/tail-validation/gpu.log
+      - name: Build identical experiment binaries
+        env:
+          CARGO_PROFILE_DEV_OPT_LEVEL: '1'
+          CARGO_PROFILE_DEV_DEBUG: '0'
+        run: |
+          cargo +1.92.0 build -p ommatidia-train --bin fit --bin transport --locked
+          mkdir -p target/tail-bin
+          cp target/debug/fit target/debug/transport target/tail-bin/
+          strip target/tail-bin/*
+      - name: Commit validated source and minimal lock change
+        id: commit
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          test "$(git ls-remote origin refs/heads/docs/visual-quality-roadmap | cut -f1)" = "$EXPECTED_SHA"
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add Cargo.lock ommatidia/tests/mixture_mass.rs
+          git diff --cached --check
+          git commit -m 'test: validate actual selector weights against stable softplus and adopt fixed runtime'
+          git push origin HEAD:refs/heads/docs/visual-quality-roadmap
+          git rev-parse HEAD | tee target/tail-validation/source-sha.txt
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tail-binaries
+          path: ommatidia/target/tail-bin
+          retention-days: 7
+      - name: Archive source and validation
+        if: always()
+        run: tar --exclude=.git --exclude=target/debug --exclude=target/release -czf "$RUNNER_TEMP/tail-source.tar.gz" .
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: tail-source-validation
+          path: ${{ runner.temp }}/tail-source.tar.gz
+          retention-days: 7
+  fitting:
+    needs: prepare
+    strategy:
+      fail-fast: false
+      max-parallel: 7
+      matrix:
+        include:
+          - task: selector-rgb
+            frame: 0
+          - task: selector-rgb
+            frame: 3
+          - task: selector-lobes
+            frame: 0
+          - task: selector-lobes
+            frame: 3
+          - task: source-depth
+            frame: 0
+          - task: volume-depth
+            frame: 0
+          - task: surface-appearance
+            frame: 0
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: tail-binaries
+          path: bin
+      - uses: actions/download-artifact@v4
+        with:
+          run-id: 34178844726
+          github-token: ${{ github.token }}
+          name: geometry-noise-risk
+          path: noise
+      - uses: actions/download-artifact@v4
+        with:
+          run-id: 34153941146
+          github-token: ${{ github.token }}
+          name: corrected-control-data
+          path: field
+      - name: Repeat fixed observations, seed and 512 updates
+        shell: bash
+        env:
+          TASK: ${{ matrix.task }}
+          FRAME: ${{ matrix.frame }}
+          SOURCE: ${{ needs.prepare.outputs.sha }}
+        run: |
+          sudo apt-get update -qq -o Acquire::Retries=3
+          sudo apt-get install -y libvulkan1 mesa-vulkan-drivers
+          chmod +x bin/fit
+          capture=field/field.omd
+          if [[ "$TASK" == selector-* ]]; then capture=noise/noise-7/data/noise0.omd; fi
+          mkdir -p evidence
+          args=(bin/fit --task "$TASK" --data "$capture" --out "evidence/$TASK-$FRAME" --frame "$FRAME" --seed 7 --steps 512)
+          { echo "$SOURCE"; echo "$MEGANEURA_REV"; printf '%q ' "${args[@]}"; echo; sha256sum "$capture" "${capture%.omd}."*json; } > evidence/recipe.txt
+          "${args[@]}" 2>&1 | tee evidence/run.log
+          find evidence -name diagnostic.safetensors -o -name quality.json | sort | xargs sha256sum > evidence/results.sha256
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: tail-fit-${{ matrix.task }}-${{ matrix.frame }}
+          path: evidence
+          retention-days: 7
+  causal:
+    needs: prepare
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        arm: [selector-lobes, selector-rgb]
+        seed: [7, 11]
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    defaults:
+      run:
+        shell: bash
+        working-directory: ommatidia
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.sha }}
+          path: ommatidia
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: tail-binaries
+          path: ommatidia/bin
+      - uses: actions/download-artifact@v4
+        with:
+          run-id: 34178844726
+          github-token: ${{ github.token }}
+          name: geometry-noise-risk
+          path: ommatidia/noise
+      - name: Train, reload and evaluate own causal history on held noise
+        env:
+          ARM: ${{ matrix.arm }}
+          CORRESPONDENCE_SEED: ${{ matrix.seed }}
+          CORRESPONDENCE_UPDATES: '512'
+          CORRESPONDENCE_TRANSPORT_BIN: bin/transport
+          CORRESPONDENCE_NOISE_DATA: noise/noise-7/data
+        run: |
+          sudo apt-get update -qq -o Acquire::Retries=3
+          sudo apt-get install -y libvulkan1 mesa-vulkan-drivers
+          chmod +x bin/transport
+          bash benchmarks/correspondence-lavapipe.sh "$ARM"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: tail-causal-${{ matrix.arm }}-${{ matrix.seed }}
+          path: ommatidia/target/correspondence
+          retention-days: 7
