@@ -80,6 +80,7 @@ fn config() -> ModelConfig {
         head_kernel: 3,
         temporal_weight: 0.0,
         temporal_motion_bias: 0.0,
+        mix_confidence_weight: 0.0,
         temporal: None,
     }
 }
