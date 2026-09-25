@@ -1,0 +1,1615 @@
+{
+  "date": "2026-09-25",
+  "model": {
+    "architecture": "recurrent lobe-separated radiance-residual U-Net",
+    "version": 3,
+    "parameters": 188160,
+    "channels": 16,
+    "scale": 2,
+    "selected_update": 3500,
+    "checkpoint": "runs/focused-2026-09-25/train/step-3500.safetensors",
+    "sha256": "6c58120fbcb5f18978058749c616d1fab1b51dc77885cc852468b9f1b76fb367"
+  },
+  "selection": "Highest development mean frame PSNR among 500-update checkpoints and final. Audit was not consulted.",
+  "completed_updates": 4000,
+  "training": {
+    "command": [
+      "target/release/transport",
+      "--data",
+      "runs/focused-2026-09-25/data/train-procedural.omd",
+      "--data",
+      "runs/focused-2026-09-25/data/train-abo.omd",
+      "--eval-data",
+      "runs/focused-2026-09-25/data/dev-procedural.omd",
+      "--eval-data",
+      "runs/focused-2026-09-25/data/dev-abo.omd",
+      "--out",
+      "runs/focused-2026-09-25/train",
+      "--steps",
+      "4000",
+      "--unroll",
+      "2",
+      "--channels",
+      "16",
+      "--lr",
+      "0.0003",
+      "--eval-every",
+      "500",
+      "--device-id",
+      "0x744c"
+    ],
+    "started": "2026-09-25T16:14:56.833101+00:00",
+    "finished": "2026-09-25T16:40:14.130912+00:00",
+    "status": "complete",
+    "exit_code": 0,
+    "validation_errors": 0,
+    "inputs": [
+      {
+        "path": "/x/Code/ommatidia/target/release/transport",
+        "bytes": 16107840,
+        "sha256": "ff8bc1239a9698361d03a2f8da56ea5066679fd182bb18f5a692b507905cf7f8"
+      },
+      {
+        "path": "/x/Code/ommatidia/runs/focused-2026-09-25/data/train-procedural.omd",
+        "bytes": 266338368,
+        "sha256": "3448e738af1331f9ec0bb6204c1a30d2ccaf04efe846f9f1f3820b288226cc5b"
+      },
+      {
+        "path": "/x/Code/ommatidia/runs/focused-2026-09-25/data/train-abo.omd",
+        "bytes": 133169216,
+        "sha256": "0e1eaf5585a4f3b45b6ab1988387d7e6587a97aac5f02015110bccd7e4715e9a"
+      },
+      {
+        "path": "/x/Code/ommatidia/runs/focused-2026-09-25/data/dev-procedural.omd",
+        "bytes": 33292352,
+        "sha256": "17fc8243002165ea1eb5c6c7d37ab541745c7e6680f42fa20a641b4b08b5b2ea"
+      },
+      {
+        "path": "/x/Code/ommatidia/runs/focused-2026-09-25/data/dev-abo.omd",
+        "bytes": 33292352,
+        "sha256": "c054f71c70022e8318dbfc86d20e5e45a07f11320b8d929479ff674fff730d78"
+      }
+    ],
+    "environment": {
+      "RUST_LOG": "ommatidia=info"
+    },
+    "repositories": {
+      "/x/Code/blade": {
+        "head": "fbb4f28c4869e81ae15de58925945b423b9c1ac5",
+        "tracked_diff_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "/x/Code/meganeura": {
+        "head": "5253d35d7428652832e5c4774ca2a7db4975a0b8",
+        "tracked_diff_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "/home/kvark/.cargo/git/checkouts/wgpu-045f9a3b3e40a5c0/323acfb": {
+        "head": "323acfb729a00c3030e362faa27252afe6368792",
+        "tracked_diff_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "/x/Code/ommatidia": {
+        "head": "e0922c639194eefff09334c800b99971de7c81af",
+        "tracked_diff_sha256": "c5ede166fb3cc72fc43ed33b589c4e6d845d85b6b16256d25e5ee9b0c3bb4df0"
+      }
+    }
+  },
+  "development": [
+    {
+      "update": 500,
+      "baseline": {
+        "detail_ratio": 0.9586546369547679,
+        "energy_ratio": 0.99458056027685,
+        "frames": 64,
+        "history_pixels": 917504,
+        "linear_mse": 0.0672756539416997,
+        "low_frequency_psnr": 29.435305353097473,
+        "psnr": 24.27454307483166,
+        "rejected_history_fraction": 0.021575927734375,
+        "rejected_history_mse": 0.012046920780681945,
+        "rejected_history_pixels": 19796,
+        "relative_mse": 0.35471392477049407,
+        "reset_psnr": 21.611388737918183,
+        "resets": 8,
+        "ssim": 0.6668527484871447,
+        "temporal_frames": 56,
+        "temporal_mse": 0.0025400816163992125
+      },
+      "learned": {
+        "detail_ratio": 0.8638189257414601,
+        "energy_ratio": 1.0131068072207214,
+        "frames": 64,
+        "history_pixels": 917504,
+        "linear_mse": 0.050119297969819475,
+        "low_frequency_psnr": 31.51345005185966,
+        "psnr": 26.12999284873747,
+        "rejected_history_fraction": 0.021575927734375,
+        "rejected_history_mse": 0.009843228804202207,
+        "rejected_history_pixels": 19796,
+        "relative_mse": 0.20596721991955433,
+        "reset_psnr": 23.751466617980405,
+        "resets": 8,
+        "ssim": 0.733311366289854,
+        "temporal_frames": 56,
+        "temporal_mse": 0.001614560402272896
+      }
+    },
+    {
+      "update": 1000,
+      "baseline": {
+        "detail_ratio": 0.9586546369547679,
+        "energy_ratio": 0.99458056027685,
+        "frames": 64,
+        "history_pixels": 917504,
+        "linear_mse": 0.0672756539416997,
+        "low_frequency_psnr": 29.435305353097473,
+        "psnr": 24.27454307483166,
+        "rejected_history_fraction": 0.021575927734375,
+        "rejected_history_mse": 0.012046920780681945,
+        "rejected_history_pixels": 19796,
+        "relative_mse": 0.35471392477049407,
+        "reset_psnr": 21.611388737918183,
+        "resets": 8,
+        "ssim": 0.6668527484871447,
+        "temporal_frames": 56,
+        "temporal_mse": 0.0025400816163992125
+      },
+      "learned": {
+        "detail_ratio": 0.8401014127489094,
+        "energy_ratio": 1.0094142491704046,
+        "frames": 64,
+        "history_pixels": 917504,
+        "linear_mse": 0.04408952462774952,
+        "low_frequency_psnr": 31.831330173695168,
+        "psnr": 26.54922030459013,
+        "rejected_history_fraction": 0.021575927734375,
+        "rejected_history_mse": 0.008487299019608728,
+        "rejected_history_pixels": 19796,
+        "relative_mse": 0.1693835188131717,
+        "reset_psnr": 24.913531085857212,
+        "resets": 8,
+        "ssim": 0.7464873306453228,
+        "temporal_frames": 56,
+        "temporal_mse": 0.0013983030671443064
+      }
+    },
+    {
+      "update": 1500,
+      "baseline": {
+        "detail_ratio": 0.9586546369547679,
+        "energy_ratio": 0.99458056027685,
+        "frames": 64,
+        "history_pixels": 917504,
+        "linear_mse": 0.0672756539416997,
+        "low_frequency_psnr": 29.435305353097473,
+        "psnr": 24.27454307483166,
+        "rejected_history_fraction": 0.021575927734375,
+        "rejected_history_mse": 0.012046920780681945,
+        "rejected_history_pixels": 19796,
+        "relative_mse": 0.35471392477049407,
+        "reset_psnr": 21.611388737918183,
+        "resets": 8,
+        "ssim": 0.6668527484871447,
+        "temporal_frames": 56,
+        "temporal_mse": 0.0025400816163992125
+      },
+      "learned": {
+        "detail_ratio": 0.8304352122888747,
+        "energy_ratio": 1.0082975008007145,
+        "frames": 64,
+        "history_pixels": 917504,
+        "linear_mse": 0.04056587897954057,
+        "low_frequency_psnr": 32.03373529552929,
+        "psnr": 26.765724496557443,
+        "rejected_history_fraction": 0.021575927734375,
+        "rejected_history_mse": 0.008194955853126257,
+        "rejected_history_pixels": 19796,
+        "relative_mse": 0.1590748828559591,
+        "reset_psnr": 25.114523647652447,
+        "resets": 8,
+        "ssim": 0.7590869562700391,
+        "temporal_frames": 56,
+        "temporal_mse": 0.0013694372199492375
+      }
+    },
+    {
+      "update": 2000,
+      "baseline": {
+        "detail_ratio": 0.9586546369547679,
+        "energy_ratio": 0.99458056027685,
+        "frames": 64,
+        "history_pixels": 917504,
+        "linear_mse": 0.0672756539416997,
+        "low_frequency_psnr": 29.435305353097473,
+        "psnr": 24.27454307483166,
+        "rejected_history_fraction": 0.021575927734375,
+        "rejected_history_mse": 0.012046920780681945,
+        "rejected_history_pixels": 19796,
+        "relative_mse": 0.35471392477049407,
+        "reset_psnr": 21.611388737918183,
+        "resets": 8,
+        "ssim": 0.6668527484871447,
+        "temporal_frames": 56,
+        "temporal_mse": 0.0025400816163992125
+      },
+      "learned": {
+        "detail_ratio": 0.8263421862512139,
+        "energy_ratio": 1.0066808012266684,
+        "frames": 64,
+        "history_pixels": 917504,
+        "linear_mse": 0.0382245708869951,
+        "low_frequency_psnr": 32.09154768251077,
+        "psnr": 26.871438072493273,
+        "rejected_history_fraction": 0.021575927734375,
+        "rejected_history_mse": 0.00792396377086229,
+        "rejected_history_pixels": 19796,
+        "relative_mse": 0.14790228052467935,
+        "reset_psnr": 25.137460330067693,
+        "resets": 8,
+        "ssim": 0.7626593820750713,
+        "temporal_frames": 56,
+        "temporal_mse": 0.0013087373708863697
+      }
+    },
+    {
+      "update": 2500,
+      "baseline": {
+        "detail_ratio": 0.9586546369547679,
+        "energy_ratio": 0.99458056027685,
+        "frames": 64,
+        "history_pixels": 917504,
+        "linear_mse": 0.0672756539416997,
+        "low_frequency_psnr": 29.435305353097473,
+        "psnr": 24.27454307483166,
+        "rejected_history_fraction": 0.021575927734375,
+        "rejected_history_mse": 0.012046920780681945,
+        "rejected_history_pixels": 19796,
+        "relative_mse": 0.35471392477049407,
+        "reset_psnr": 21.611388737918183,
+        "resets": 8,
+        "ssim": 0.6668527484871447,
+        "temporal_frames": 56,
+        "temporal_mse": 0.0025400816163992125
+      },
+      "learned": {
+        "detail_ratio": 0.8183939116329844,
+        "energy_ratio": 0.9980920555512154,
+        "frames": 64,
+        "history_pixels": 917504,
+        "linear_mse": 0.03680011151426448,
+        "low_frequency_psnr": 32.190814833026806,
+        "psnr": 26.95725682940148,
+        "rejected_history_fraction": 0.021575927734375,
+        "rejected_history_mse": 0.00742847788086676,
+        "rejected_history_pixels": 19796,
+        "relative_mse": 0.1375970003065959,
+        "reset_psnr": 25.483138896226436,
+        "resets": 8,
+        "ssim": 0.7636026171967387,
+        "temporal_frames": 56,
+        "temporal_mse": 0.0012418016988392535
+      }
+    },
+    {
+      "update": 3000,
+      "baseline": {
+        "detail_ratio": 0.9586546369547679,
+        "energy_ratio": 0.99458056027685,
+        "frames": 64,
+        "history_pixels": 917504,
+        "linear_mse": 0.0672756539416997,
+        "low_frequency_psnr": 29.435305353097473,
+        "psnr": 24.27454307483166,
+        "rejected_history_fraction": 0.021575927734375,
+        "rejected_history_mse": 0.012046920780681945,
+        "rejected_history_pixels": 19796,
+        "relative_mse": 0.35471392477049407,
+        "reset_psnr": 21.611388737918183,
+        "resets": 8,
+        "ssim": 0.6668527484871447,
+        "temporal_frames": 56,
+        "temporal_mse": 0.0025400816163992125
+      },
+      "learned": {
+        "detail_ratio": 0.8165731903076643,
+        "energy_ratio": 0.9981605795925836,
+        "frames": 64,
+        "history_pixels": 917504,
+        "linear_mse": 0.03589030006075197,
+        "low_frequency_psnr": 32.180973523590595,
+        "psnr": 26.98714072716008,
+        "rejected_history_fraction": 0.021575927734375,
+        "rejected_history_mse": 0.007277184251632092,
+        "rejected_history_pixels": 19796,
+        "relative_mse": 0.13753536624594195,
+        "reset_psnr": 25.525075391226416,
+        "resets": 8,
+        "ssim": 0.765855765901506,
+        "temporal_frames": 56,
+        "temporal_mse": 0.0012151337652922772
+      }
+    },
+    {
+      "update": 3500,
+      "baseline": {
+        "detail_ratio": 0.9586546369547679,
+        "energy_ratio": 0.99458056027685,
+        "frames": 64,
+        "history_pixels": 917504,
+        "linear_mse": 0.0672756539416997,
+        "low_frequency_psnr": 29.435305353097473,
+        "psnr": 24.27454307483166,
+        "rejected_history_fraction": 0.021575927734375,
+        "rejected_history_mse": 0.012046920780681945,
+        "rejected_history_pixels": 19796,
+        "relative_mse": 0.35471392477049407,
+        "reset_psnr": 21.611388737918183,
+        "resets": 8,
+        "ssim": 0.6668527484871447,
+        "temporal_frames": 56,
+        "temporal_mse": 0.0025400816163992125
+      },
+      "learned": {
+        "detail_ratio": 0.8021212069913964,
+        "energy_ratio": 1.0103714225365192,
+        "frames": 64,
+        "history_pixels": 917504,
+        "linear_mse": 0.03596928186820712,
+        "low_frequency_psnr": 32.11779641172111,
+        "psnr": 27.02055860406545,
+        "rejected_history_fraction": 0.021575927734375,
+        "rejected_history_mse": 0.007317047668253182,
+        "rejected_history_pixels": 19796,
+        "relative_mse": 0.14162141285614466,
+        "reset_psnr": 25.558854125051198,
+        "resets": 8,
+        "ssim": 0.7686941139400005,
+        "temporal_frames": 56,
+        "temporal_mse": 0.0012113614701259386
+      }
+    },
+    {
+      "update": 4000,
+      "baseline": {
+        "detail_ratio": 0.9586546369547679,
+        "energy_ratio": 0.99458056027685,
+        "frames": 64,
+        "history_pixels": 917504,
+        "linear_mse": 0.0672756539416997,
+        "low_frequency_psnr": 29.435305353097473,
+        "psnr": 24.27454307483166,
+        "rejected_history_fraction": 0.021575927734375,
+        "rejected_history_mse": 0.012046920780681945,
+        "rejected_history_pixels": 19796,
+        "relative_mse": 0.35471392477049407,
+        "reset_psnr": 21.611388737918183,
+        "resets": 8,
+        "ssim": 0.6668527484871447,
+        "temporal_frames": 56,
+        "temporal_mse": 0.0025400816163992125
+      },
+      "learned": {
+        "detail_ratio": 0.8115646773499339,
+        "energy_ratio": 1.0044255828256297,
+        "frames": 64,
+        "history_pixels": 917504,
+        "linear_mse": 0.03551626944352475,
+        "low_frequency_psnr": 32.11021573044373,
+        "psnr": 27.012840709124326,
+        "rejected_history_fraction": 0.021575927734375,
+        "rejected_history_mse": 0.007340223903835726,
+        "rejected_history_pixels": 19796,
+        "relative_mse": 0.13428773255388557,
+        "reset_psnr": 25.51053131628201,
+        "resets": 8,
+        "ssim": 0.7693707905709743,
+        "temporal_frames": 56,
+        "temporal_mse": 0.0012011579446985167
+      }
+    }
+  ],
+  "audits": {
+    "procedural": {
+      "quality": {
+        "baseline": {
+          "detail_ratio": 1.155246560420772,
+          "energy_ratio": 0.9996415148903318,
+          "frames": 64,
+          "history_pixels": 3932160,
+          "linear_mse": 0.045934581046136624,
+          "low_frequency_psnr": 29.254718202976417,
+          "psnr": 25.18029330827897,
+          "rejected_history_fraction": 0.0152679443359375,
+          "rejected_history_mse": 0.012933884451961229,
+          "rejected_history_pixels": 60036,
+          "relative_mse": 0.2301345674637296,
+          "reset_psnr": 20.606416690174527,
+          "resets": 4,
+          "ssim": 0.6753312461078167,
+          "temporal_frames": 60,
+          "temporal_mse": 0.0014763305374733539
+        },
+        "capture": {
+          "captures": [
+            {
+              "canonical_frames": 1024,
+              "capture_seed": 4700,
+              "family_ids": [],
+              "input_estimator": "independent-paths",
+              "input_frames": 1,
+              "input_max_bounces": 8,
+              "input_rng_schedule": "blade-frame-index; prefix-discard-once; retained [offset+1,offset+records*input_frames]",
+              "input_sample_offset": 0,
+              "light_motion": 0.05000000074505806,
+              "matching_path_depth": true,
+              "note": "Matching path depth is necessary, not sufficient, for a matched integrator. Copied-reference depth is unknown; null is not a match.",
+              "records": 64,
+              "reference_from": null,
+              "reference_max_bounces": 8,
+              "reference_sample_offset": 0,
+              "scene_seeds": [
+                4700,
+                2654432229,
+                5308866862,
+                7963311991
+              ],
+              "schema": 1
+            }
+          ]
+        },
+        "checkpoint": "runs/focused-2026-09-25/train/step-3500.safetensors",
+        "learned": {
+          "detail_ratio": 0.950010155858442,
+          "energy_ratio": 1.0102208126717314,
+          "frames": 64,
+          "history_pixels": 3932160,
+          "linear_mse": 0.025642861798109776,
+          "low_frequency_psnr": 32.02154395062175,
+          "psnr": 28.236727001382203,
+          "rejected_history_fraction": 0.0152679443359375,
+          "rejected_history_mse": 0.0075697143245431414,
+          "rejected_history_pixels": 60036,
+          "relative_mse": 0.08879494158440951,
+          "reset_psnr": 25.57130640272659,
+          "resets": 4,
+          "ssim": 0.7936627706512809,
+          "temporal_frames": 60,
+          "temporal_mse": 0.0006726018269173483
+        },
+        "metric_space": "PSNR/SSIM: x/(1+x); energy: scene-linear; PNG: same compression then sRGB",
+        "rejected_history_space": "pixel-weighted compressed RGB MSE on non-reset pixels with unavailable reprojection in either lobe; includes disocclusions and out-of-frame motion, excludes reactive/learned gate suppression; empty regions are null",
+        "role": "evaluation",
+        "speed_claim": false
+      },
+      "sequences": 4,
+      "sequence_length": 16,
+      "frames_csv": "docs/results/procedural.csv",
+      "regressed_frames": 0,
+      "minimum_frame_gain_db": 1.1109009999999984
+    },
+    "abo": {
+      "quality": {
+        "baseline": {
+          "detail_ratio": 1.1094033407620083,
+          "energy_ratio": 1.001237865104709,
+          "frames": 64,
+          "history_pixels": 3932160,
+          "linear_mse": 0.03365003623444468,
+          "low_frequency_psnr": 29.930054921048477,
+          "psnr": 25.91544876224121,
+          "rejected_history_fraction": 0.01624755859375,
+          "rejected_history_mse": 0.015235651817490497,
+          "rejected_history_pixels": 63888,
+          "relative_mse": 0.18808720644266325,
+          "reset_psnr": 21.24834894461789,
+          "resets": 4,
+          "ssim": 0.6537951780483127,
+          "temporal_frames": 60,
+          "temporal_mse": 0.0015441811341533013
+        },
+        "capture": {
+          "captures": [
+            {
+              "canonical_frames": 1024,
+              "capture_seed": 5700,
+              "family_ids": [
+                "abo/B07124WN22",
+                "abo/B0717B4RRW",
+                "abo/B0719WQH8S",
+                "abo/B0718ZKMW1",
+                "abo/B0718ZKMW1",
+                "abo/B07124WN22",
+                "abo/B0719WQH8S",
+                "abo/B0717B4RRW"
+              ],
+              "input_estimator": "independent-paths",
+              "input_frames": 1,
+              "input_max_bounces": 8,
+              "input_rng_schedule": "blade-frame-index; prefix-discard-once; retained [offset+1,offset+records*input_frames]",
+              "input_sample_offset": 0,
+              "light_motion": 0.05000000074505806,
+              "matching_path_depth": true,
+              "note": "Matching path depth is necessary, not sufficient, for a matched integrator. Copied-reference depth is unknown; null is not a match.",
+              "records": 64,
+              "reference_from": null,
+              "reference_max_bounces": 8,
+              "reference_sample_offset": 0,
+              "scene_seeds": [
+                5700,
+                2654433277,
+                5308867894,
+                7963310959
+              ],
+              "schema": 1
+            }
+          ]
+        },
+        "checkpoint": "runs/focused-2026-09-25/train/step-3500.safetensors",
+        "learned": {
+          "detail_ratio": 0.9052910575549501,
+          "energy_ratio": 1.0234796976411873,
+          "frames": 64,
+          "history_pixels": 3932160,
+          "linear_mse": 0.016518488635855207,
+          "low_frequency_psnr": 32.75486257335846,
+          "psnr": 29.037646988921825,
+          "rejected_history_fraction": 0.01624755859375,
+          "rejected_history_mse": 0.008642148513112366,
+          "rejected_history_pixels": 63888,
+          "relative_mse": 0.07833946497685168,
+          "reset_psnr": 26.553073574443182,
+          "resets": 4,
+          "ssim": 0.7878646934404969,
+          "temporal_frames": 60,
+          "temporal_mse": 0.0006473481376697704
+        },
+        "metric_space": "PSNR/SSIM: x/(1+x); energy: scene-linear; PNG: same compression then sRGB",
+        "rejected_history_space": "pixel-weighted compressed RGB MSE on non-reset pixels with unavailable reprojection in either lobe; includes disocclusions and out-of-frame motion, excludes reactive/learned gate suppression; empty regions are null",
+        "role": "evaluation",
+        "speed_claim": false
+      },
+      "sequences": 4,
+      "sequence_length": 16,
+      "frames_csv": "docs/results/abo.csv",
+      "regressed_frames": 0,
+      "minimum_frame_gain_db": 1.0346469999999997
+    }
+  },
+  "images": [
+    {
+      "path": "docs/results/procedural-guide.png",
+      "sha256": "565f3365c78d88f5a0d32ad2e947e968e0621ed3718b2844d95c1a08b64b3407",
+      "source": "runs/focused-2026-09-25/audit-procedural/000-007-base.png",
+      "size": [
+        256,
+        256
+      ],
+      "sequence": 0,
+      "frame": 7
+    },
+    {
+      "path": "docs/results/procedural-model.png",
+      "sha256": "3400090999c0525d481ad1525e87a6d8913005095a3ce24d633630d001588f68",
+      "source": "runs/focused-2026-09-25/audit-procedural/000-007-learned.png",
+      "size": [
+        256,
+        256
+      ],
+      "sequence": 0,
+      "frame": 7
+    },
+    {
+      "path": "docs/results/procedural-reference.png",
+      "sha256": "2e3ae46b7909bc08489b4f492e96c394284d1db5d7f9d01964006bce712fc209",
+      "source": "runs/focused-2026-09-25/audit-procedural/000-007-reference.png",
+      "size": [
+        256,
+        256
+      ],
+      "sequence": 0,
+      "frame": 7
+    },
+    {
+      "path": "docs/results/abo-guide.png",
+      "sha256": "fa4ecf2ed0b30bfc8cae5c4d966086bb4a4645d43f682890741e765c8c3b08b6",
+      "source": "runs/focused-2026-09-25/audit-abo/000-007-base.png",
+      "size": [
+        256,
+        256
+      ],
+      "sequence": 0,
+      "frame": 7
+    },
+    {
+      "path": "docs/results/abo-model.png",
+      "sha256": "6279245e9c7300a88208ba13f836723077a200e1ec7a38897d20ef18feea922e",
+      "source": "runs/focused-2026-09-25/audit-abo/000-007-learned.png",
+      "size": [
+        256,
+        256
+      ],
+      "sequence": 0,
+      "frame": 7
+    },
+    {
+      "path": "docs/results/abo-reference.png",
+      "sha256": "a4eee9379dbd78ea9110fbad5e46df1cca5e12d0d5739f829940c89763eb8865",
+      "source": "runs/focused-2026-09-25/audit-abo/000-007-reference.png",
+      "size": [
+        256,
+        256
+      ],
+      "sequence": 0,
+      "frame": 7
+    }
+  ],
+  "datasets": [
+    {
+      "name": "train-procedural",
+      "path": "runs/focused-2026-09-25/data/train-procedural.omd",
+      "sha256": "3448e738af1331f9ec0bb6204c1a30d2ccaf04efe846f9f1f3820b288226cc5b",
+      "provenance": {
+        "canonical_frames": 128,
+        "capture_seed": 700,
+        "family_ids": [],
+        "input_estimator": "independent-paths",
+        "input_frames": 1,
+        "input_max_bounces": 8,
+        "input_rng_schedule": "blade-frame-index; prefix-discard-once; retained [offset+1,offset+records*input_frames]",
+        "input_sample_offset": 0,
+        "light_motion": 0.05000000074505806,
+        "matching_path_depth": true,
+        "note": "Matching path depth is necessary, not sufficient, for a matched integrator. Copied-reference depth is unknown; null is not a match.",
+        "records": 256,
+        "reference_from": null,
+        "reference_max_bounces": 8,
+        "reference_sample_offset": 0,
+        "scene_seeds": [
+          700,
+          2654436101,
+          5308871118,
+          7963307927,
+          10617742424,
+          13272179233,
+          15926614250,
+          18581051059,
+          21235486580,
+          23889921341,
+          26544358278,
+          29198792783,
+          31853229584,
+          34507664601,
+          37162101410,
+          39816536939,
+          42470971692,
+          45125408757,
+          47779843518,
+          50434279943,
+          53088714952,
+          55743151761,
+          58397587290,
+          61052022051,
+          63706459108,
+          66360893869,
+          69015330422,
+          71669765183,
+          74324202112,
+          76978637641,
+          79633072402,
+          82287509467
+        ],
+        "schema": 1
+      }
+    },
+    {
+      "name": "train-abo",
+      "path": "runs/focused-2026-09-25/data/train-abo.omd",
+      "sha256": "0e1eaf5585a4f3b45b6ab1988387d7e6587a97aac5f02015110bccd7e4715e9a",
+      "provenance": {
+        "canonical_frames": 128,
+        "capture_seed": 2700,
+        "family_ids": [
+          "abo/B071F6VV2T",
+          "abo/B0719SNKSY",
+          "abo/B0718WYQ8D",
+          "abo/B07121RM99",
+          "abo/B0713T6W1C",
+          "abo/B0719WQH8N",
+          "abo/B07124WCSF",
+          "abo/B0714QGLVP",
+          "abo/B07149T97D",
+          "abo/B071FJR3S6",
+          "abo/B0714QGRSL",
+          "abo/B07124WCZY",
+          "abo/B071FJR3SR",
+          "abo/B07177355J",
+          "abo/B071FJR479",
+          "abo/B01M4OYBOI",
+          "abo/B071FJR46L",
+          "abo/B071FMSMH4",
+          "abo/B01M5BDH0H",
+          "abo/B0717B4Y3X",
+          "abo/B0714QGLSD",
+          "abo/B0719WQ4GK",
+          "abo/B01MDM0UWS",
+          "abo/B0719H3LG2",
+          "abo/B071F6VV2T",
+          "abo/B071FJR3S6",
+          "abo/B0719WQH8N",
+          "abo/B0719H3LG2",
+          "abo/B0714QGLVP",
+          "abo/B01MDM0UWS",
+          "abo/B01M4OYBOI",
+          "abo/B0719SNKSY"
+        ],
+        "input_estimator": "independent-paths",
+        "input_frames": 1,
+        "input_max_bounces": 8,
+        "input_rng_schedule": "blade-frame-index; prefix-discard-once; retained [offset+1,offset+records*input_frames]",
+        "input_sample_offset": 0,
+        "light_motion": 0.05000000074505806,
+        "matching_path_depth": true,
+        "note": "Matching path depth is necessary, not sufficient, for a matched integrator. Copied-reference depth is unknown; null is not a match.",
+        "records": 128,
+        "reference_from": null,
+        "reference_max_bounces": 8,
+        "reference_sample_offset": 0,
+        "scene_seeds": [
+          2700,
+          2654434101,
+          5308873214,
+          7963305895,
+          10617744488,
+          13272181265,
+          15926612186,
+          18581053059,
+          21235484484,
+          23889923341,
+          26544360374,
+          29198790783,
+          31853231648,
+          34507662569,
+          37162099346,
+          39816538971
+        ],
+        "schema": 1
+      }
+    },
+    {
+      "name": "dev-procedural",
+      "path": "runs/focused-2026-09-25/data/dev-procedural.omd",
+      "sha256": "17fc8243002165ea1eb5c6c7d37ab541745c7e6680f42fa20a641b4b08b5b2ea",
+      "provenance": {
+        "canonical_frames": 256,
+        "capture_seed": 1700,
+        "family_ids": [],
+        "input_estimator": "independent-paths",
+        "input_frames": 1,
+        "input_max_bounces": 8,
+        "input_rng_schedule": "blade-frame-index; prefix-discard-once; retained [offset+1,offset+records*input_frames]",
+        "input_sample_offset": 0,
+        "light_motion": 0.05000000074505806,
+        "matching_path_depth": true,
+        "note": "Matching path depth is necessary, not sufficient, for a matched integrator. Copied-reference depth is unknown; null is not a match.",
+        "records": 32,
+        "reference_from": null,
+        "reference_max_bounces": 8,
+        "reference_sample_offset": 0,
+        "scene_seeds": [
+          1700,
+          2654437149,
+          5308872150,
+          7963306895
+        ],
+        "schema": 1
+      }
+    },
+    {
+      "name": "dev-abo",
+      "path": "runs/focused-2026-09-25/data/dev-abo.omd",
+      "sha256": "c054f71c70022e8318dbfc86d20e5e45a07f11320b8d929479ff674fff730d78",
+      "provenance": {
+        "canonical_frames": 256,
+        "capture_seed": 3700,
+        "family_ids": [
+          "abo/B07124WCH8",
+          "abo/B01MT1NYLH",
+          "abo/B07124WMX5",
+          "abo/B07124WMZZ",
+          "abo/B01MT1NYLH",
+          "abo/B07124WCH8",
+          "abo/B07124WMZZ",
+          "abo/B07124WMX5"
+        ],
+        "input_estimator": "independent-paths",
+        "input_frames": 1,
+        "input_max_bounces": 8,
+        "input_rng_schedule": "blade-frame-index; prefix-discard-once; retained [offset+1,offset+records*input_frames]",
+        "input_sample_offset": 0,
+        "light_motion": 0.05000000074505806,
+        "matching_path_depth": true,
+        "note": "Matching path depth is necessary, not sufficient, for a matched integrator. Copied-reference depth is unknown; null is not a match.",
+        "records": 32,
+        "reference_from": null,
+        "reference_max_bounces": 8,
+        "reference_sample_offset": 0,
+        "scene_seeds": [
+          3700,
+          2654435277,
+          5308873990,
+          7963304799
+        ],
+        "schema": 1
+      }
+    },
+    {
+      "name": "audit-procedural",
+      "path": "runs/focused-2026-09-25/data/audit-procedural.omd",
+      "sha256": "fc48b1f2baaf316ea0bcdb088bf6c8432fe5df32273828ebcf00c39c75664795",
+      "provenance": {
+        "canonical_frames": 1024,
+        "capture_seed": 4700,
+        "family_ids": [],
+        "input_estimator": "independent-paths",
+        "input_frames": 1,
+        "input_max_bounces": 8,
+        "input_rng_schedule": "blade-frame-index; prefix-discard-once; retained [offset+1,offset+records*input_frames]",
+        "input_sample_offset": 0,
+        "light_motion": 0.05000000074505806,
+        "matching_path_depth": true,
+        "note": "Matching path depth is necessary, not sufficient, for a matched integrator. Copied-reference depth is unknown; null is not a match.",
+        "records": 64,
+        "reference_from": null,
+        "reference_max_bounces": 8,
+        "reference_sample_offset": 0,
+        "scene_seeds": [
+          4700,
+          2654432229,
+          5308866862,
+          7963311991
+        ],
+        "schema": 1
+      }
+    },
+    {
+      "name": "audit-abo",
+      "path": "runs/focused-2026-09-25/data/audit-abo.omd",
+      "sha256": "483edb9d9ee771f2fd4df08d7a895c1243331a51707b66d22db93560b183b8ed",
+      "provenance": {
+        "canonical_frames": 1024,
+        "capture_seed": 5700,
+        "family_ids": [
+          "abo/B07124WN22",
+          "abo/B0717B4RRW",
+          "abo/B0719WQH8S",
+          "abo/B0718ZKMW1",
+          "abo/B0718ZKMW1",
+          "abo/B07124WN22",
+          "abo/B0719WQH8S",
+          "abo/B0717B4RRW"
+        ],
+        "input_estimator": "independent-paths",
+        "input_frames": 1,
+        "input_max_bounces": 8,
+        "input_rng_schedule": "blade-frame-index; prefix-discard-once; retained [offset+1,offset+records*input_frames]",
+        "input_sample_offset": 0,
+        "light_motion": 0.05000000074505806,
+        "matching_path_depth": true,
+        "note": "Matching path depth is necessary, not sufficient, for a matched integrator. Copied-reference depth is unknown; null is not a match.",
+        "records": 64,
+        "reference_from": null,
+        "reference_max_bounces": 8,
+        "reference_sample_offset": 0,
+        "scene_seeds": [
+          5700,
+          2654433277,
+          5308867894,
+          7963310959
+        ],
+        "schema": 1
+      }
+    },
+    {
+      "name": "audit-noise",
+      "path": "runs/focused-2026-09-25/data/audit-noise.omd",
+      "sha256": "6f3fc9b2ef11778be62ed57f657a31eb2689ecc79bf2308fb2106a5beb34e934",
+      "provenance": {
+        "canonical_frames": 1024,
+        "capture_seed": 4700,
+        "family_ids": [],
+        "input_estimator": "independent-paths",
+        "input_frames": 1,
+        "input_max_bounces": 8,
+        "input_rng_schedule": "blade-frame-index; prefix-discard-once; retained [offset+1,offset+records*input_frames]",
+        "input_sample_offset": 0,
+        "light_motion": 0.05000000074505806,
+        "matching_path_depth": true,
+        "note": "Matching path depth is necessary, not sufficient, for a matched integrator. Copied-reference depth is unknown; null is not a match.",
+        "records": 16,
+        "reference_from": null,
+        "reference_max_bounces": 8,
+        "reference_sample_offset": 1024,
+        "scene_seeds": [
+          4700
+        ],
+        "schema": 1
+      }
+    },
+    {
+      "name": "audit-noise-abo",
+      "path": "runs/focused-2026-09-25/data/audit-noise-abo.omd",
+      "sha256": "5896b6161148a03888f1912496c65ad470ab55928ae94c6a7acae45dc9a903bd",
+      "provenance": {
+        "canonical_frames": 1024,
+        "capture_seed": 5700,
+        "family_ids": [
+          "abo/B07124WN22",
+          "abo/B0717B4RRW"
+        ],
+        "input_estimator": "independent-paths",
+        "input_frames": 1,
+        "input_max_bounces": 8,
+        "input_rng_schedule": "blade-frame-index; prefix-discard-once; retained [offset+1,offset+records*input_frames]",
+        "input_sample_offset": 0,
+        "light_motion": 0.05000000074505806,
+        "matching_path_depth": true,
+        "note": "Matching path depth is necessary, not sufficient, for a matched integrator. Copied-reference depth is unknown; null is not a match.",
+        "records": 16,
+        "reference_from": null,
+        "reference_max_bounces": 8,
+        "reference_sample_offset": 1024,
+        "scene_seeds": [
+          5700
+        ],
+        "schema": 1
+      }
+    }
+  ],
+  "commands": {
+    "capture-train-procedural": {
+      "command": [
+        "target/release/ommatidia-data",
+        "--out",
+        "runs/focused-2026-09-25/data/train-procedural.omd",
+        "--samples",
+        "32",
+        "--lr",
+        "64x64",
+        "--canonical-frames",
+        "128",
+        "--sequence-frames",
+        "8",
+        "--seed",
+        "700",
+        "--input-frames",
+        "1",
+        "--canopy",
+        "--textures",
+        "--gloss",
+        "--ground-patches",
+        "8",
+        "--random-camera-motion",
+        "0.03",
+        "--object-motion",
+        "0.03",
+        "--light-motion",
+        "0.05",
+        "--projection-jitter",
+        "--hr-gbuffer",
+        "--split-radiance",
+        "--device-id",
+        "0x744c",
+        "--preview",
+        "runs/focused-2026-09-25/data/train-preview"
+      ],
+      "status": "complete",
+      "exit_code": 0,
+      "validation_errors": 0,
+      "inputs": [
+        {
+          "path": "/x/Code/ommatidia/target/release/ommatidia-data",
+          "bytes": 9840888,
+          "sha256": "a32fcb152cfd84caa41c4a27eb0844dff47b91bb7da9f58ea29a019ad4cb88e9"
+        }
+      ]
+    },
+    "capture-train-abo": {
+      "command": [
+        "target/release/ommatidia-data",
+        "--out",
+        "runs/focused-2026-09-25/data/train-abo.omd",
+        "--samples",
+        "16",
+        "--lr",
+        "64x64",
+        "--canonical-frames",
+        "128",
+        "--sequence-frames",
+        "8",
+        "--seed",
+        "2700",
+        "--input-frames",
+        "1",
+        "--canopy",
+        "--textures",
+        "--gloss",
+        "--ground-patches",
+        "8",
+        "--random-camera-motion",
+        "0.03",
+        "--object-motion",
+        "0.03",
+        "--light-motion",
+        "0.05",
+        "--projection-jitter",
+        "--hr-gbuffer",
+        "--split-radiance",
+        "--device-id",
+        "0x744c",
+        "--catalog",
+        "data/catalog/catalog.json",
+        "--catalog-kind",
+        "object",
+        "--catalog-split",
+        "train",
+        "--catalog-objects",
+        "2",
+        "--catalog-target-extent",
+        "2",
+        "--preview",
+        "runs/focused-2026-09-25/data/abo-preview"
+      ],
+      "status": "complete",
+      "exit_code": 0,
+      "validation_errors": 0,
+      "inputs": [
+        {
+          "path": "/x/Code/ommatidia/target/release/ommatidia-data",
+          "bytes": 9840888,
+          "sha256": "a32fcb152cfd84caa41c4a27eb0844dff47b91bb7da9f58ea29a019ad4cb88e9"
+        },
+        {
+          "path": "/x/Code/ommatidia/data/catalog/catalog.json",
+          "bytes": 9794,
+          "sha256": "4851a90d4750b09117c60b0d413fb3df7eb43249dd073cc1856a3b88e1d5d1fc",
+          "snapshot": "input-1-catalog.json"
+        }
+      ]
+    },
+    "capture-dev-procedural": {
+      "command": [
+        "target/release/ommatidia-data",
+        "--out",
+        "runs/focused-2026-09-25/data/dev-procedural.omd",
+        "--samples",
+        "4",
+        "--lr",
+        "64x64",
+        "--canonical-frames",
+        "256",
+        "--sequence-frames",
+        "8",
+        "--seed",
+        "1700",
+        "--input-frames",
+        "1",
+        "--canopy",
+        "--textures",
+        "--gloss",
+        "--ground-patches",
+        "8",
+        "--random-camera-motion",
+        "0.03",
+        "--object-motion",
+        "0.03",
+        "--light-motion",
+        "0.05",
+        "--projection-jitter",
+        "--hr-gbuffer",
+        "--split-radiance",
+        "--device-id",
+        "0x744c"
+      ],
+      "status": "complete",
+      "exit_code": 0,
+      "validation_errors": 0,
+      "inputs": [
+        {
+          "path": "/x/Code/ommatidia/target/release/ommatidia-data",
+          "bytes": 9840888,
+          "sha256": "a32fcb152cfd84caa41c4a27eb0844dff47b91bb7da9f58ea29a019ad4cb88e9"
+        }
+      ]
+    },
+    "capture-dev-abo": {
+      "command": [
+        "target/release/ommatidia-data",
+        "--out",
+        "runs/focused-2026-09-25/data/dev-abo.omd",
+        "--samples",
+        "4",
+        "--lr",
+        "64x64",
+        "--canonical-frames",
+        "256",
+        "--sequence-frames",
+        "8",
+        "--seed",
+        "3700",
+        "--input-frames",
+        "1",
+        "--canopy",
+        "--textures",
+        "--gloss",
+        "--ground-patches",
+        "8",
+        "--random-camera-motion",
+        "0.03",
+        "--object-motion",
+        "0.03",
+        "--light-motion",
+        "0.05",
+        "--projection-jitter",
+        "--hr-gbuffer",
+        "--split-radiance",
+        "--device-id",
+        "0x744c",
+        "--catalog",
+        "runs/focused-2026-09-25/data/dev-catalog.json",
+        "--catalog-kind",
+        "object",
+        "--catalog-split",
+        "holdout",
+        "--catalog-objects",
+        "2",
+        "--catalog-target-extent",
+        "2"
+      ],
+      "status": "complete",
+      "exit_code": 0,
+      "validation_errors": 0,
+      "inputs": [
+        {
+          "path": "/x/Code/ommatidia/target/release/ommatidia-data",
+          "bytes": 9840888,
+          "sha256": "a32fcb152cfd84caa41c4a27eb0844dff47b91bb7da9f58ea29a019ad4cb88e9"
+        },
+        {
+          "path": "/x/Code/ommatidia/runs/focused-2026-09-25/data/dev-catalog.json",
+          "bytes": 1006,
+          "sha256": "87092e0dd351de116510b1186c7f375962f4dd4412ede54dc4c6ea7adfa9a119",
+          "snapshot": "input-1-dev-catalog.json"
+        }
+      ]
+    },
+    "capture-audit-procedural": {
+      "command": [
+        "target/release/ommatidia-data",
+        "--out",
+        "runs/focused-2026-09-25/data/audit-procedural.omd",
+        "--samples",
+        "4",
+        "--lr",
+        "128x128",
+        "--canonical-frames",
+        "1024",
+        "--sequence-frames",
+        "16",
+        "--seed",
+        "4700",
+        "--input-frames",
+        "1",
+        "--canopy",
+        "--textures",
+        "--gloss",
+        "--ground-patches",
+        "8",
+        "--random-camera-motion",
+        "0.03",
+        "--object-motion",
+        "0.03",
+        "--light-motion",
+        "0.05",
+        "--projection-jitter",
+        "--hr-gbuffer",
+        "--split-radiance",
+        "--device-id",
+        "0x744c"
+      ],
+      "status": "complete",
+      "exit_code": 0,
+      "validation_errors": 0,
+      "inputs": [
+        {
+          "path": "/x/Code/ommatidia/target/release/ommatidia-data",
+          "bytes": 9840888,
+          "sha256": "a32fcb152cfd84caa41c4a27eb0844dff47b91bb7da9f58ea29a019ad4cb88e9"
+        }
+      ]
+    },
+    "capture-audit-abo": {
+      "command": [
+        "target/release/ommatidia-data",
+        "--out",
+        "runs/focused-2026-09-25/data/audit-abo.omd",
+        "--samples",
+        "4",
+        "--lr",
+        "128x128",
+        "--canonical-frames",
+        "1024",
+        "--sequence-frames",
+        "16",
+        "--seed",
+        "5700",
+        "--input-frames",
+        "1",
+        "--canopy",
+        "--textures",
+        "--gloss",
+        "--ground-patches",
+        "8",
+        "--random-camera-motion",
+        "0.03",
+        "--object-motion",
+        "0.03",
+        "--light-motion",
+        "0.05",
+        "--projection-jitter",
+        "--hr-gbuffer",
+        "--split-radiance",
+        "--device-id",
+        "0x744c",
+        "--catalog",
+        "runs/focused-2026-09-25/data/audit-catalog.json",
+        "--catalog-kind",
+        "object",
+        "--catalog-split",
+        "holdout",
+        "--catalog-objects",
+        "2",
+        "--catalog-target-extent",
+        "2"
+      ],
+      "status": "complete",
+      "exit_code": 0,
+      "validation_errors": 0,
+      "inputs": [
+        {
+          "path": "/x/Code/ommatidia/target/release/ommatidia-data",
+          "bytes": 9840888,
+          "sha256": "a32fcb152cfd84caa41c4a27eb0844dff47b91bb7da9f58ea29a019ad4cb88e9"
+        },
+        {
+          "path": "/x/Code/ommatidia/runs/focused-2026-09-25/data/audit-catalog.json",
+          "bytes": 1006,
+          "sha256": "ff32ff36cfc5c628e0adc2bc2ae0ed83da3bfa3138b96b1a490d839612c8d003",
+          "snapshot": "input-1-audit-catalog.json"
+        }
+      ]
+    },
+    "capture-reference-noise": {
+      "command": [
+        "target/release/ommatidia-data",
+        "--out",
+        "runs/focused-2026-09-25/data/audit-noise.omd",
+        "--samples",
+        "1",
+        "--lr",
+        "128x128",
+        "--canonical-frames",
+        "1024",
+        "--reference-sample-offset",
+        "1024",
+        "--sequence-frames",
+        "16",
+        "--seed",
+        "4700",
+        "--input-frames",
+        "1",
+        "--canopy",
+        "--textures",
+        "--gloss",
+        "--ground-patches",
+        "8",
+        "--random-camera-motion",
+        "0.03",
+        "--object-motion",
+        "0.03",
+        "--light-motion",
+        "0.05",
+        "--projection-jitter",
+        "--hr-gbuffer",
+        "--split-radiance",
+        "--device-id",
+        "0x744c"
+      ],
+      "status": "complete",
+      "exit_code": 0,
+      "validation_errors": 0,
+      "inputs": [
+        {
+          "path": "/x/Code/ommatidia/target/release/ommatidia-data",
+          "bytes": 9840888,
+          "sha256": "a32fcb152cfd84caa41c4a27eb0844dff47b91bb7da9f58ea29a019ad4cb88e9"
+        }
+      ]
+    },
+    "capture-reference-noise-abo": {
+      "command": [
+        "target/release/ommatidia-data",
+        "--out",
+        "runs/focused-2026-09-25/data/audit-noise-abo.omd",
+        "--samples",
+        "1",
+        "--lr",
+        "128x128",
+        "--canonical-frames",
+        "1024",
+        "--reference-sample-offset",
+        "1024",
+        "--sequence-frames",
+        "16",
+        "--seed",
+        "5700",
+        "--input-frames",
+        "1",
+        "--canopy",
+        "--textures",
+        "--gloss",
+        "--ground-patches",
+        "8",
+        "--random-camera-motion",
+        "0.03",
+        "--object-motion",
+        "0.03",
+        "--light-motion",
+        "0.05",
+        "--projection-jitter",
+        "--hr-gbuffer",
+        "--split-radiance",
+        "--device-id",
+        "0x744c",
+        "--catalog",
+        "runs/focused-2026-09-25/data/audit-catalog.json",
+        "--catalog-kind",
+        "object",
+        "--catalog-split",
+        "holdout",
+        "--catalog-objects",
+        "2",
+        "--catalog-target-extent",
+        "2"
+      ],
+      "status": "complete",
+      "exit_code": 0,
+      "validation_errors": 0,
+      "inputs": [
+        {
+          "path": "/x/Code/ommatidia/target/release/ommatidia-data",
+          "bytes": 9840888,
+          "sha256": "a32fcb152cfd84caa41c4a27eb0844dff47b91bb7da9f58ea29a019ad4cb88e9"
+        },
+        {
+          "path": "/x/Code/ommatidia/runs/focused-2026-09-25/data/audit-catalog.json",
+          "bytes": 1006,
+          "sha256": "ff32ff36cfc5c628e0adc2bc2ae0ed83da3bfa3138b96b1a490d839612c8d003",
+          "snapshot": "input-1-audit-catalog.json"
+        }
+      ]
+    },
+    "evaluate-audit-procedural": {
+      "command": [
+        "target/release/transport",
+        "--eval-only",
+        "--checkpoint",
+        "runs/focused-2026-09-25/train/step-3500.safetensors",
+        "--eval-data",
+        "runs/focused-2026-09-25/data/audit-procedural.omd",
+        "--out",
+        "runs/focused-2026-09-25/audit-procedural",
+        "--device-id",
+        "0x744c"
+      ],
+      "status": "complete",
+      "exit_code": 0,
+      "validation_errors": 0,
+      "inputs": [
+        {
+          "path": "/x/Code/ommatidia/target/release/transport",
+          "bytes": 16101840,
+          "sha256": "97148dcb3fa8ead49a69dd8402af2a5de7af4d45fb194fdfb3191ca6a62c80d0"
+        },
+        {
+          "path": "/x/Code/ommatidia/runs/focused-2026-09-25/train/step-3500.safetensors",
+          "bytes": 2261920,
+          "sha256": "6c58120fbcb5f18978058749c616d1fab1b51dc77885cc852468b9f1b76fb367"
+        },
+        {
+          "path": "/x/Code/ommatidia/runs/focused-2026-09-25/data/audit-procedural.omd",
+          "bytes": 266338368,
+          "sha256": "fc48b1f2baaf316ea0bcdb088bf6c8432fe5df32273828ebcf00c39c75664795"
+        }
+      ]
+    },
+    "evaluate-audit-abo": {
+      "command": [
+        "target/release/transport",
+        "--eval-only",
+        "--checkpoint",
+        "runs/focused-2026-09-25/train/step-3500.safetensors",
+        "--eval-data",
+        "runs/focused-2026-09-25/data/audit-abo.omd",
+        "--out",
+        "runs/focused-2026-09-25/audit-abo",
+        "--device-id",
+        "0x744c"
+      ],
+      "status": "complete",
+      "exit_code": 0,
+      "validation_errors": 0,
+      "inputs": [
+        {
+          "path": "/x/Code/ommatidia/target/release/transport",
+          "bytes": 16101840,
+          "sha256": "97148dcb3fa8ead49a69dd8402af2a5de7af4d45fb194fdfb3191ca6a62c80d0"
+        },
+        {
+          "path": "/x/Code/ommatidia/runs/focused-2026-09-25/train/step-3500.safetensors",
+          "bytes": 2261920,
+          "sha256": "6c58120fbcb5f18978058749c616d1fab1b51dc77885cc852468b9f1b76fb367"
+        },
+        {
+          "path": "/x/Code/ommatidia/runs/focused-2026-09-25/data/audit-abo.omd",
+          "bytes": 266338368,
+          "sha256": "483edb9d9ee771f2fd4df08d7a895c1243331a51707b66d22db93560b183b8ed"
+        }
+      ]
+    }
+  },
+  "checks": {
+    "production-width-gradients": {
+      "command": [
+        "cargo",
+        "+1.92.0",
+        "test",
+        "-p",
+        "ommatidia",
+        "--test",
+        "transport",
+        "--locked",
+        "two_frame_training_matches_reference",
+        "--",
+        "--ignored",
+        "--nocapture",
+        "--test-threads=1"
+      ],
+      "status": "failed",
+      "exit_code": 0,
+      "validation_errors": 20
+    },
+    "production-lavapipe": {
+      "command": [
+        "cargo",
+        "+1.92.0",
+        "test",
+        "-p",
+        "ommatidia",
+        "--test",
+        "transport",
+        "--locked",
+        "--",
+        "--ignored",
+        "--nocapture",
+        "--test-threads=1"
+      ],
+      "status": "failed",
+      "exit_code": 0,
+      "validation_errors": 40
+    },
+    "numerical-features": {
+      "command": [
+        "cargo",
+        "test",
+        "-p",
+        "ommatidia",
+        "--test",
+        "transport",
+        "--",
+        "--ignored",
+        "--nocapture",
+        "--test-threads=1"
+      ],
+      "status": "failed",
+      "exit_code": 0,
+      "validation_errors": 39
+    },
+    "reload-parity": {
+      "command": [
+        "cargo",
+        "+1.92.0",
+        "test",
+        "-p",
+        "ommatidia",
+        "--test",
+        "transport",
+        "--locked",
+        "two_frame_bptt_learns_and_reloads",
+        "--",
+        "--ignored",
+        "--nocapture",
+        "--test-threads=1"
+      ],
+      "status": "failed",
+      "exit_code": 0,
+      "validation_errors": 10
+    },
+    "warm-start-smoke": {
+      "command": [
+        "target/release/transport",
+        "--data",
+        "runs/rebaseline-2026-09-25/transport-smoke/train.omd",
+        "--eval-data",
+        "runs/rebaseline-2026-09-25/transport-smoke/holdout.omd",
+        "--out",
+        "runs/focused-2026-09-25/warm-start",
+        "--checkpoint",
+        "runs/focused-2026-09-25/one-frame/model.safetensors",
+        "--steps",
+        "2",
+        "--unroll",
+        "1",
+        "--eval-every",
+        "0",
+        "--device-id",
+        "0x744c"
+      ],
+      "status": "complete",
+      "exit_code": 0,
+      "validation_errors": 0
+    },
+    "reference-noise": {
+      "command": [
+        "target/release/reference-noise",
+        "--a",
+        "runs/focused-2026-09-25/data/audit-procedural.omd",
+        "--b",
+        "runs/focused-2026-09-25/data/audit-noise.omd"
+      ],
+      "status": "complete",
+      "exit_code": 0,
+      "validation_errors": 0
+    },
+    "reference-noise-abo": {
+      "command": [
+        "target/release/reference-noise",
+        "--a",
+        "runs/focused-2026-09-25/data/audit-abo.omd",
+        "--b",
+        "runs/focused-2026-09-25/data/audit-noise-abo.omd"
+      ],
+      "status": "complete",
+      "exit_code": 0,
+      "validation_errors": 0
+    }
+  },
+  "reference_noise": {
+    "procedural": {
+      "frames": 16,
+      "pair_psnr_db": 36.89,
+      "estimated_single_reference_floor_db": 39.9,
+      "energy_b_over_a": 1.00001
+    },
+    "abo": {
+      "frames": 16,
+      "pair_psnr_db": 43.36,
+      "estimated_single_reference_floor_db": 46.37,
+      "energy_b_over_a": 0.999961
+    }
+  },
+  "limitations": [
+    "Small synthetic/object-in-room corpus, not game traces. Catalog membership does not guarantee visible asset coverage; these examples are primitive-dominated.",
+    "Output-resolution primary-surface observations are required.",
+    "Mean energy bias remains +1.0% procedural / +2.3% object scenes; residual specular noise and blotches remain.",
+    "Optimized training/evaluation use Meganeura's release default: Vulkan validation disabled. Debug numerical tests pass, but validation fails with VUID-StandaloneSpirv-None-10684.",
+    "No external-denoiser/DLSS or real-time performance claim."
+  ]
+}

@@ -4,26 +4,19 @@
 //! No ground-truth geometry, light or radiance can enter through the target API.
 pub mod cpu;
 pub mod graph;
-pub mod mixture;
 pub mod native;
-pub mod noise;
-pub mod olat;
-pub mod oracle;
 
 use crate::dataset::{Layout, Plane, Sample};
 use serde::{Deserialize, Serialize};
 
 pub const SCALES: usize = 5;
 pub const CANDIDATES: usize = SCALES + 1;
-pub const FEATURES: usize = 44;
-/// Positive selector multipliers must survive activation underflow.
-pub const MIN_MULTIPLIER: f32 = 1e-8;
+pub const FEATURES: usize = 52;
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Config {
     pub version: u32,
-    #[serde(default)]
-    pub mixture: mixture::Mode,
     pub scale: u32,
     pub channels: u32,
     /// Fixed feature/loss exposure. State and output remain scene-linear.
@@ -34,10 +27,9 @@ pub struct Config {
 impl Default for Config {
     fn default() -> Self {
         Self {
-            version: 1,
-            mixture: mixture::Mode::Softplus,
+            version: 3,
             scale: 2,
-            channels: 8,
+            channels: 16,
             exposure: 1.0,
             diffuse_frames: 32.0,
             specular_frames: 8.0,
@@ -46,7 +38,7 @@ impl Default for Config {
 }
 impl Config {
     pub fn validate(self, low: [u32; 2]) -> Result<(), String> {
-        if self.version != self.mixture.version()
+        if self.version != 3
             || !(1..=4).contains(&self.scale)
             || self.channels == 0
             || !self.exposure.is_finite()
@@ -56,7 +48,7 @@ impl Config {
                 .any(|v| !v.is_finite() || *v < 1.0)
             || low.iter().any(|v| *v < 4 || v % 4 != 0)
         {
-            return Err("transport requires a matching mixture/version, positive exposure/history, scale 1..4, and LR dimensions divisible by four".into());
+            return Err("transport requires residual model version 3, positive exposure/history, scale 1..4, and LR dimensions divisible by four".into());
         }
         Ok(())
     }

@@ -9,9 +9,7 @@
 //! the canonical path tracer at high resolution.
 
 mod catalog;
-mod field_capture;
 mod gbuffer;
-mod incident;
 mod radiance;
 mod render;
 mod scene;
@@ -25,12 +23,6 @@ use ommatidia::dataset::{self, InputSource, Layout, Plane, PlaneSet, Sample};
 use ommatidia::rng::Rng;
 
 struct Args {
-    field_views: usize,
-    scene_labels: bool,
-    surface_labels: bool,
-    lighting_seed: Option<u64>,
-    incident_probes: usize,
-    incident_batches: u32,
     out: PathBuf,
     samples: usize,
     lr_width: u32,
@@ -59,7 +51,6 @@ struct Args {
     hr_gbuffer: bool,
     svgf_input: bool,
     restir_input: bool,
-    checkpoint: Option<PathBuf>,
     reference_from: Option<PathBuf>,
     device_id: Option<u32>,
     shader_dir: Option<PathBuf>,
@@ -75,12 +66,6 @@ struct Args {
 impl Default for Args {
     fn default() -> Self {
         Self {
-            field_views: 0,
-            scene_labels: false,
-            surface_labels: false,
-            lighting_seed: None,
-            incident_probes: 0,
-            incident_batches: 8,
             out: PathBuf::from("data/train.omd"),
             samples: 64,
             lr_width: 128,
@@ -109,7 +94,6 @@ impl Default for Args {
             hr_gbuffer: false,
             svgf_input: false,
             restir_input: false,
-            checkpoint: None,
             reference_from: None,
             device_id: None,
             shader_dir: None,
@@ -129,12 +113,6 @@ generate an ommatidia training set
 
 usage: ommatidia-data [options]
 
-  --surface-labels         target-only first surfaces; centre-sample matching RGB
-  --incident-probes N       directional light targets per static scene [0]
-  --incident-batches N      independent four-path batches per probe [8, >=2]
-  --field-views N           static posed-RGB orbit; write target-only .scene.json
-  --scene-labels            annotate procedural static scenes and centered cameras
-  --lighting-seed N         vary emitter RGB while preserving geometry/cameras
   --out PATH                where to write the dataset  [data/train.omd]
   --samples N               number of scene/camera pairs  [64]
   --lr WxH                  low resolution extent  [128x128]
@@ -188,8 +166,6 @@ usage: ommatidia-data [options]
                             instead of raw ReSTIR; baseline comparisons only
   --restir-input            capture raw ReSTIR instead of sparse path tracing;
                             baseline comparisons only
-  --checkpoint STEM         also run this Ommatidium checkpoint directly on
-                            the live Blade views and write predicted previews
   --reference-from PATH     copy high-resolution records from a matched .omd;
                             moving captures require matching frame sequences
                             instead of rendering them again
@@ -220,30 +196,6 @@ fn parse_args() -> Result<Args, String> {
             "-h" | "--help" => {
                 print!("{USAGE}");
                 std::process::exit(0);
-            }
-            "--field-views" => {
-                args.field_views = value()?
-                    .parse()
-                    .map_err(|e| format!("--field-views: {e}"))?
-            }
-            "--scene-labels" => args.scene_labels = true,
-            "--surface-labels" => args.surface_labels = true,
-            "--incident-probes" => {
-                args.incident_probes = value()?
-                    .parse()
-                    .map_err(|e| format!("--incident-probes: {e}"))?
-            }
-            "--incident-batches" => {
-                args.incident_batches = value()?
-                    .parse()
-                    .map_err(|e| format!("--incident-batches: {e}"))?
-            }
-            "--lighting-seed" => {
-                args.lighting_seed = Some(
-                    value()?
-                        .parse()
-                        .map_err(|e| format!("--lighting-seed: {e}"))?,
-                )
             }
             "--out" => args.out = PathBuf::from(value()?),
             "--samples" => {
@@ -333,7 +285,6 @@ fn parse_args() -> Result<Args, String> {
             "--hr-gbuffer" => args.hr_gbuffer = true,
             "--svgf-input" => args.svgf_input = true,
             "--restir-input" => args.restir_input = true,
-            "--checkpoint" => args.checkpoint = Some(PathBuf::from(value()?)),
             "--reference-from" => args.reference_from = Some(PathBuf::from(value()?)),
             "--catalog" => args.catalog = Some(PathBuf::from(value()?)),
             "--catalog-split" => args.catalog_split = Some(catalog::Split::parse(&value()?)?),
@@ -367,57 +318,14 @@ fn parse_args() -> Result<Args, String> {
             other => return Err(format!("unknown option {other:?}\n\n{USAGE}")),
         }
     }
-    if args.field_views != 0 {
-        if args.field_views < 3 || args.field_views > 256 {
-            return Err("--field-views must be 3..256".into());
-        }
-        args.sequence_frames = args.field_views;
-        args.scene_labels = true;
-        args.gbuffer = false;
-        args.hr_gbuffer = false;
-        args.split_radiance = false;
-    }
-    if args.scale == 0 || (args.scale < 2 && !args.scene_labels) {
-        return Err("scale must be >=2, or >=1 for labelled static captures".into());
-    }
-    if args.scene_labels
-        && (args.catalog.is_some()
-            || args.reference_from.is_some()
-            || args.object_motion != 0.0
-            || args.light_motion != 0.0
-            || args.projection_jitter
-            || args.camera_motion != 0.0
-            || args.random_camera_motion != 0.0
-            || args.restir_input
-            || args.svgf_input
-            || args.checkpoint.is_some())
-    {
-        return Err("scene labels currently require procedural static scenes, centered cameras and rendered path references; use --field-views for camera variation".into());
-    }
-    if args.surface_labels && !args.scene_labels {
-        return Err("--surface-labels requires static scene labels or --field-views".into());
-    }
-    if args.lighting_seed.is_some() && !args.scene_labels {
-        return Err("--lighting-seed requires --scene-labels or --field-views".into());
-    }
-    if args.incident_probes > 0
-        && (!args.scene_labels
-            || args.incident_probes > 65536
-            || !(2..=4096).contains(&args.incident_batches)
-            || args.canonical_bounces > 64)
-    {
-        return Err("incident probes need static scene labels, <=65536 probes, 2..4096 batches and <=64 bounces".into());
+    if !(1..=4).contains(&args.scale) {
+        return Err("scale must be 1..4".into());
     }
     if args.samples == 0 {
         return Err("--samples must be positive".into());
     }
-    if args.input_sample_offset != 0
-        && (args.svgf_input || args.restir_input || args.checkpoint.is_some())
-    {
-        return Err(
-            "--input-sample-offset requires independent paths, not ReSTIR or checkpoint capture"
-                .into(),
-        );
+    if args.input_sample_offset != 0 && (args.svgf_input || args.restir_input) {
+        return Err("--input-sample-offset requires independent paths, not ReSTIR".into());
     }
     if args
         .samples
@@ -1055,37 +963,22 @@ fn main() {
     let reference_has_hr_gbuffer = reference_reader
         .as_ref()
         .is_some_and(|reader| args.hr_gbuffer && reader.layout().hr_planes == layout.hr_planes);
-    let need_hr_render = args.reference_from.is_none()
-        || (args.hr_gbuffer && (!reference_has_hr_gbuffer || args.checkpoint.is_some()));
+    let need_hr_render =
+        args.reference_from.is_none() || (args.hr_gbuffer && (!reference_has_hr_gbuffer));
     let mut hr_renderer = need_hr_render.then(|| make_renderer(&harness, &mut encoder, hr_size));
     let lr_target = render::Target::new(&context, lr_size);
-    let mut incident_tracer =
-        (args.incident_probes > 0).then(|| incident::Tracer::new(&harness, &mut encoder));
     let hr_target = need_hr_render.then(|| render::Target::new(&context, hr_size));
-    let neural_target = args
-        .checkpoint
-        .as_ref()
-        .map(|_| render::NeuralTarget::new(&context, hr_size));
-    let mut upscaler = args.checkpoint.as_ref().map(|stem| {
-        ommatidia::Upscaler::from_checkpoint_for_extent(
-            context.clone(),
-            stem,
-            [lr_size.width, lr_size.height],
-            1,
-            1000,
-        )
-        .unwrap_or_else(|e| panic!("cannot load {}: {e}", stem.display()))
-    });
     let lr_probe = args
         .gbuffer
         .then(|| gbuffer::Probe::new(&context, lr_size, args.sequence_frames > 1));
-    let hr_probe = (args.hr_gbuffer || args.surface_labels)
+    let hr_probe = args
+        .hr_gbuffer
         .then(|| gbuffer::Probe::new(&context, hr_size, has_motion));
     let lr_radiance_probe = args
         .split_radiance
         .then(|| radiance::Probe::new(&context, lr_size));
-    let hr_radiance_probe = ((args.split_radiance || args.surface_labels) && need_hr_render)
-        .then(|| radiance::Probe::new(&context, hr_size));
+    let hr_radiance_probe =
+        (args.split_radiance && need_hr_render).then(|| radiance::Probe::new(&context, hr_size));
     let sync_point = context.submit(&mut encoder);
     assert!(
         context.wait_for(&sync_point, 30_000).unwrap(),
@@ -1181,20 +1074,6 @@ fn main() {
 
     let palette = TexturePalette::bake(&harness, args.seed);
 
-    let mut field_manifest = ommatidia::field::Manifest {
-        version: if args.surface_labels {
-            3
-        } else if args.incident_probes > 0 {
-            2
-        } else {
-            1
-        },
-        rgb_space: "scene-linear-renderer-units".into(),
-        static_scene: true,
-        extent: [hr_size.width, hr_size.height],
-        scenes: Vec::new(),
-        records: Vec::new(),
-    };
     let mut active_sequence: Option<ActiveSequence> = None;
     for index in 0..record_count {
         let scene_index = index / args.sequence_frames;
@@ -1208,7 +1087,6 @@ fn main() {
                 None => interior_pool.is_some() && (object_pool.is_none() || rng.uniform() < 0.5),
             };
             let mut objects = Vec::new();
-            let mut incident_queries = Vec::new();
             let mut record = catalog::SceneRecord {
                 index: scene_index,
                 ids: Vec::new(),
@@ -1266,25 +1144,10 @@ fn main() {
                 moving_start = objects.len();
                 record.kind = catalog::Kind::Interior;
             } else {
-                let mut geometries = scene::build(
+                let geometries = scene::build(
                     &scene_config,
                     args.seed ^ (scene_index as u64).wrapping_mul(0x9E37_79B9),
                 );
-                let scene_seed = args.seed ^ (scene_index as u64).wrapping_mul(0x9E37_79B9);
-                let lighting_seed = args.lighting_seed.map(|seed| seed ^ scene_seed);
-                field_capture::relight(&mut geometries, lighting_seed);
-                if args.incident_probes > 0 {
-                    incident_queries =
-                        incident::queries(&geometries, args.incident_probes, scene_seed);
-                }
-                if args.scene_labels {
-                    field_manifest.scenes.push(field_capture::labels(
-                        &geometries,
-                        scene_seed,
-                        lighting_seed,
-                        scene_config.spread,
-                    ));
-                }
                 let (lights, geometries): (Vec<_>, Vec<_>) =
                     geometries.into_iter().partition(|s| {
                         args.light_motion != 0.0
@@ -1342,24 +1205,6 @@ fn main() {
             if catalog.is_some() {
                 scene_records.push(record);
             }
-            if let Some(tracer) = &mut incident_tracer {
-                let capture = tracer
-                    .capture(
-                        &harness,
-                        &mut encoder,
-                        &mut objects,
-                        &incident_queries,
-                        args.canonical_bounces,
-                        args.incident_batches,
-                    )
-                    .expect("incident-radiance capture failed");
-                println!(
-                    "captured {} incident probes × {} independent four-path batches",
-                    capture.probes.len(),
-                    capture.batches
-                );
-                field_manifest.scenes.last_mut().unwrap().incident = Some(capture);
-            }
             active_sequence = Some(ActiveSequence {
                 base_transforms: objects.iter().map(|o| o.transform).collect(),
                 light_indices,
@@ -1371,11 +1216,7 @@ fn main() {
         }
         let sequence = active_sequence.as_mut().expect("sequence was initialized");
         sequence.animate_objects(sequence_frame, args.object_motion, args.light_motion);
-        let mut camera = if args.field_views != 0 {
-            field_capture::orbit(&scene_config, sequence_frame, args.field_views)
-        } else {
-            sequence.base_camera
-        };
+        let mut camera = sequence.base_camera;
         camera.pos.x += args.camera_motion * sequence_frame as f32;
         let random_offset = scene::camera_motion(
             sequence.motion_seed,
@@ -1396,14 +1237,6 @@ fn main() {
             camera
         };
 
-        if args.scene_labels {
-            field_manifest.records.push(ommatidia::field::ViewRecord {
-                surface: None,
-                sample: index,
-                scene: scene_index,
-                camera: field_capture::camera(camera),
-            });
-        }
         let input_pass = if args.svgf_input || args.restir_input {
             render::Pass::RealTime
         } else {
@@ -1445,7 +1278,7 @@ fn main() {
                     .fold(0.0, f32::max),
             );
         }
-        let (mut hr, reference_lr) = if let Some(reader) = &mut reference_reader {
+        let (hr, reference_lr) = if let Some(reader) = &mut reference_reader {
             let source_layout = *reader.layout();
             let source_index = if reader.sequence_length() == 1 {
                 scene_index
@@ -1456,9 +1289,7 @@ fn main() {
                 .sample(source_index)
                 .unwrap_or_else(|e| panic!("cannot read reference sample {source_index}: {e}"));
             let color_len = Plane::Color.channels() * source_layout.hr_texels();
-            let gbuffer = if args.hr_gbuffer
-                && (args.checkpoint.is_some() || !reference_has_hr_gbuffer)
-            {
+            let gbuffer = if args.hr_gbuffer && !reference_has_hr_gbuffer {
                 render::capture(
                     hr_renderer.as_mut().expect("HR G-buffer renderer exists"),
                     hr_target.as_ref().expect("HR G-buffer target exists"),
@@ -1540,19 +1371,6 @@ fn main() {
             )
         };
 
-        if args.surface_labels {
-            field_manifest.records.last_mut().unwrap().surface = Some(
-                field_capture::surface_labels(&hr, layout.hr_texels(), camera.depth)
-                    .expect("invalid centre-ray surface capture"),
-            );
-            // These readbacks are training labels, not additional OMD input planes.
-            if !args.hr_gbuffer {
-                hr.gbuffer = None;
-            }
-            if !args.split_radiance {
-                hr.radiance = None;
-            }
-        }
         if args.split_radiance && index == 0 {
             report_lobe_reconstruction("input", &lr, layout.lr_texels());
             report_lobe_reconstruction("reference", &hr, layout.hr_texels());
@@ -1574,39 +1392,6 @@ fn main() {
             );
         }
 
-        let predicted = match (&mut upscaler, &neural_target) {
-            (Some(upscaler), Some(target)) => {
-                encoder.start();
-                encoder.init_texture(target.texture());
-                let inputs = if input_pass == render::Pass::RealTime {
-                    ommatidia::FrameInputs::from_blade(&lr_renderer)
-                } else {
-                    ommatidia::FrameInputs::from_color_and_blade_gbuffer(
-                        lr_target.view(),
-                        lr_renderer.view_gbuffer(),
-                    )
-                };
-                let inputs = if args.projection_jitter {
-                    inputs.with_jitter(jitter)
-                } else {
-                    inputs
-                };
-                let inputs = if args.hr_gbuffer {
-                    inputs.with_blade_high_resolution_gbuffer(
-                        hr_renderer
-                            .as_ref()
-                            .expect("HR G-buffer renderer exists")
-                            .view_gbuffer(),
-                    )
-                } else {
-                    inputs
-                };
-                upscaler.upscale(&mut encoder, &inputs, target.view());
-                Some(target.read_linear(&context, &mut encoder))
-            }
-            _ => None,
-        };
-
         if let Some(ref dir) = args.preview
             && index < 4
         {
@@ -1622,14 +1407,6 @@ fn main() {
                 hr_size.width,
                 hr_size.height,
             );
-            if let Some(ref predicted) = predicted {
-                write_preview(
-                    &dir.join(format!("{index:03}-predicted.png")),
-                    predicted,
-                    hr_size.width,
-                    hr_size.height,
-                );
-            }
         }
 
         let mut record = to_record(&lr, layout.lr_texels());
@@ -1667,16 +1444,6 @@ fn main() {
     }
 
     let count = writer.finish().expect("cannot finish the dataset");
-    if args.scene_labels {
-        field_manifest
-            .validate(count as usize)
-            .expect("invalid scene labels");
-        std::fs::write(
-            args.out.with_extension("scene.json"),
-            serde_json::to_vec_pretty(&field_manifest).unwrap(),
-        )
-        .expect("cannot write scene labels");
-    }
     // The legacy OMD binary does not store transport depth. Keep an explicit
     // capture sidecar; copied references have unknown depth unless audited,
     // so never label them matched merely from today's command-line defaults.
@@ -1770,18 +1537,9 @@ fn main() {
     if let Some(probe) = hr_radiance_probe {
         probe.destroy(&context);
     }
-    if let Some(mut upscaler) = upscaler {
-        upscaler.destroy();
-    }
-    if let Some(target) = neural_target {
-        target.destroy(&context);
-    }
     lr_target.destroy(&context);
     if let Some(target) = hr_target {
         target.destroy(&context);
-    }
-    if let Some(tracer) = incident_tracer {
-        tracer.destroy(&context);
     }
     lr_renderer.destroy(&context);
     if let Some(mut renderer) = hr_renderer {

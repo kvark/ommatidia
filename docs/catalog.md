@@ -1,9 +1,8 @@
 # External scene catalog
 
 The generator can place published glTF assets in its procedural rooms, or load
-an authored interior as the whole scene. That is the data-scale path in the
-[`quality roadmap`](quality-roadmap.md): new geometry and material families,
-held out by asset identity, without growing the network.
+an authored interior as the whole scene. New geometry and material families are held out by asset identity, without
+adding another architecture.
 
 The runtime does not vendor the meshes. `scripts/fetch-catalog.py` downloads a
 small ABO subset into `data/catalog/`, which `.gitignore` already excludes.
@@ -18,8 +17,8 @@ small ABO subset into `data/catalog/`, which `.gitignore` already excludes.
 
 Do not commit those binaries. A published Ommatidium dataset or checkpoint that
 includes HSSD or DTC renderings inherits those licenses; ABO 3D-model
-renderings need Amazon.com attribution. The existing Hugging Face procedural
-sets stay the redistributable default.
+renderings need Amazon.com attribution. Historical published weights/datasets are not compatible with the current
+model/data contract; do not silently reinterpret their sidecars.
 
 ## Catalog file
 
@@ -105,65 +104,25 @@ DTC assets still require the Project Aria form. All sources use this schema.
 
 ## Capture
 
-Object scenes keep canopy, lights, textures, and gloss. Authored meshes supply
-silhouettes and materials the procedural palette cannot. Interior scenes drop
-the procedural room. `--reference-from` copies the expensive 16,384-spp target
-onto a 16-frame 1-spp sequence; both runs of a pair must share `--seed`.
+Object scenes keep canopy, lights, textures and gloss. Authored meshes supply
+silhouettes and materials absent from the procedural palette. Interior capture
+is supported by the generator but is not part of the current reported training.
 
 ```sh
-python3 scripts/fetch-catalog.py --out data/catalog --train 24 --holdout 8
-./scripts/fetch-hssd-scenes.sh data/catalog \
-    train:102343992 holdout:102344022
-
-./scripts/capture-catalog.sh
+cargo build --release --workspace
+DEVICE_ID=0x744c CAPTURE_ROOT=data/catalog-recurrent bash scripts/capture-catalog.sh
 ```
 
-`scripts/capture-catalog.sh` writes:
-
-| file | contents |
-|---|---|
-| `data/catalog-abo-train-reference.omd` | 24 ABO objects, 16,384 spp |
-| `data/catalog-abo-train.omd` | same scenes, 16× 1-spp jittered |
-| `data/catalog-abo-holdout-reference.omd` | 8 held-out ABO objects |
-| `data/catalog-abo-holdout.omd` | matching 16-frame inputs |
-| `data/catalog-hssd-*-reference.omd` | HSSD furnished interiors, 16,384 spp |
-| `data/catalog-hssd-*.omd` | matching 16-frame furnished inputs |
-
-For the HSSD arm the capture script derives `data/catalog/furnished.json` and
-admits only interior entries with a Habitat `scene`; old stage-only entries
-cannot silently turn the furnished corpus back into empty shells.
+The script creates fresh moving 64→128, eight-frame sequences, with 1-spp inputs
+and 1,024-spp references at matching eight-bounce depth. It refuses to reuse an
+existing output directory. It does not copy historical static references.
+The generic script splits train/holdout; divide the latter's catalog families
+again before using it for both model selection and a final audit.
 
 The checked-in fixture at `ommatidia-data/tests/fixtures/catalog.json` points at
 Blade's example glTFs and is what the unit tests load. It is not a quality set.
 
-## Train against a disjoint audit
+## Train against disjoint scenes
 
-`--eval-data` scores a second file and uses every sequence in each `--data`
-for fitting. Repeat `--data` to alternate whole optimizer batches equally
-between corpora, rather than letting the largest file dominate. `--audit-data`
-is scored once after the final checkpoint; periodic model selection never
-reads it.
-
-```sh
-cargo run --release -p ommatidia-train -- \
-    --data data/lobe-scale-oracle-1spp-16f-32.omd \
-    --data data/catalog-abo-train.omd \
-    --eval-data data/catalog-abo-holdout.omd \
-    --audit-data data/fresh-procedural-audit.omd \
-    --prediction low-color --reconstruction-base split-guided \
-    --history-frames 16 --temporal-features phase-lobes \
-    --steps 4000 --lr 3e-4 --lr-final 1e-5 \
-    --eval-every 1000 --checkpoint-every 1000 --eval-crops 2048 \
-    --eval-out runs/catalog-b8-split/eval \
-    --out runs/catalog-b8-split
-```
-
-This low-color head predicts one correction per input pixel, bilinearly applies
-it over the fixed output-resolution split-lobe estimate, and therefore cannot
-redraw its high-frequency geometry. It is the constrained B8 experiment after
-the unconstrained subpixel residual sharpened noise and lost SSIM.
-
-Repeat B8 on that pair before B16. Only a model that improves SSIM and the
-visible full-frame result on the hold-out earns a native runtime contract.
-An audit named in an earlier result is no longer untouched; make a fresh seed
-family for each promotion decision rather than recycling its filename.
+See [training and evaluation](evaluation.md) for the single trainer, metrics,
+checkpoint selection, reference-noise checks and final-audit requirements.

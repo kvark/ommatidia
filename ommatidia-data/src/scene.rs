@@ -645,15 +645,19 @@ pub fn camera(config: &SceneConfig, rng: &mut Rng) -> blade_render::Camera {
     // The canopy closes the +X side of the scene with a wall. A camera sampled
     // behind that wall sees its unlit back face fill almost the whole frame,
     // producing a technically valid but useless near-black training sample.
-    // Keep canopy cameras in the open -X hemisphere; the target still varies
-    // over a full half-circle and remains off-centre below.
+    // Both +X and +Z are closed. Stay in the open -X/-Z quadrant and below
+    // the roof; looking through either wall gives an unlit, near-black frame.
     let azimuth = if config.canopy {
-        std::f32::consts::FRAC_PI_2 + std::f32::consts::PI * rng.uniform()
+        std::f32::consts::PI + std::f32::consts::FRAC_PI_2 * rng.uniform()
     } else {
         std::f32::consts::TAU * rng.uniform()
     };
     // Kept off the horizon and off straight-down: both degenerate framings.
-    let elevation = 0.15 + 0.5 * rng.uniform();
+    let elevation = if config.canopy {
+        0.12 + 0.2 * rng.uniform()
+    } else {
+        0.15 + 0.5 * rng.uniform()
+    };
     let distance = config.spread * (1.4 + 0.8 * rng.uniform());
 
     let position = [
@@ -907,7 +911,9 @@ mod tests {
         };
         let mut rng = Rng::new(17);
         for _ in 0..1_000 {
-            assert!(camera(&config, &mut rng).pos.x <= 1.0e-5);
+            let p = camera(&config, &mut rng).pos;
+            assert!(p.x <= 1.0e-5 && p.z <= 1.0e-5);
+            assert!(p.y < config.spread * 0.85, "camera looks through the roof");
         }
     }
 

@@ -272,35 +272,14 @@ impl Native {
         self.context.destroy_command_encoder(&mut encoder);
         Ok(rgb)
     }
-    /// Offline readback after a completed resolve. No targets accepted; no
-    /// history or parameters mutated. Reads actual GPU-prepared candidates.
-    pub fn read_candidates(&self) -> super::oracle::Candidates {
-        let n = (self.low[0] * self.low[1] * self.config.scale.pow(2)) as usize;
-        let read = |name: &str, len| {
-            let buffer = self
-                .session
-                .plan()
-                .input_buffers
-                .iter()
-                .find(|(n, _)| n == name)
-                .unwrap()
-                .1;
-            let mut values = vec![0.0; len];
-            self.session.read_buffer(buffer, &mut values);
-            values
-        };
-        let mut selected = vec![0.0; CANDIDATES * 2 * n];
-        self.session.read_output_by_index(1, &mut selected);
-        super::oracle::Candidates {
-            spatial: read("f0.candidates", SCALES * 6 * n),
-            history: read("f0.history", 6 * n),
-            prior: read("f0.prior", CANDIDATES * 2 * n),
-            selected,
-        }
-    }
     /// Offline readback after a completed process/resolve. These are the actual
     /// per-lobe reprojection masks fed to the predictor, not learned gate values.
     pub fn read_history_validity(&self) -> Vec<f32> {
+        let n = (self.low[0] * self.low[1] * self.config.scale.pow(2)) as usize;
+        self.read_features()[42 * n..44 * n].to_vec()
+    }
+    /// Offline parity check of the actual inputs prepared by WGSL.
+    pub fn read_features(&self) -> Vec<f32> {
         let n = (self.low[0] * self.low[1] * self.config.scale.pow(2)) as usize;
         let buffer = self
             .session
@@ -312,7 +291,7 @@ impl Native {
             .1;
         let mut features = vec![0.0; FEATURES * n];
         self.session.read_buffer(buffer, &mut features);
-        features.split_off(42 * n)
+        features
     }
     /// Only call after waiting for the resolve submission.
     pub fn read_state(&self) -> Vec<State> {

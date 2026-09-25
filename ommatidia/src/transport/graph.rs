@@ -6,33 +6,30 @@ use meganeura::{Graph, NodeId};
 use crate::neural::Builder;
 pub use crate::neural::Network;
 
-/// Training-only objective coefficients. Defaults preserve the prior objective.
+/// One objective: displayed RGB, linear energy, coarse structure, and temporal change.
 #[derive(Clone, Copy, Debug, serde::Serialize)]
 pub struct LossWeights {
     pub compressed: f32,
     pub physical: f32,
     pub low_frequency: f32,
-    pub confidence: f32,
     pub temporal: f32,
 }
 impl Default for LossWeights {
     fn default() -> Self {
         Self {
             compressed: 1.0,
-            physical: 0.1,
-            low_frequency: 0.05,
-            confidence: 0.01,
-            temporal: 0.01,
+            physical: 0.005,
+            low_frequency: 0.01,
+            temporal: 0.02,
         }
     }
 }
 impl LossWeights {
-    fn values(self) -> [f32; 5] {
+    fn values(self) -> [f32; 4] {
         [
             self.compressed,
             self.physical,
             self.low_frequency,
-            self.confidence,
             self.temporal,
         ]
     }
@@ -104,35 +101,6 @@ fn scaled_mse(g: &mut Graph, a: NodeId, b: NodeId, scale: NodeId) -> NodeId {
 /// `unroll == 0` builds inference; positive values build a tied-weight training
 /// graph. Geometry, rejection maps and moments are detached, radiance is not.
 pub fn build(config: Config, low: [u32; 2], unroll: usize) -> Result<Network, String> {
-    build_projected(config, low, unroll, false)
-}
-
-/// Target-only projected-colour supervision, without new inference parameters.
-/// A zero coefficient retains the paired training graph.
-pub fn build_projected(
-    config: Config,
-    low: [u32; 2],
-    unroll: usize,
-    projected: bool,
-) -> Result<Network, String> {
-    build_objective(config, low, unroll, projected, false)
-}
-
-/// Spatial losses may score the actual displayed radiance. Temporal/confidence
-/// objectives retain their lobe contracts; rendering and recurrence are unchanged.
-pub fn build_objective(
-    config: Config,
-    low: [u32; 2],
-    unroll: usize,
-    projected: bool,
-    rgb_loss: bool,
-) -> Result<Network, String> {
-    if rgb_loss && unroll == 0 {
-        return Err("RGB loss is training-only".into());
-    }
-    if projected && unroll == 0 {
-        return Err("projected supervision is training-only".into());
-    }
     config.validate(low)?;
     if unroll > 8 {
         return Err("unroll must be at most eight".into());
@@ -141,11 +109,10 @@ pub fn build_objective(
     let spatial = low[0] * low[1];
     let n = (slots * spatial) as usize;
     let mut b = Builder::new();
-    let objective_weights: Option<[NodeId; 5]> = (unroll > 0).then(|| {
-        let input = b.g.input("loss.weights", &[5]);
-        split(&mut b.g, input, 5, 1, 1).try_into().unwrap()
+    let objective_weights: Option<[NodeId; 4]> = (unroll > 0).then(|| {
+        let input = b.g.input("loss.weights", &[4]);
+        split(&mut b.g, input, 4, 1, 1).try_into().unwrap()
     });
-    let projected_weight = projected.then(|| b.g.input("loss.projected_weight", &[1]));
     let mut previous = None;
     let mut previous_target = None;
     let mut total_loss = None;
@@ -176,60 +143,22 @@ pub fn build_objective(
             low,
             config.channels,
         );
-        let logits = b.conv(
+        let residual = b.conv(
             features,
-            "head.lobe_candidates",
+            "head.radiance",
             [config.channels, low[0], low[1]],
-            2 * CANDIDATES as u32 * slots,
+            6 * slots,
             1,
             true,
         );
         let prior = b.g.input(&format!("{tag}.prior"), &[CANDIDATES * 2 * n]);
-        let ws = match config.mixture {
-            mixture::Mode::Softplus => {
-                let multiplier = b.g.softplus(logits, 1.0);
-                // Match the scalar reference. Softplus can round to zero for negative
-                // logits; dividing zero weights by an added epsilon invents black.
-                let floor = filled(&mut b.g, multiplier, MIN_MULTIPLIER);
-                let negative_floor = b.g.neg(floor);
-                let above_floor = b.g.add(multiplier, negative_floor);
-                let above_floor = b.g.relu(above_floor);
-                let multiplier = b.g.add(above_floor, floor);
-                let weights = b.g.mul(prior, multiplier);
-                let ws = split(&mut b.g, weights, CANDIDATES as u32, 2 * slots, spatial);
-                let mut sum = ws[0];
-                for &w in &ws[1..] {
-                    sum = b.g.add(sum, w);
-                }
-                let eps = filled(&mut b.g, sum, 1e-12);
-                let negative_eps = b.g.neg(eps);
-                let above_eps = b.g.add(sum, negative_eps);
-                let above_eps = b.g.relu(above_eps);
-                sum = b.g.add(above_eps, eps);
-                ws.iter().map(|&w| b.g.div(w, sum)).collect::<Vec<_>>()
-            }
-            mixture::Mode::MaskedSoftmax => {
-                let weights = mixture::build(&mut b.g, logits, prior, 2 * slots, spatial);
-                split(&mut b.g, weights, CANDIDATES as u32, 2 * slots, spatial)
-            }
-        };
+        let ws = split(&mut b.g, prior, CANDIDATES as u32, 2 * slots, spatial);
         let candidates = b.g.input(&format!("{tag}.candidates"), &[SCALES * 6 * n]);
         let mut candidates = split(&mut b.g, candidates, SCALES as u32, 6 * slots, spatial);
         candidates.push(history);
         let mut image = None;
-        let mut normalized = None;
-        let mut history_share = None;
         for k in 0..CANDIDATES {
             let w = ws[k];
-            if k == SCALES {
-                history_share = Some(w);
-            }
-            normalized = Some(match normalized {
-                None => w,
-                Some(a) => {
-                    b.g.concat(a, w, 1, 2 * k as u32 * slots, 2 * slots, spatial)
-                }
-            });
             let wrgb = rgb_weights(&mut b.g, w, slots, spatial);
             let part = b.g.mul(wrgb, candidates[k]);
             image = Some(match image {
@@ -237,34 +166,37 @@ pub fn build_objective(
                 Some(a) => b.g.add(a, part),
             });
         }
-        let image = image.unwrap();
+        let base = image.unwrap();
+        // Zero initialization reproduces the deterministic guide exactly. Unlike
+        // a candidate selector, a radiance residual can restore missing detail.
+        let floor = filled(&mut b.g, base, 1.0 / config.exposure);
+        let amplitude = b.g.add(base, floor);
+        let scale = filled(&mut b.g, base, 0.1);
+        let amplitude = b.g.mul(amplitude, scale);
+        let correction = b.g.mul(residual, amplitude);
+        let corrected = b.g.add(base, correction);
+        let image = b.g.relu(corrected);
         previous = Some(image);
         if unroll == 0 {
-            b.g.set_outputs(vec![image, normalized.unwrap()]);
+            b.g.set_outputs(vec![image]);
             break;
         }
         let target = b.g.input(&format!("{tag}.target"), &[6 * n]);
-        let scale = b.g.input(&format!("{tag}.loss_scale"), &[6 * n]);
-        let (spatial_image, spatial_target, spatial_scale, color_channels) = if rgb_loss {
-            let material = b.g.input(&format!("{tag}.rgb.albedo"), &[3 * n]);
-            let emission = b.g.input(&format!("{tag}.rgb.emission"), &[3 * n]);
-            let lobes = split(&mut b.g, image, 2, 3 * slots, spatial);
-            let diffuse = b.g.mul(lobes[0], material);
-            let rgb = b.g.add(diffuse, lobes[1]);
-            let rgb = b.g.add(rgb, emission);
-            let reference = b.g.input(&format!("{tag}.rgb.target"), &[3 * n]);
-            let scale = filled(&mut b.g, rgb, config.exposure);
-            (rgb, reference, scale, 3)
-        } else {
-            (image, target, scale, 6)
-        };
+        let material = b.g.input(&format!("{tag}.rgb.albedo"), &[3 * n]);
+        let emission = b.g.input(&format!("{tag}.rgb.emission"), &[3 * n]);
+        let lobes = split(&mut b.g, image, 2, 3 * slots, spatial);
+        let diffuse = b.g.mul(lobes[0], material);
+        let rgb = b.g.add(diffuse, lobes[1]);
+        let spatial_image = b.g.add(rgb, emission);
+        let spatial_target = b.g.input(&format!("{tag}.rgb.target"), &[3 * n]);
+        let spatial_scale = filled(&mut b.g, spatial_image, config.exposure);
+        let color_channels = 3;
         let encoded = compress(&mut b.g, spatial_image, config.exposure);
         let encoded_target = compress(&mut b.g, spatial_target, config.exposure);
         let [
             compressed_weight,
             physical_weight,
             low_frequency_weight,
-            confidence_weight,
             temporal_weight,
         ] = objective_weights.unwrap();
         let loss = b.g.mse_loss(encoded, encoded_target);
@@ -272,7 +204,7 @@ pub fn build_objective(
         let physical = scaled_mse(&mut b.g, spatial_image, spatial_target, spatial_scale);
         let physical = b.g.mul(physical, physical_weight);
         loss = b.g.add(loss, physical);
-        // Same block support in both objective spaces; no change to the estimator.
+        // Coarse linear error catches broad energy drift.
         let error = b.g.neg(spatial_target);
         let error = b.g.add(spatial_image, error);
         let error = b.g.mul(error, spatial_scale);
@@ -295,29 +227,20 @@ pub fn build_objective(
         let lf = b.g.mse_loss(avg, zero);
         let lf = b.g.mul(lf, low_frequency_weight);
         loss = b.g.add(loss, lf);
-        let confidence = b.g.input(&format!("{tag}.confidence"), &[2 * n]);
-        let mask = b.g.input(&format!("{tag}.confidence_mask"), &[2 * n]);
-        let cl = scaled_mse(&mut b.g, history_share.unwrap(), confidence, mask);
-        let cl = b.g.mul(cl, confidence_weight);
-        loss = b.g.add(loss, cl);
         if let Some(old_target) = previous_target {
             let reference_history = warp(&mut b.g, old_target, &maps, n);
-            let neg = b.g.neg(history);
-            let change = b.g.add(image, neg);
-            let neg = b.g.neg(reference_history);
-            let expected = b.g.add(target, neg);
+            let current = compress(&mut b.g, image, config.exposure);
+            let old = compress(&mut b.g, history, config.exposure);
+            let truth = compress(&mut b.g, target, config.exposure);
+            let old_truth = compress(&mut b.g, reference_history, config.exposure);
+            let neg = b.g.neg(old);
+            let change = b.g.add(current, neg);
+            let neg = b.g.neg(old_truth);
+            let expected = b.g.add(truth, neg);
             let valid = b.g.input(&format!("{tag}.temporal_mask"), &[6 * n]);
-            let masked = b.g.mul(valid, scale);
-            let tl = scaled_mse(&mut b.g, change, expected, masked);
+            let tl = scaled_mse(&mut b.g, change, expected, valid);
             let tl = b.g.mul(tl, temporal_weight);
             loss = b.g.add(loss, tl);
-        }
-        if let Some(weight) = projected_weight {
-            let teacher = b.g.input(&format!("{tag}.projected"), &[6 * n]);
-            let fixed_scale = filled(&mut b.g, image, config.exposure);
-            let auxiliary = scaled_mse(&mut b.g, image, teacher, fixed_scale);
-            let auxiliary = b.g.mul(auxiliary, weight);
-            loss = b.g.add(loss, auxiliary);
         }
         previous_target = Some(target);
         total_loss = Some(match total_loss {
@@ -357,17 +280,6 @@ pub fn feed(
         }
     }
     session.set_input(&format!("{tag}.target"), &target.lobes);
-    session.set_input(
-        &format!("{tag}.loss_scale"),
-        &target
-            .lobes
-            .iter()
-            .map(|v| 1.0 / (0.1 + v))
-            .collect::<Vec<_>>(),
-    );
-    let (labels, mask) = cpu::confidence(p, target);
-    session.set_input(&format!("{tag}.confidence"), &labels);
-    session.set_input(&format!("{tag}.confidence_mask"), &mask);
     if frame != 0 {
         let n = p.history.len() / 6;
         let mut mask = vec![0.0; 6 * n];

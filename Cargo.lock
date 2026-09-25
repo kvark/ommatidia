@@ -1532,23 +1532,12 @@ version = "0.1.0"
 dependencies = [
  "blade-graphics",
  "blade-macros",
- "blade-render",
  "bytemuck",
  "half",
  "log",
  "meganeura",
  "naga",
- "png",
- "ron",
  "serde",
-]
-
-[[package]]
-name = "ommatidia-capi"
-version = "0.1.0"
-dependencies = [
- "ommatidia",
- "ron",
 ]
 
 [[package]]
