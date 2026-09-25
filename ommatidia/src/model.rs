@@ -298,6 +298,18 @@ pub struct ModelConfig {
     /// contribute 2.7% of the term while carrying all of the flicker.
     #[serde(default)]
     pub temporal_motion_bias: f32,
+    /// Weight of training-only confidence targets for the learned estimator
+    /// mixtures.
+    ///
+    /// Image MSE can improve by changing the gather, its confidence, or the
+    /// recurrent history gate at once. On scene families outside the training
+    /// distribution that left the gather over-confident. This auxiliary term
+    /// gives each guide/gather and current/history gate a detached, per-pixel
+    /// target: the least-squares mixture of its two candidates, weighted down
+    /// when they are effectively identical. It adds no inference input,
+    /// parameter, or operation.
+    #[serde(default)]
+    pub mix_confidence_weight: f32,
     /// Half-width, in input pixels, of the neighbourhood a
     /// [`Prediction::SubpixelKernel`] gathers from. Ignored by the other
     /// targets, and carried in the checkpoint because the runtime has to read
@@ -365,6 +377,7 @@ impl Default for ModelConfig {
             head_kernel: legacy_head_kernel(),
             temporal_weight: 0.0,
             temporal_motion_bias: 0.0,
+            mix_confidence_weight: 0.0,
             temporal: None,
         }
     }
@@ -809,6 +822,19 @@ impl ModelConfig {
                 return Err("a temporal loss needs a sequence dataset".into());
             }
         }
+        if !self.mix_confidence_weight.is_finite() || self.mix_confidence_weight < 0.0 {
+            return Err(format!(
+                "mix confidence weight {} must be finite and non-negative",
+                self.mix_confidence_weight
+            ));
+        }
+        if self.mix_confidence_weight != 0.0 && !self.guide_mix && self.history_mix_channels() == 0
+        {
+            return Err("mix confidence supervision needs a learned mixture".into());
+        }
+        if self.mix_confidence_weight != 0.0 && self.fusion.is_linear() {
+            return Err("mix confidence loss requires legacy fusion".into());
+        }
         if self.head_kernel == 0 || self.head_kernel.is_multiple_of(2) {
             return Err(format!(
                 "head kernel {} must be odd and non-zero, for \"same\" padding",
@@ -1201,6 +1227,23 @@ fn blend_subpixel(
     graph.add(from_image, from_source)
 }
 
+#[derive(Clone, Copy)]
+struct MixConfidenceNodes {
+    base: NodeId,
+    source: NodeId,
+    /// Positive odds emitted by the softplus head. The deployed share is
+    /// `odds / (odds + 1)`.
+    odds: NodeId,
+    /// An invalid reprojected source is storage rather than evidence and must
+    /// contribute neither a mixture nor a confidence target.
+    validity: Option<NodeId>,
+}
+
+struct GatherResult {
+    image: NodeId,
+    mix_confidence: Vec<MixConfidenceNodes>,
+}
+
 /// Reconstruct the image from predicted gather weights, inside the graph.
 ///
 /// Only training needs this. At runtime the unpack shader gathers straight from
@@ -1218,7 +1261,7 @@ fn gather(
     weights: NodeId,
     extent: [u32; 2],
     history_inputs: Option<(NodeId, NodeId)>,
-) -> NodeId {
+) -> GatherResult {
     let batch = config.batch;
     let [width, height] = extent;
     let spatial = width * height;
@@ -1307,18 +1350,29 @@ fn gather(
     if config.fusion.is_linear() {
         let guide = graph.input("guide", &[(batch * 3 * slots * spatial) as usize]);
         let (history, validity) = history_inputs.expect("validated recurrent fusion");
-        return crate::fusion::build(
-            graph,
-            [image, guide, history],
-            validity,
-            [guide_gates.unwrap(), history_gates.unwrap()],
-            config.fusion,
-            [batch, slots, spatial],
-        );
+        return GatherResult {
+            image: crate::fusion::build(
+                graph,
+                [image, guide, history],
+                validity,
+                [guide_gates.unwrap(), history_gates.unwrap()],
+                config.fusion,
+                [batch, slots, spatial],
+            ),
+            mix_confidence: Vec::new(),
+        };
     }
+    let mut mix_confidence = Vec::new();
     if let Some(gates) = guide_gates {
         let guide = graph.input("guide", &[(batch * 3 * slots * spatial) as usize]);
+        let gathered = image;
         image = blend_subpixel(graph, guide, image, gates, None, [batch, slots, spatial]);
+        mix_confidence.push(MixConfidenceNodes {
+            base: guide,
+            source: gathered,
+            odds: gates,
+            validity: None,
+        });
     }
     if let Some(gates) = history_gates {
         // Previous reconstruction, already warped, in the same compressed
@@ -1331,6 +1385,7 @@ fn gather(
                 graph.input("history_validity", &[(batch * slots * spatial) as usize]),
             )
         });
+        let current = image;
         image = blend_subpixel(
             graph,
             image,
@@ -1339,8 +1394,100 @@ fn gather(
             Some(history_validity),
             [batch, slots, spatial],
         );
+        mix_confidence.push(MixConfidenceNodes {
+            base: current,
+            source: history,
+            odds: gates,
+            validity: Some(history_validity),
+        });
     }
-    image
+    GatherResult {
+        image,
+        mix_confidence,
+    }
+}
+
+/// Sum matching red, green, and blue values into one plane per output slot.
+///
+/// Images use `channel * slots + slot` channel order, while a mix gate has
+/// only `slot`. Keeping the reduction explicit avoids teaching the gate three
+/// contradictory per-channel confidences.
+fn sum_rgb_slots(graph: &mut Graph, image: NodeId, batch: u32, slots: u32, spatial: u32) -> NodeId {
+    let red = graph.split_a(image, batch, slots, 2 * slots, spatial);
+    let green_blue = graph.split_b(image, batch, slots, 2 * slots, spatial);
+    let green = graph.split_a(green_blue, batch, slots, slots, spatial);
+    let blue = graph.split_b(green_blue, batch, slots, slots, spatial);
+    let red_green = graph.add(red, green);
+    graph.add(red_green, blue)
+}
+
+/// Train one estimator gate toward the detached least-squares mixture of its
+/// two candidates.
+///
+/// For guide `g`, gathered sample estimate `s`, and reference `r`, the scalar
+/// mixture minimizing RGB error is
+///
+/// `clamp(dot(s - g, r - g) / dot(s - g, s - g), 0, 1)`.
+///
+/// The target and its contrast weight are detached so this term cannot make
+/// the gather imitate the guide merely to make confidence supervision easy.
+/// Pixels where both candidates agree carry almost no weight because their
+/// gate is immaterial.
+fn mix_confidence_loss(
+    graph: &mut Graph,
+    nodes: MixConfidenceNodes,
+    target: NodeId,
+    batch: u32,
+    slots: u32,
+    spatial: u32,
+) -> NodeId {
+    let values = (batch * slots * spatial) as usize;
+    let image_values = (batch * 3 * slots * spatial) as usize;
+
+    let negative_base = graph.neg(nodes.base);
+    let delta = graph.add(nodes.source, negative_base);
+    let negative_base = graph.neg(nodes.base);
+    let wanted = graph.add(target, negative_base);
+    let products = graph.mul(delta, wanted);
+    let numerator = sum_rgb_slots(graph, products, batch, slots, spatial);
+    let squared = graph.mul(delta, delta);
+    let contrast = sum_rgb_slots(graph, squared, batch, slots, spatial);
+
+    let epsilon = graph.constant(vec![1.0e-8; values], &[values]);
+    let denominator = graph.add(contrast, epsilon);
+    let unbounded = graph.div(numerator, denominator);
+    let non_negative = graph.relu(unbounded);
+    let ones = graph.constant(vec![1.0; values], &[values]);
+    let negative_ones = graph.neg(ones);
+    let above_one = graph.add(non_negative, negative_ones);
+    let excess = graph.relu(above_one);
+    let negative_excess = graph.neg(excess);
+    let oracle = graph.add(non_negative, negative_excess);
+    let mut oracle = graph.stop_gradient(oracle);
+
+    let ones = graph.constant(vec![1.0; values], &[values]);
+    let odds_denominator = graph.add(nodes.odds, ones);
+    let mut share = graph.div(nodes.odds, odds_denominator);
+
+    // A one-percent disagreement in each compressed RGB channel gets half
+    // weight. Below that, choosing either source is visually immaterial and
+    // residual reference grain should not calibrate the gate.
+    let contrast_floor = graph.constant(vec![3.0e-4; values], &[values]);
+    let contrast_denominator = graph.add(contrast, contrast_floor);
+    let contrast_weight = graph.div(contrast, contrast_denominator);
+    let mut contrast_weight = graph.stop_gradient(contrast_weight);
+    if let Some(validity) = nodes.validity {
+        oracle = graph.mul(oracle, validity);
+        share = graph.mul(share, validity);
+        contrast_weight = graph.mul(contrast_weight, validity);
+    }
+    let negative_oracle = graph.neg(oracle);
+    let difference = graph.add(share, negative_oracle);
+    let squared_difference = graph.mul(difference, difference);
+    let weighted = graph.mul(squared_difference, contrast_weight);
+    debug_assert_eq!(graph.node(weighted).ty.num_elements(), values);
+    debug_assert_eq!(graph.node(target).ty.num_elements(), image_values);
+    graph.mean_all(weighted)
 }
 
 /// What the built graph produces.
@@ -1656,7 +1803,7 @@ pub fn build_ending(
 
     let params = builder.params;
     if ending == Ending::Image {
-        let image = gather(&mut graph, config, output, extent, history_inputs);
+        let image = gather(&mut graph, config, output, extent, history_inputs).image;
         graph.set_outputs(vec![image]);
         return Ok(Model {
             graph,
@@ -1671,10 +1818,23 @@ pub fn build_ending(
     let loss = if training {
         let loss = match config.prediction {
             Prediction::SubpixelKernel => {
-                let image = gather(&mut graph, config, output, extent, history_inputs);
+                let gathered = gather(&mut graph, config, output, extent, history_inputs);
+                let image = gathered.image;
                 let len = (batch * config.image_channels() * spatial) as usize;
                 let target = graph.input("target", &[len]);
                 let mut loss = graph.mse_loss(image, target);
+                if config.mix_confidence_weight != 0.0 {
+                    debug_assert!(!gathered.mix_confidence.is_empty());
+                    let per_mix_weight =
+                        config.mix_confidence_weight / gathered.mix_confidence.len() as f32;
+                    for nodes in gathered.mix_confidence {
+                        let confidence =
+                            mix_confidence_loss(&mut graph, nodes, target, batch, slots, spatial);
+                        let weight = graph.scalar(per_mix_weight);
+                        let confidence = graph.mul(confidence, weight);
+                        loss = graph.add(loss, confidence);
+                    }
+                }
                 if config.temporal_weight != 0.0 {
                     // The temporal metric compares this frame's change against
                     // the reference's, motion-compensated:
@@ -1917,6 +2077,48 @@ mod tests {
         }
         c.linear_kernel = false;
         assert!(c.validate().is_err());
+    }
+
+    #[test]
+    fn mix_confidence_supervision_is_training_only_and_parameter_free() {
+        let mut config = small();
+        config.objective = Objective::Direct;
+        config.prediction = Prediction::SubpixelKernel;
+        config.reconstruction_base = ReconstructionBase::Sample;
+        config.cond_planes = config
+            .cond_planes
+            .with(Plane::Depth)
+            .with(Plane::Normal)
+            .with(Plane::DiffuseAlbedo);
+        config.demodulate = true;
+        config.guide_mix = true;
+        config.temporal = Some(crate::temporal::Config {
+            frames: 4,
+            rejection: crate::temporal::RejectionConfig::default(),
+            features: crate::temporal::Features::Variance,
+            unrejected_tap: false,
+            previous_output: true,
+        });
+
+        let baseline_params = build(&config, true).unwrap().params.len();
+        config.mix_confidence_weight = 0.01;
+        let trained = build(&config, true).unwrap();
+        assert_eq!(trained.params.len(), baseline_params);
+        assert_eq!(
+            trained.graph.node(trained.loss.unwrap()).ty.num_elements(),
+            1
+        );
+        assert!(build(&config, false).unwrap().loss.is_none());
+
+        config.fusion = crate::fusion::Mode::Linear;
+        config.linear_kernel = true;
+        assert!(config.validate().unwrap_err().contains("legacy fusion"));
+        config.fusion = crate::fusion::Mode::Legacy;
+
+        config.guide_mix = false;
+        assert!(config.validate().is_ok(), "history is still a learned mix");
+        config.temporal.as_mut().unwrap().previous_output = false;
+        assert!(config.validate().unwrap_err().contains("confidence"));
     }
 
     #[test]
