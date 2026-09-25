@@ -192,6 +192,10 @@ struct Score {
     temporal_frames: usize,
     reset_psnr: f64,
     resets: usize,
+    rejected_history_mse: Option<f64>,
+    rejected_history_pixels: usize,
+    history_pixels: usize,
+    rejected_history_fraction: Option<f64>,
 }
 impl Score {
     fn add(&mut self, image: &[f32], target: &[f32], extent: [u32; 2], reset: bool) {
@@ -225,6 +229,14 @@ impl Score {
             self.resets += 1;
         }
     }
+    fn add_rejected_history(&mut self, image: &[f32], target: &[f32], mask: &[bool]) {
+        self.history_pixels += mask.len();
+        if let Some(mse) = metrics::masked_error(image, target, mask) {
+            let pixels = mask.iter().filter(|&&v| v).count();
+            *self.rejected_history_mse.get_or_insert(0.0) += mse * pixels as f64;
+            self.rejected_history_pixels += pixels;
+        }
+    }
     fn finish(&mut self) {
         let n = self.frames.max(1) as f64;
         self.psnr /= n;
@@ -236,7 +248,25 @@ impl Score {
         self.detail_ratio /= n;
         self.temporal_mse /= self.temporal_frames.max(1) as f64;
         self.reset_psnr /= self.resets.max(1) as f64;
+        if let Some(total) = &mut self.rejected_history_mse {
+            *total /= self.rejected_history_pixels as f64;
+        }
+        self.rejected_history_fraction = (self.history_pixels != 0)
+            .then(|| self.rejected_history_pixels as f64 / self.history_pixels as f64);
     }
+}
+
+fn rejected_history_mask(validity: &[f32], low: [u32; 2], config: Config) -> Vec<bool> {
+    let width = (low[0] * config.scale) as usize;
+    let n = (low[0] * low[1] * config.scale.pow(2)) as usize;
+    assert_eq!(validity.len(), 2 * n);
+    assert!(
+        validity.iter().all(|&v| v == 0.0 || v == 1.0),
+        "invalid reprojection mask"
+    );
+    (0..n)
+        .map(|i| (0..2).any(|lobe| validity[config.index(low, lobe, i % width, i / width)] == 0.0))
+        .collect()
 }
 fn surfaces(frame: &Frame) -> Vec<ommatidia::temporal::Surface> {
     frame
@@ -282,6 +312,12 @@ fn evaluate(
                 return Err("non-finite reconstruction".into());
             }
             score.add(image, &target.rgb, extent, reset);
+        }
+        if !reset {
+            for (k, model) in [&*baseline, &*learned].into_iter().enumerate() {
+                let mask = rejected_history_mask(&model.read_history_validity(), frame.low, config);
+                scores[k].add_rejected_history(&images[k], &target.rgb, &mask);
+            }
         }
         if let Some((old, reference, old_surfaces)) = &previous {
             let warp = ommatidia::temporal::Reprojection {
@@ -337,7 +373,7 @@ fn evaluate(
     }
     scores.iter_mut().for_each(Score::finish);
     Ok(
-        serde_json::json!({"baseline":scores[0],"learned":scores[1],"metric_space":"PSNR/SSIM: x/(1+x); energy: scene-linear; PNG: same compression then sRGB", "speed_claim":false}),
+        serde_json::json!({"baseline":scores[0],"learned":scores[1],"metric_space":"PSNR/SSIM: x/(1+x); energy: scene-linear; PNG: same compression then sRGB", "rejected_history_space":"pixel-weighted compressed RGB MSE on non-reset pixels with unavailable reprojection in either lobe; includes disocclusions and out-of-frame motion, excludes reactive/learned gate suppression; empty regions are null", "speed_claim":false}),
     )
 }
 fn main() -> Result<()> {
@@ -603,4 +639,42 @@ fn main() -> Result<()> {
     )?;
     println!("{}", serde_json::to_string_pretty(&report)?);
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rejected_history_preserves_lobe_and_subpixel_layout() {
+        let config = Config::default();
+        let low = [4, 8];
+        let mut validity = vec![1.0; 2 * 8 * 16];
+        assert!(!rejected_history_mask(&validity, low, config).contains(&true));
+        validity[config.index(low, 0, 3, 0)] = 0.0;
+        validity[config.index(low, 1, 0, 15)] = 0.0;
+        let mask = rejected_history_mask(&validity, low, config);
+        assert_eq!(mask.iter().filter(|&&v| v).count(), 2);
+        assert!(mask[3] && mask[120]);
+    }
+
+    #[test]
+    fn rejected_history_is_pixel_weighted_and_empty_is_unscored() {
+        let reference = [1.0; 9];
+        let mut score = Score::default();
+        score.add_rejected_history(&[0.0; 9], &reference, &[false; 3]);
+        assert_eq!(score.rejected_history_mse, None);
+        score.add_rejected_history(&[0.0; 9], &reference, &[true, false, false]);
+        score.add_rejected_history(&reference, &reference, &[true; 3]);
+        score.finish();
+        assert_eq!(score.rejected_history_pixels, 4);
+        assert_eq!(score.history_pixels, 9);
+        assert_eq!(score.rejected_history_mse, Some(0.25 / 4.0));
+        assert_eq!(score.rejected_history_fraction, Some(4.0 / 9.0));
+
+        let mut empty = Score::default();
+        empty.finish();
+        assert_eq!(empty.rejected_history_mse, None);
+        assert_eq!(empty.rejected_history_fraction, None);
+    }
 }

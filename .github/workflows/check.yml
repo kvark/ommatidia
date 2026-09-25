@@ -131,7 +131,7 @@ jobs:
         run: |
           rustup toolchain install 1.92.0 --profile minimal
           sudo apt-get update -o Acquire::Retries=3
-          sudo apt-get install -y libvulkan1 mesa-vulkan-drivers
+          sudo apt-get install -y libvulkan1 mesa-vulkan-drivers vulkan-validationlayers
       - name: Run GPU contract, recurrence, training and image tests
         working-directory: ommatidia
         run: |
