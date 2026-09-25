@@ -29,8 +29,12 @@ pub fn parse_device_id(value: &str) -> Result<u32, String> {
 /// [`crate::Upscaler`] instead. Timing has to be decided before context
 /// creation because Blade allocates its timestamp query pools up front.
 pub fn create_context(device_id: Option<u32>, timing: bool) -> Arc<blade_graphics::Context> {
-    let context = meganeura::init_gpu_context_with(meganeura::GpuOptions { device_id, timing })
-        .expect("failed to initialise a GPU context");
+    let context = meganeura::init_gpu_context_with(meganeura::GpuOptions {
+        device_id,
+        timing,
+        ..Default::default()
+    })
+    .expect("failed to initialise a GPU context");
     log::info!("using {}", context.device_information().device_name);
     Arc::new(context)
 }
