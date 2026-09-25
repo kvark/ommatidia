@@ -64,9 +64,8 @@ impl Rng {
 
     /// Standard normal, by Box-Muller.
     ///
-    /// A diffusion model learns to predict exactly the noise it was trained
-    /// against, so the tails have to be right — an Irwin-Hall approximation
-    /// would quietly cap them.
+    /// Used for parameter initialization; unlike an Irwin-Hall approximation,
+    /// this preserves the normal distribution's tails.
     pub fn normal(&mut self) -> f32 {
         // Guard the log against a zero draw.
         let u1 = self.uniform().max(f32::MIN_POSITIVE);

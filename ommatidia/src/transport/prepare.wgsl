@@ -85,6 +85,11 @@ fn pack(@builtin(global_invocation_id) id:vec3<u32>) {
         prior[5u*2u*count()+idx(l,p)]=h;
         features[idx(38u+l,p)]=enc(sqrt(variance));features[idx(40u+l,p)]=out_ages[l]/max_age;features[idx(42u+l,p)]=select(0.0,1.0,coverage>1e-6);
     }
+    let q=(vec2<f32>(p)+vec2(0.5))/f32(params.scale)-vec2(0.5)-params.jitter;
+    let low=vec2<u32>(clamp(vec2<i32>(floor(q+vec2(0.5))),vec2(0),vec2<i32>(i32(params.w)-1,i32(params.h)-1)));
+    let raw=rays[low.y*params.w+low.x];
+    for(var c=0u;c<3u;c++) {features[idx(44u+c,p)]=enc(raw.diffuse[c]);features[idx(47u+c,p)]=enc(raw.specular[c]);}
+    features[idx(50u,p)]=f32(low.x)-q.x;features[idx(51u,p)]=f32(low.y)-q.y;
     ages[i]=out_ages;moments[i]=out_moments;
     for(var k=0u;k<5u;k++) {for(var c=0u;c<6u;c++) {features[idx(k*6u+c,p)]=enc(candidates[k*6u*count()+idx(c,p)]);}}
     for(var c=0u;c<3u;c++) {features[idx(30u+c,p)]=s.normal_depth[c];features[idx(34u+c,p)]=s.albedo_roughness[c];}

@@ -1,5 +1,0 @@
-data=data/rich-4spp-validation-128.omd
-restir_svgf_data=data/rich-restir-svgf-curated-16.omd
-checkpoint=runs/rich-kernel-b16-demod025
-oidn=oidnDenoise
-oidn_device=0

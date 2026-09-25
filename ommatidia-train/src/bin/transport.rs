@@ -12,9 +12,6 @@ use std::{
 type EvaluationHistory = ([Vec<f32>; 2], Vec<f32>, Vec<ommatidia::temporal::Surface>);
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 
-#[path = "transport/oracle_report.rs"]
-mod oracle_report;
-
 #[derive(Clone)]
 struct Corpus {
     frames: Vec<(Frame, Target)>,
@@ -43,10 +40,14 @@ impl Corpus {
         let mut frames = Vec::new();
         for index in 0..reader.len() {
             let sample = reader.sample(index)?;
-            frames.push((
-                Frame::from_sample(&sample, layout, config)?,
-                Target::from_sample(&sample, layout, config)?,
-            ));
+            let frame = Frame::from_sample(&sample, layout, config)?;
+            let target = Target::from_sample(&sample, layout, config)?;
+            if target.rgb.iter().any(|v| !v.is_finite() || *v < 0.0)
+                || target.rgb.iter().all(|v| *v <= 1e-6)
+            {
+                return Err(format!("{} record {index}: invalid or entirely black reference; inspect the capture camera", path.display()).into());
+            }
+            frames.push((frame, target));
         }
         Ok(Self {
             frames,
@@ -91,73 +92,6 @@ impl Corpus {
         }
         Ok(())
     }
-}
-fn paired_noise(corpora: &[Corpus]) -> Result<()> {
-    let first = corpora.first().ok_or("missing paired captures")?;
-    let mut ranges = Vec::new();
-    for corpus in corpora {
-        if corpus.length != first.length || corpus.frames.len() != first.frames.len() {
-            return Err("paired capture layout mismatch".into());
-        }
-        let p = &corpus.provenance;
-        if !p["reference_from"].is_null() {
-            return Err("construction requires fresh references".into());
-        }
-        for key in [
-            "scene_seeds",
-            "family_ids",
-            "capture_seed",
-            "input_max_bounces",
-            "reference_max_bounces",
-            "canonical_frames",
-            "reference_sample_offset",
-            "input_frames",
-        ] {
-            if p[key] != first.provenance[key] {
-                return Err(format!("paired provenance differs: {key}").into());
-            }
-        }
-        let start = p["input_sample_offset"]
-            .as_u64()
-            .ok_or("missing input offset")?;
-        let count = p["input_frames"]
-            .as_u64()
-            .filter(|n| *n > 0)
-            .ok_or("missing input count")?;
-        let end = start
-            .checked_add(
-                count
-                    .checked_mul(corpus.frames.len() as u64)
-                    .ok_or("sample range overflow")?,
-            )
-            .ok_or("sample range overflow")?;
-        if end
-            > p["reference_sample_offset"]
-                .as_u64()
-                .ok_or("missing reference offset")?
-        {
-            return Err("reference overlaps input sample range".into());
-        }
-        if ranges.iter().any(|&(a, b)| start < b && a < end) {
-            return Err("overlapping path streams".into());
-        }
-        ranges.push((start, end));
-        for ((f, t), (a, b)) in corpus.frames.iter().zip(&first.frames) {
-            if f.low != a.low
-                || f.jitter != a.jitter
-                || t.rgb != b.rgb
-                || t.lobes != b.lobes
-                || f.surfaces != a.surfaces
-                || f.rays.len() != a.rays.len()
-                || f.rays.iter().zip(&a.rays).any(|(r, s)| {
-                    r.normal_depth != s.normal_depth || r.albedo_roughness != s.albedo_roughness
-                })
-            {
-                return Err("paired capture changed reference or observed geometry".into());
-            }
-        }
-    }
-    Ok(())
 }
 fn save_png(path: &Path, rgb: &[f32], extent: [u32; 2]) -> Result<()> {
     let bytes: Vec<_> = rgb
@@ -285,9 +219,7 @@ fn evaluate(
     learned: &mut native::Native,
     baseline: &mut native::Native,
     out: &Path,
-    candidate_oracle: bool,
 ) -> Result<serde_json::Value> {
-    let mut oracle_frames = Vec::new();
     let mut scores = [Score::default(), Score::default()];
     let mut previous: Option<EvaluationHistory> = None;
     let mut rows = std::fs::File::create(out.join("frames.csv"))?;
@@ -350,12 +282,6 @@ fn evaluate(
         )?;
         // All frames are retained: evaluation is not a cherry-picked screenshot.
         let prefix = format!("{:03}-{:03}", index / corpus.length, index % corpus.length);
-        if candidate_oracle {
-            let mut report = oracle_report::frame(learned, frame, target, config, out, &prefix)?;
-            report["sequence"] = serde_json::json!(index / corpus.length);
-            report["frame"] = serde_json::json!(index % corpus.length);
-            oracle_frames.push(report);
-        }
         for (name, image) in [
             ("base", &images[0]),
             ("learned", &images[1]),
@@ -364,12 +290,6 @@ fn evaluate(
             save_png(&out.join(format!("{prefix}-{name}.png")), image, extent)?;
         }
         previous = Some((images, target.rgb.clone(), current));
-    }
-    if candidate_oracle {
-        std::fs::write(
-            out.join("candidate-oracle.json"),
-            serde_json::to_vec_pretty(&oracle_frames)?,
-        )?;
     }
     scores.iter_mut().for_each(Score::finish);
     Ok(
@@ -380,43 +300,32 @@ fn main() -> Result<()> {
     env_logger::init();
     let mut data = Vec::new();
     let mut eval = Vec::new();
-    let mut construction_noise = false;
-    let mut rgb_loss = false;
     let mut out = PathBuf::from("runs/transport");
-    let mut steps = 128usize;
+    let mut steps = 4000usize;
     let mut unroll = 2usize;
-    let mut channels = 8;
-    let mut mixture = None::<ommatidia::transport::mixture::Mode>;
+    let mut channels = 16;
     let mut seed = 7u64;
-    let mut rate = 0.001f32;
+    let mut rate = 0.0003f32;
     let mut eval_only = false;
-    let mut candidate_oracle = false;
-    let mut projected_weight = None::<f32>;
-    let mut fixed_exposure_loss = false;
+    let mut checkpoint_input = None::<PathBuf>;
+    let mut eval_every = 500usize;
+    let mut device_id = None;
     let mut weights = graph::LossWeights::default();
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
         if arg == "--help" {
             println!(
-                "transport --data TRAIN.omd --eval-data HOLDOUT.omd [--out DIR] [--steps 128] [--unroll 2] [--channels 8] [--mixture softplus|masked-softmax] [--seed 7] [--lr 0.001] [--eval-only] [--candidate-oracle] [--fixed-exposure-loss] [--projected-weight F] [--rgb-loss] [--construction-noise]\n  --compressed-weight F [1] --physical-weight F [0.1] --low-frequency-weight F [0.05]\n  --confidence-weight F [0.01] --temporal-weight F [0.01]\nRepeat --data/--eval-data for multiple captures. Matched transport, split radiance and HR surfaces required. Scene seeds must be disjoint unless --construction-noise verifies equal truth and nonoverlapping path streams."
+                "transport --data TRAIN.omd --eval-data DEV.omd --out DIR
+  --steps N [4000] --unroll N [2] --channels N [16] --seed N [7]
+  --lr F [0.0003] --eval-every N [500] --device-id ID
+  --checkpoint FILE (weights-only warm start, or evaluation input)
+  --eval-only (loads checkpoint sidecar; evaluation resolution may differ)
+  --compressed-weight F [1] --physical-weight F [0.005]
+  --low-frequency-weight F [0.01] --temporal-weight F [0.02]
+Repeat data arguments for multiple captures. Training and development scene
+seeds/catalog families must be disjoint. Use a separate final audit split."
             );
             return Ok(());
-        }
-        if arg == "--construction-noise" {
-            construction_noise = true;
-            continue;
-        }
-        if arg == "--rgb-loss" {
-            rgb_loss = true;
-            continue;
-        }
-        if arg == "--candidate-oracle" {
-            candidate_oracle = true;
-            continue;
-        }
-        if arg == "--fixed-exposure-loss" {
-            fixed_exposure_loss = true;
-            continue;
         }
         if arg == "--eval-only" {
             eval_only = true;
@@ -430,44 +339,36 @@ fn main() -> Result<()> {
             "--steps" => steps = v.parse()?,
             "--unroll" => unroll = v.parse()?,
             "--channels" => channels = v.parse()?,
-            "--mixture" => mixture = Some(v.parse()?),
             "--seed" => seed = v.parse()?,
             "--lr" => rate = v.parse()?,
-            "--projected-weight" => projected_weight = Some(v.parse()?),
+            "--eval-every" => eval_every = v.parse()?,
+            "--checkpoint" => checkpoint_input = Some(v.into()),
+            "--device-id" => device_id = Some(ommatidia::gpu::parse_device_id(&v)?),
             "--compressed-weight" => weights.compressed = v.parse()?,
             "--physical-weight" => weights.physical = v.parse()?,
             "--low-frequency-weight" => weights.low_frequency = v.parse()?,
-            "--confidence-weight" => weights.confidence = v.parse()?,
             "--temporal-weight" => weights.temporal = v.parse()?,
             _ => return Err(format!("unknown option {arg}").into()),
         }
     }
     weights.validate()?;
-    if eval_only && mixture.is_some() {
-        return Err("evaluation reads mixture from the checkpoint sidecar".into());
-    }
-    if rgb_loss && (!fixed_exposure_loss || eval_only) {
-        return Err("--rgb-loss requires --fixed-exposure-loss and training".into());
-    }
     if !eval_only && out.join("model.safetensors").exists() {
         return Err("refusing to overwrite an existing checkpoint".into());
     }
-    if projected_weight.is_some_and(|w| !w.is_finite() || w < 0.0) {
-        return Err("projected weight must be finite and nonnegative".into());
-    }
-    if projected_weight.is_some() && eval_only {
-        return Err("projected targets are training-only".into());
-    }
-    if !(1..=8).contains(&unroll) || !rate.is_finite() || rate <= 0.0 {
-        return Err("invalid unroll or learning rate".into());
+    if !(1..=8).contains(&unroll) || !rate.is_finite() || rate <= 0.0 || steps == 0 {
+        return Err("invalid unroll, step count or learning rate".into());
     }
     std::fs::create_dir_all(&out)?;
-    let config = if eval_only {
-        ron::from_str(&std::fs::read_to_string(out.join("model.transport.ron"))?)?
+    let checkpoint = out.join("model.safetensors");
+    if eval_only && checkpoint_input.is_none() {
+        checkpoint_input = Some(checkpoint.clone());
+    }
+    let config = if let Some(path) = &checkpoint_input {
+        ron::from_str(&std::fs::read_to_string(
+            path.parent().unwrap().join("model.transport.ron"),
+        )?)?
     } else {
         Config {
-            version: mixture.unwrap_or_default().version(),
-            mixture: mixture.unwrap_or_default(),
             channels,
             ..Config::default()
         }
@@ -481,20 +382,13 @@ fn main() -> Result<()> {
         .collect::<Result<Vec<_>>>()?;
     let holdout = Corpus::combine(&held_corpora)?;
     let low = holdout.frames[0].0.low;
-    let context = ommatidia::gpu::create_context(None, false);
+    let context = ommatidia::gpu::create_context(device_id, false);
     let mut learned = native::Native::new(Arc::clone(&context), config, low)?;
-    let mut baseline = native::Native::new(
-        Arc::clone(&context),
-        Config {
-            version: 1,
-            mixture: Default::default(),
-            ..config
-        },
-        low,
-    )?;
-    let checkpoint = out.join("model.safetensors");
+    let mut baseline = native::Native::new(Arc::clone(&context), config, low)?;
     if eval_only {
-        learned.session.load_checkpoint(&checkpoint)?;
+        learned
+            .session
+            .load_checkpoint(checkpoint_input.as_ref().unwrap())?;
     } else {
         if data.is_empty() {
             return Err("--data required".into());
@@ -503,32 +397,50 @@ fn main() -> Result<()> {
             .iter()
             .map(|p| Corpus::load(p, config))
             .collect::<Result<Vec<_>>>()?;
-        if construction_noise {
-            paired_noise(
-                &training
-                    .iter()
-                    .chain(&held_corpora)
-                    .cloned()
-                    .collect::<Vec<_>>(),
-            )?;
-        } else {
-            for train in &training {
-                for held in &held_corpora {
-                    train.disjoint(held)?;
-                }
+        for train in &training {
+            for held in &held_corpora {
+                train.disjoint(held)?;
             }
         }
         let train = Corpus::combine(&training)?;
         if unroll > train.length || train.frames.iter().any(|(f, _)| f.low != low) {
             return Err("unroll exceeds sequence or extents differ".into());
         }
-        let network =
-            graph::build_objective(config, low, unroll, projected_weight.is_some(), rgb_loss)?;
+        let network = graph::build(config, low, unroll)?;
+        println!(
+            "{} parameters; {} training / {} development frames",
+            network.params.iter().map(|p| p.len).sum::<usize>(),
+            train.frames.len(),
+            holdout.frames.len()
+        );
         let mut session = ommatidia::gpu::training_session(&network.graph, Arc::clone(&context));
         network.initialize(&mut session, seed);
+        if let Some(path) = &checkpoint_input {
+            // A training-session load also restores Adam moments and its step.
+            // Use inference to validate the asset, then copy parameters only.
+            learned.session.load_checkpoint(path)?;
+            let names: Vec<_> = network.params.iter().map(|p| p.name.as_str()).collect();
+            for (name, values) in names.iter().zip(learned.session.read_params(&names)) {
+                session.set_parameter(name, &values);
+            }
+        }
+        std::fs::write(
+            out.join("model.transport.ron"),
+            ron::ser::to_string_pretty(&config, ron::ser::PrettyConfig::default())?,
+        )?;
+        std::fs::write(
+            out.join("training.json"),
+            serde_json::to_vec_pretty(&serde_json::json!({
+                "steps":steps, "unroll":unroll, "seed":seed, "learning_rate":rate,
+                "loss_weights":weights, "warm_start":checkpoint_input, "optimizer_resumed":false,
+                "training":train.provenance, "development":holdout.provenance,
+                "parameters":network.params.iter().map(|p|p.len).sum::<usize>()
+            }))?,
+        )?;
         let mut rng = ommatidia::rng::Rng::new(seed);
         let mut losses = std::fs::File::create(out.join("loss.csv"))?;
         writeln!(losses, "update,loss")?;
+        let started = std::time::Instant::now();
         for update in 0..steps {
             session.wait();
             learned.sync_parameters(&session);
@@ -548,32 +460,11 @@ fn main() -> Result<()> {
                 };
                 let prepared = cpu::prepare(frame, &old, config);
                 graph::feed(&mut session, &format!("f{slot}"), &prepared, target, slot);
-                if rgb_loss {
-                    graph::feed_rgb(&mut session, &format!("f{slot}"), frame, target, config);
-                }
-                if let Some(weight) = projected_weight {
-                    let candidates = ommatidia::transport::oracle::Candidates {
-                        spatial: prepared.candidates.clone(),
-                        history: prepared.history.clone(),
-                        prior: prepared.prior.clone(),
-                        selected: Vec::new(),
-                    };
-                    let projection =
-                        ommatidia::transport::oracle::reconstruct(&candidates, &target.lobes)?;
-                    session.set_input(&format!("f{slot}.projected"), &projection.lobes);
-                    session.set_input("loss.projected_weight", &[weight]);
-                }
-                if fixed_exposure_loss {
-                    // Override only loss inputs: same graph, queries and initialization.
-                    session.set_input(
-                        &format!("f{slot}.loss_scale"),
-                        &vec![config.exposure; target.lobes.len()],
-                    );
-                }
+                graph::feed_rgb(&mut session, &format!("f{slot}"), frame, target, config);
                 learned.process(frame)?;
             }
             weights.feed(&mut session);
-            let fraction = update as f32 / steps.max(1) as f32;
+            let fraction = update as f32 / steps as f32;
             session.set_adam(
                 rate * (0.1 + 0.9 * 0.5 * (1.0 + (std::f32::consts::PI * fraction).cos())),
                 0.9,
@@ -586,53 +477,45 @@ fn main() -> Result<()> {
             if !loss.is_finite() {
                 return Err("training became non-finite".into());
             }
-            writeln!(losses, "{update},{loss}")?;
+            writeln!(losses, "{},{loss}", update + 1)?;
             if update % 16 == 0 {
-                println!("update {update}/{steps}: loss {loss:.7}");
+                println!(
+                    "update {}/{steps}: loss {loss:.7}, {:.2} updates/s",
+                    update + 1,
+                    (update + 1) as f32 / started.elapsed().as_secs_f32()
+                );
+            }
+            if eval_every > 0 && (update + 1) % eval_every == 0 && update + 1 < steps {
+                let path = out.join(format!("step-{}.safetensors", update + 1));
+                session.save_checkpoint(&path)?;
+                learned.session.load_checkpoint(&path)?;
+                let dir = out.join(format!("dev-{}", update + 1));
+                std::fs::create_dir_all(&dir)?;
+                let report = evaluate(&holdout, config, &mut learned, &mut baseline, &dir)?;
+                std::fs::write(
+                    dir.join("quality.json"),
+                    serde_json::to_vec_pretty(&report)?,
+                )?;
+                println!(
+                    "development {}: {}",
+                    update + 1,
+                    serde_json::to_string(&report)?
+                );
             }
         }
         session.save_checkpoint(&checkpoint)?;
-        std::fs::write(
-            out.join("model.transport.ron"),
-            ron::ser::to_string_pretty(&config, ron::ser::PrettyConfig::default())?,
-        )?;
-        // Evaluate the serialized asset, not the still-live training graph.
+        // Score serialized weights, not the still-live training session.
         learned.session.load_checkpoint(&checkpoint)?;
-        std::fs::write(
-            out.join("training.json"),
-            serde_json::to_vec_pretty(
-                &serde_json::json!({"steps":steps,"unroll":unroll,"seed":seed,"learning_rate":rate,"fixed_exposure_loss":fixed_exposure_loss,"loss_weights":weights,"projected_weight":projected_weight,"rgb_loss":rgb_loss,"construction_noise":construction_noise,"training":train.provenance,"evaluation":holdout.provenance}),
-            )?,
-        )?;
     }
-    let mut report = evaluate(
-        &holdout,
-        config,
-        &mut learned,
-        &mut baseline,
-        &out,
-        candidate_oracle,
-    )?;
-    report["role"] = serde_json::json!(if construction_noise {
-        "same-scenes held-noise construction"
+    let mut report = evaluate(&holdout, config, &mut learned, &mut baseline, &out)?;
+    report["role"] = serde_json::json!(if eval_only {
+        "evaluation"
     } else {
-        "scene-disjoint evaluation"
+        "scene-disjoint development"
     });
-    if construction_noise && !eval_only {
-        let fit = Corpus::combine(
-            &data
-                .iter()
-                .map(|p| Corpus::load(p, config))
-                .collect::<Result<Vec<_>>>()?,
-        )?;
-        let dir = out.join("fitting");
-        std::fs::create_dir_all(&dir)?;
-        let result = evaluate(&fit, config, &mut learned, &mut baseline, &dir, false)?;
-        std::fs::write(
-            dir.join("quality.json"),
-            serde_json::to_vec_pretty(&result)?,
-        )?;
-    }
+    report["capture"] = holdout.provenance;
+    report["checkpoint"] =
+        serde_json::json!(checkpoint_input.filter(|_| eval_only).unwrap_or(checkpoint));
     std::fs::write(
         out.join("quality.json"),
         serde_json::to_vec_pretty(&report)?,
@@ -644,6 +527,19 @@ fn main() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn training_and_development_must_not_share_scenes_or_families() {
+        let corpus = |seed, family| Corpus {
+            frames: Vec::new(),
+            length: 8,
+            provenance: serde_json::json!({"scene_seeds":[seed],"family_ids":[family]}),
+        };
+        let training = corpus(7, "chair-a");
+        assert!(training.disjoint(&corpus(7, "chair-b")).is_err());
+        assert!(training.disjoint(&corpus(8, "chair-a")).is_err());
+        assert!(training.disjoint(&corpus(8, "chair-b")).is_ok());
+    }
 
     #[test]
     fn rejected_history_preserves_lobe_and_subpixel_layout() {

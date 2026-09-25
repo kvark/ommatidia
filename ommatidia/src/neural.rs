@@ -1,20 +1,27 @@
-//! Shared local image pyramid; observation adapters and task heads stay separate.
+//! Local image pyramid for the recurrent radiance-residual reconstructor.
 use meganeura::{Graph, NodeId};
 use std::collections::BTreeMap;
 
+pub enum InitKind {
+    Zeros,
+    Kaiming { fan_in: usize },
+}
+pub struct ParamInit {
+    pub name: String,
+    pub len: usize,
+    pub kind: InitKind,
+}
+
 pub struct Network {
     pub graph: Graph,
-    pub params: Vec<crate::model::ParamInit>,
+    pub params: Vec<ParamInit>,
 }
 impl Network {
     pub fn initialize(&self, session: &mut meganeura::Session, seed: u64) {
         let mut rng = crate::rng::Rng::new(seed);
         for p in &self.params {
-            use crate::model::InitKind;
             let values: Vec<_> = match &p.kind {
                 InitKind::Zeros => vec![0.0; p.len],
-                InitKind::Ones => vec![1.0; p.len],
-                InitKind::Values(v) => v.clone(),
                 InitKind::Kaiming { fan_in } => (0..p.len)
                     .map(|_| rng.normal() * (2.0 / *fan_in as f32).sqrt())
                     .collect(),
@@ -25,7 +32,7 @@ impl Network {
 }
 pub(crate) struct Builder {
     pub(crate) g: Graph,
-    pub(crate) params: Vec<crate::model::ParamInit>,
+    pub(crate) params: Vec<ParamInit>,
     shared: BTreeMap<String, NodeId>,
 }
 impl Builder {
@@ -42,13 +49,13 @@ impl Builder {
         }
         let len = (out * input * k * k) as usize;
         let id = self.g.parameter(name, &[len]);
-        self.params.push(crate::model::ParamInit {
+        self.params.push(ParamInit {
             name: name.into(),
             len,
             kind: if zero {
-                crate::model::InitKind::Zeros
+                InitKind::Zeros
             } else {
-                crate::model::InitKind::Kaiming {
+                InitKind::Kaiming {
                     fan_in: (input * k * k) as usize,
                 }
             },
@@ -120,13 +127,6 @@ impl Builder {
             params: Vec::new(),
             shared: BTreeMap::new(),
         }
-    }
-    pub(crate) fn linear(&mut self, x: NodeId, name: &str, input: u32, output: u32) -> NodeId {
-        let weight = self.parameter(&format!("{name}.weight"), output, input, 1, false);
-        let weight = self.g.reshape(weight, &[input as usize, output as usize]);
-        let bias = self.parameter(&format!("{name}.bias"), output, 1, 1, true);
-        let h = self.g.matmul(x, weight);
-        self.g.bias_add(h, bias)
     }
 }
 

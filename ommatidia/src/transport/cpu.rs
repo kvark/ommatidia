@@ -273,41 +273,40 @@ pub fn prepare(frame: &Frame, previous: &[State], config: Config) -> Prepared {
             }
             p.features[index(33, x, y)] = 1.0 / (1.0 + s.normal_depth[3].max(0.0));
             p.features[index(37, x, y)] = s.albedo_roughness[3];
+            let qx = (x as f32 + 0.5) / config.scale as f32 - 0.5 - frame.jitter[0];
+            let qy = (y as f32 + 0.5) / config.scale as f32 - 0.5 - frame.jitter[1];
+            let sx = ((qx + 0.5).floor() as i32).clamp(0, low[0] as i32 - 1) as usize;
+            let sy = ((qy + 0.5).floor() as i32).clamp(0, low[1] as i32 - 1) as usize;
+            let raw = frame.rays[sy * low[0] as usize + sx];
+            for c in 0..3 {
+                p.features[index(44 + c, x, y)] = encode(raw.diffuse[c], config.exposure);
+                p.features[index(47 + c, x, y)] = encode(raw.specular[c], config.exposure);
+            }
+            p.features[index(50, x, y)] = sx as f32 - qx;
+            p.features[index(51, x, y)] = sy as f32 - qy;
         }
     }
     p
 }
 
-pub fn reconstruct(p: &Prepared, multipliers: &[f32]) -> (Vec<f32>, Vec<f32>) {
+/// Deterministic guide used by zero-initialized inference and the quality control.
+pub fn reconstruct(p: &Prepared) -> Vec<f32> {
     let n = p.history.len() / 6;
-    assert_eq!(multipliers.len(), 2 * CANDIDATES * n);
-    let mut weights = vec![0.0; multipliers.len()];
     let mut image = vec![0.0; 6 * n];
-    for l in 0..2 {
-        for i in 0..n {
-            let sum = (0..CANDIDATES)
-                .map(|k| {
-                    p.prior[k * 2 * n + l * n + i]
-                        * multipliers[k * 2 * n + l * n + i].max(MIN_MULTIPLIER)
-                })
-                .sum::<f32>();
-            for k in 0..CANDIDATES {
-                let w = p.prior[k * 2 * n + l * n + i]
-                    * multipliers[k * 2 * n + l * n + i].max(MIN_MULTIPLIER)
-                    / sum.max(1e-12);
-                weights[k * 2 * n + l * n + i] = w;
-                for c in 0..3 {
-                    let j = (l * 3 + c) * n + i;
-                    image[j] += w * if k == SCALES {
-                        p.history[j]
-                    } else {
-                        p.candidates[k * 6 * n + j]
-                    };
-                }
+    for k in 0..CANDIDATES {
+        for c in 0..6 {
+            for i in 0..n {
+                let j = c * n + i;
+                let value = if k == SCALES {
+                    p.history[j]
+                } else {
+                    p.candidates[k * 6 * n + j]
+                };
+                image[j] += p.prior[k * 2 * n + c / 3 * n + i] * value;
             }
         }
     }
-    (image, weights)
+    image
 }
 pub fn commit(
     frame: &Frame,
@@ -339,36 +338,4 @@ pub fn commit(
         states.push(state);
     }
     (states, rgb)
-}
-/// Detached analytic confidence labels, excluding invalid or unidentifiable pairs.
-pub fn confidence(p: &Prepared, target: &Target) -> (Vec<f32>, Vec<f32>) {
-    let n = p.history.len() / 6;
-    let mut labels = vec![0.0; 2 * n];
-    let mut mask = labels.clone();
-    for l in 0..2 {
-        for i in 0..n {
-            let h = p.prior[SCALES * 2 * n + l * n + i];
-            let current = std::array::from_fn(|c| {
-                (0..SCALES)
-                    .map(|k| {
-                        p.prior[k * 2 * n + l * n + i]
-                            * p.candidates[k * 6 * n + (3 * l + c) * n + i]
-                    })
-                    .sum::<f32>()
-                    / (1.0 - h).max(1e-6)
-            });
-            let old = std::array::from_fn(|c| p.history[(3 * l + c) * n + i]);
-            let reference = std::array::from_fn(|c| target.lobes[(3 * l + c) * n + i]);
-            if let Some(t) = crate::fusion::confidence_target(
-                current,
-                old,
-                reference,
-                p.validity[l * n + i] > 0.0 && h > 0.0,
-            ) {
-                labels[l * n + i] = t.history_share;
-                mask[l * n + i] = t.separation.min(1.0).sqrt();
-            }
-        }
-    }
-    (labels, mask)
 }

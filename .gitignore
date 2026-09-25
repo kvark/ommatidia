@@ -20,16 +20,10 @@ target
 #  option (not recommended) you can uncomment the following to ignore the entire idea folder.
 #.idea/
 
-# Generated training sets and checkpoints. A few deliberately checked-in
-# result captures are allow-listed so README links cannot silently point at
-# files that only exist in one developer's ignored worktree.
+# Datasets, checkpoints and full run artifacts stay outside source control.
+# Reviewed README evidence lives under docs/results/.
 /data
 /runs/*
-/publish/huggingface/model/model.safetensors
-!/runs/eval-path-trace-4spp-guided-validation/
-!/runs/eval-path-trace-4spp-guided-validation/*.png
-!/runs/eval-path-control-svgf/
-/runs/eval-path-control-svgf/*
-!/runs/eval-path-control-svgf/bilinear.png
-!/runs/eval-path-trace-4spp-hr-guided-validation/
-!/runs/eval-path-trace-4spp-hr-guided-validation/*.png
+*.safetensors
+__pycache__/
+*.py[cod]

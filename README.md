@@ -2,82 +2,72 @@
 
 [![check](https://github.com/kvark/ommatidia/actions/workflows/check.yml/badge.svg)](https://github.com/kvark/ommatidia/actions/workflows/check.yml)
 
-Portable neural reconstruction from sparse path samples. Rust,
-[Meganeura](https://github.com/kvark/meganeura), Vulkan and Metal.
+Neural reconstruction of sparse path-traced frames, in Rust on
+[Meganeura](https://github.com/kvark/meganeura) and
+[Blade](https://github.com/kvark/blade).
 
-**Goal: [DLSS 4 Ray Reconstruction-level quality](docs/quality-roadmap.md).**
-Quality-first, matched-input moving-sequence comparisons; not frame generation.
+One model: a **recurrent, lobe-separated radiance-residual U-Net**. It reconstructs
+diffuse illumination and specular radiance, then applies observed material albedo
+and emission. At 2x scale it has 188,160 parameters. Inputs include 1-spp
+low-resolution radiance, motion/jitter and output-resolution primary surfaces.
 
-**Research prototype—not a demonstrated DLSS replacement.** The active model
-reconstructs diffuse illumination and specular radiance separately, selects
-among multiscale and reprojected candidates, and preserves known surface albedo
-and emission. Training includes confidence supervision and short radiance BPTT.
-The published v0.3.1 checkpoint remains supported by the legacy runtime.
+## Measured results
 
-## Visual results
+Fresh, scene/asset-disjoint audit: **128 frames**, 1-spp 128×128 input → 256×256
+output, 16-frame causal sequences, 4,096-spp references. One 4,000-update run;
+the 3,500-update checkpoint was selected on development PSNR before this audit.
 
-Historical spatial denoising, local-light scene, 2x reconstruction. These are
-archived outputs, **not** the new transport/field model. [Full comparison and
-limitations](docs/results-overview.md).
+| Audit | PSNR, guide → model ↑ | SSIM, guide → model ↑ | Temporal error ↓ |
+|---|---|---|---|
+| Procedural scenes | 25.18 → **28.24 dB** | 0.675 → 0.794 | −54% |
+| Held-out object scenes | 25.92 → **29.04 dB** | 0.654 → 0.788 | −58% |
 
-| Sparse paths + bilinear | Historical Ommatidium | 4,096-spp reference |
+The control is the fixed multiscale/recurrent guide, not a historical model.
+All 128 frames improve in PSNR in this audit. Mean energy is still 1.0% high
+on procedural scenes and 2.3% high on object scenes; specular noise and blotches
+remain. [Full metrics, protocol, hashes and limitations](docs/results/README.md).
+
+Sequence 0, frame 7 in each set, chosen before evaluation. Native 256×256
+outputs; identical display transform, no retouching.
+
+| Fixed guide | Residual U-Net | Reference |
 |---|---|---|
-| <img src="docs/comparison-suite/local-light/bilinear.png" alt="Sparse local-light paths, bilinearly upscaled" width="256" height="256"> | <img src="docs/comparison-suite/local-light/ommatidium.png" alt="Historical Ommatidium local-light reconstruction" width="256" height="256"> | <img src="docs/comparison-suite/local-light/canonical.png" alt="Local-light reference, 4096 samples per pixel" width="256" height="256"> |
+| <img src="docs/results/procedural-guide.png" alt="Procedural scene: fixed recurrent guide" width="256" height="256"> | <img src="docs/results/procedural-model.png" alt="Procedural scene: trained residual U-Net" width="256" height="256"> | <img src="docs/results/procedural-reference.png" alt="Procedural scene: 4096-spp reference" width="256" height="256"> |
+| <img src="docs/results/abo-guide.png" alt="Object scene: fixed recurrent guide" width="256" height="256"> | <img src="docs/results/abo-model.png" alt="Object scene: trained residual U-Net" width="256" height="256"> | <img src="docs/results/abo-reference.png" alt="Object scene: 4096-spp reference" width="256" height="256"> |
 
-## Build
+Object assets: Amazon.com, [ABO / CC BY 4.0](docs/catalog.md). These views are
+primitive-dominated; asset-disjoint membership alone is not a visibility audit.
 
-Place `ommatidia`, `blade`, and `meganeura` in sibling directories. Cargo pins
-Blade at `fbb4f28` and Meganeura at `0dbfcc0`, with sibling checkouts overriding
-those pins for local development. CI checks out those exact revisions. Naga 30
-is pinned to the same git revision used by Blade and Meganeura. The data generator
-reads Blade's matching WGSL from `../blade/blade-render/code` (or `--shader-dir`).
+## Build and train
+
+Rust 1.92+. Place `ommatidia`, `blade` and `meganeura` in sibling directories.
+Cargo pins Blade to `fbb4f28` and Meganeura to `0dbfcc0`; local sibling checkouts
+override those pins. Keep Blade's shader directory at the same revision.
 
 ```sh
 cargo +1.92.0 test --workspace --locked
-cargo +1.92.0 run -p ommatidia-train --bin transport -- --help
-bash benchmarks/transport-lavapipe.sh
+cargo build --release --workspace
+cargo run --release -p ommatidia-train --bin transport -- \
+  --data data/train.omd --eval-data data/dev.omd --out runs/model \
+  --steps 4000 --channels 16 --unroll 2 --lr 0.0003 --eval-every 500
 ```
 
-## Offline field experiment
+[Architecture and runtime](docs/design.md) ·
+[Data, metrics and reproduction](docs/evaluation.md) ·
+[External asset capture](docs/catalog.md)
 
-Secondary to the denoising quality goal. Posed RGB only; no G-buffer or velocity.
-The wider variant shares the image pyramid and predicts a density/radiance field.
-Synthetic light and surface labels enter only training losses. See [field.md](docs/field.md),
-[surface supervision](docs/surface.md), [late source-view fusion](docs/late-fusion.md),
-and [predicted source visibility](docs/support.md).
+## Scope
 
-```sh
-cargo +1.92.0 run -p ommatidia-train --bin field -- --help
-FIELD_UPDATES=2048 bash benchmarks/surface-lavapipe.sh
-```
+This is a reconstruction research prototype, not demonstrated DLSS parity.
+The training corpus is still small and synthetic; game traces, broad interiors,
+and matched external-denoiser comparisons remain missing.
 
-One construction scene, separate validation camera, **64x64 native pixels
-enlarged**, 2048 updates. Surface supervision improves geometry and colour, but
-both fields remain blurry. [Protocol, metrics and limitations](docs/results/surface-lavapipe-2026-09-07.md).
+The old diffusion, kernel-selector, field/relighting, C ABI, trainers and result
+galleries were removed. They remain in Git at `e0922c6`. There are no hidden
+architecture switches or compatibility interpretations of their weights.
+The retained runtime is `ommatidia::transport::native::Native`, config version 3.
 
-| RGB/source supervision | + surface termination | Reference |
-|---|---|---|
-| <img src="docs/surface-preview/control.png" alt="Construction field without surface targets; still blurry" width="256" height="256"> | <img src="docs/surface-preview/surface.png" alt="Surface-supervised field; improved geometry but still blurry" width="256" height="256"> | <img src="docs/surface-preview/reference.png" alt="Validation camera of the 64 by 64 construction scene" width="256" height="256"> |
-
-## Quality and integration
-
-See [the architecture and input contract](docs/design.md),
-[the historical comparison harness](benchmarks/README.md), and
-[the quality goal and roadmap](docs/quality-roadmap.md).
-`ommatidia::transport::native::Native` exposes the new Rust GPU path;
-`process` adds synchronous upload/readback for tests. Existing `Upscaler`/C ABI
-clients retain legacy checkpoint schemas. Numerical fixes can change outputs
-at extreme logits; supported weights are not silently reinterpreted or promoted.
-
-[Published weights](https://huggingface.co/mad-bot/ommatidia) ·
-[Historical datasets](https://huggingface.co/datasets/mad-bot/ommatidia) ·
-[Historical results](docs/results-overview.md)
-
-Old captures may have mismatched path depth or camera-motion history. The new
-trainer requires matched transport provenance and disjoint scene/family splits;
-do not relabel old data or edit old checkpoint sidecars into the new model.
-Historical training commands require their recorded Git revisions.
-
-The [September 25 legacy rebaseline](docs/results/rebaseline-2026-09-25.md)
-records a gain from retraining the retired recipe and an unresolved Vulkan
-shader-layout validation failure. It does not evaluate the active transport model.
+Numerical CPU/GPU, gradient, recurrence and reload checks pass on the tested
+adapters. **Vulkan validation is not clean:** Naga's Workgroup-array layout emits
+`VUID-StandaloneSpirv-None-10684`. This is a release blocker, recorded as failure
+by the test harness; optimized training results do not waive it.
