@@ -238,3 +238,48 @@ Fix the upstream shader-layout validation before claiming a clean deployment
 gate. Then use isolated history-visible-predictor and linear-mixture comparisons,
 longer and more diverse clips, independent references, and fresh scene families.
 Do not enlarge the backbone to compensate for an obsolete training baseline.
+
+## Follow-up after rebasing onto the active transport implementation
+
+The dependency update and applicable checks were rebased onto `e924d7b` without
+restoring the retired trainer or replacing the current quality-first roadmap.
+The legacy confidence-loss commit is retained for compatibility, with unsupported
+linear-fusion combinations rejected explicitly. Published weights are unchanged.
+
+`two_frame_training_matches_reference` now checks the active c8 transport graph
+at 8x8 input, with reset and recurrent frames, fractional specular motion, and
+both accepted and rejected reprojection. A nonzero head exposes the backbone.
+Each selector (softplus and masked softmax) passes four f64 finite-difference
+probes, followed by fused and unfused GPU checks of the production loss-only
+graph and all 12 parameter-gradient tensors. Buffers are NaN-poisoned.
+
+These numerical comparisons pass on RADV and LavaPipe, but the runs remain
+**validation failures**: the RADV oracle emits 40 workgroup-layout errors; the
+LavaPipe suite emits 60 while passing all three numerical/runtime tests. The
+same Naga-only reproducer still identifies the shader-layout problem independently
+of either architecture. No dependency sources or validation rules were patched.
+CI now explicitly installs validation layers as well as recording GPU errors.
+
+The active evaluator reports pixel-weighted compressed-RGB MSE, count and coverage
+for non-reset pixels missing reprojection in either lobe. It reads actual GPU
+feature masks, not inferred motion or learned gate values. This covers geometric
+rejection and out-of-frame motion, not reactive suppression of otherwise valid
+history. Empty regions are `null`. A 12-frame native/CPU test verifies the exact
+mask readback across motion, reactive changes and resets; CPU tests check the
+two-lobe subpixel mapping, unequal region sizes and empty-region behavior.
+
+All 184 CPU tests, strict workspace Clippy, formatting, and the Rust 1.92
+all-target check pass. Recorded runs are `rebased-unit-tests/`,
+`transport-gradients/`, and `transport-lavapipe/` under the artifact directory
+above. These are correctness checks, not a quality win for the active model.
+
+A fresh end-to-end smoke also captures scene-disjoint 16x16 input / 32x32 output
+clips (seeds 7 and 10000, three frames each, 1-spp input and 16-spp matched-depth
+reference), performs eight c8/two-frame updates, reloads the checkpoint and scores
+all held frames. Each method reports one reset, 2,048 non-reset pixels and 65
+reprojection-rejected pixels (3.17%), with a finite rejected-region score. Captures
+are validation-clean on RADV; training on LavaPipe emits the known layout error
+and is marked failed by the recorder despite completing. Artifacts and exact
+commands are in `transport-capture-{train,holdout}/`, `transport-smoke-train/`,
+`transport-smoke-reload/`, and `transport-smoke/`. This deliberately tiny, noisy
+integration fixture is not a retraining baseline or a new quality claim.

@@ -3,7 +3,7 @@
 
 Example:
   python3 scripts/record-run.py runs/baseline --input data/train.omd -- \
-    cargo run --release -p ommatidia-train --locked -- --data data/train.omd ...
+    cargo run --release -p ommatidia-train --bin transport --locked -- --data data/train.omd ...
 
 The output directory must not exist. Checkpoints still need an explicit --out.
 """

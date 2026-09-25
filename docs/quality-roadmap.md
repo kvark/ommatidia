@@ -16,10 +16,11 @@ The [legacy rebaseline](results/rebaseline-2026-09-25.md) improved after retrain
 on current dependencies, but it used the retired trainer. It does not supersede
 the transport/field results or the quality-first goal below. The active transport
 model already conditions on reconstructed history, mixes linear radiance, and
-uses short BPTT. Carry forward the effective-source/input provenance, independent
-model-gradient checks, and rejected-history scoring; do not resurrect the old
-trainer. Resolve the Naga workgroup-layout validation failure before claiming a
-validation-clean deployment.
+uses short BPTT. Effective-source/input provenance, independent two-frame model
+gradient checks, and rejected-history scoring are now carried forward; the old
+trainer remains retired. Both active selector modes pass the f64/GPU comparisons,
+but Naga workgroup-layout validation still fails. Resolve it before claiming a
+validation-clean deployment; numerical parity alone is not a release gate.
 
 ## Latest: the masked-selector control is complete
 

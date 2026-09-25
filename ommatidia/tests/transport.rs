@@ -44,6 +44,106 @@ fn contract_and_target_isolation() {
 fn shader_parses() {
     naga::front::wgsl::parse_str(include_str!("../src/transport/prepare.wgsl")).unwrap();
 }
+
+#[test]
+#[ignore = "requires Vulkan or Metal; set MEGANEURA_DEVICE_ID to select the adapter"]
+fn two_frame_training_matches_reference() {
+    use meganeura::reference::{Feeds, gpu, gradients};
+    use ommatidia::model::InitKind;
+
+    for mixture in [
+        transport::mixture::Mode::Softplus,
+        transport::mixture::Mode::MaskedSoftmax,
+    ] {
+        let config = Config {
+            version: mixture.version(),
+            mixture,
+            ..Config::default()
+        };
+        let model = graph::build(config, [8, 8], 2).unwrap();
+        let mut feeds = Feeds::new();
+        let mut rng = ommatidia::rng::Rng::new(71);
+        for param in &model.params {
+            let values = match &param.kind {
+                InitKind::Kaiming { fan_in } => (0..param.len)
+                    .map(|_| rng.normal() * (2.0 / *fan_in as f32).sqrt())
+                    .collect::<Vec<_>>(),
+                // A nonzero head exposes gradients throughout the image pyramid.
+                InitKind::Zeros => (0..param.len).map(|_| 0.02 * rng.normal()).collect(),
+                InitKind::Ones => vec![1.0; param.len],
+                InitKind::Values(values) => values.clone(),
+            };
+            feeds.set(&param.name, &values);
+        }
+        let weights = graph::LossWeights::default();
+        feeds.set(
+            "loss.weights",
+            &[
+                weights.compressed,
+                weights.physical,
+                weights.low_frequency,
+                weights.confidence,
+                weights.temporal,
+            ],
+        );
+        let mut previous = Vec::new();
+        for step in 0..2 {
+            let (frame, target) = fixture(config, step, 19);
+            let p = cpu::prepare(&frame, &previous, config);
+            let tag = format!("f{step}");
+            feeds.set(&format!("{tag}.features"), &p.features);
+            feeds.set(&format!("{tag}.candidates"), &p.candidates);
+            feeds.set(&format!("{tag}.prior"), &p.prior);
+            feeds.set(&format!("{tag}.target"), &target.lobes);
+            feeds.set(
+                &format!("{tag}.loss_scale"),
+                &target
+                    .lobes
+                    .iter()
+                    .map(|v| 1.0 / (0.1 + v))
+                    .collect::<Vec<_>>(),
+            );
+            let (labels, mask) = cpu::confidence(&p, &target);
+            feeds.set(&format!("{tag}.confidence"), &labels);
+            feeds.set(&format!("{tag}.confidence_mask"), &mask);
+            if step == 0 {
+                assert!(p.validity.iter().all(|&v| v == 0.0));
+                feeds.set(&format!("{tag}.history"), &p.history);
+            } else {
+                assert!(p.validity.contains(&0.0) && p.validity.contains(&1.0));
+                for k in 0..4 {
+                    feeds.set_u32(&format!("{tag}.warp{k}"), &p.indices[k]);
+                    feeds.set(&format!("{tag}.coeff{k}"), &p.coefficients[k]);
+                }
+                let n = frame.surfaces.len();
+                let mask: Vec<_> = (0..6 * n)
+                    .map(|i| p.validity[i / (3 * n) * n + i % n])
+                    .collect();
+                feeds.set(&format!("{tag}.temporal_mask"), &mask);
+            }
+            let (image, _) = cpu::reconstruct(&p, &vec![1.0; p.prior.len()]);
+            previous = cpu::commit(&frame, &p, &image, config).0;
+        }
+        let report = gradients::check(
+            &model.graph,
+            &feeds,
+            &gradients::Options {
+                max_elementwise: 0,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        println!("{mixture:?}, finite differences\n{report}");
+        assert!(report.passed(), "{mixture:?}\n{report}");
+        // Keep the production loss-only graph: extra outputs change buffer lifetimes.
+        for (name, options) in gpu::Options::lowerings() {
+            let report = gpu::check_training(&model.graph, &feeds, &options).unwrap();
+            println!("{mixture:?}, {name}\n{report}");
+            assert!(report.passed(), "{mixture:?}, {name}\n{report}");
+        }
+    }
+}
+
 #[test]
 #[ignore = "requires Vulkan or Metal"]
 fn native_multiscale_recurrence_reset_and_hdr() {
@@ -67,6 +167,7 @@ fn native_multiscale_recurrence_reset_and_hdr() {
         let (image, _) = cpu::reconstruct(&p, &vec![1.0; p.prior.len()]);
         let (states, expected) = cpu::commit(&frame, &p, &image, config);
         let actual = native.process(&frame).unwrap();
+        assert_eq!(native.read_history_validity(), p.validity);
         for (a, b) in actual.iter().zip(&expected) {
             assert!(a.is_finite());
             worst = worst.max((a - b).abs() / (1.0 + b.abs()));

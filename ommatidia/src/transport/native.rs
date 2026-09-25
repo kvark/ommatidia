@@ -298,6 +298,22 @@ impl Native {
             selected,
         }
     }
+    /// Offline readback after a completed process/resolve. These are the actual
+    /// per-lobe reprojection masks fed to the predictor, not learned gate values.
+    pub fn read_history_validity(&self) -> Vec<f32> {
+        let n = (self.low[0] * self.low[1] * self.config.scale.pow(2)) as usize;
+        let buffer = self
+            .session
+            .plan()
+            .input_buffers
+            .iter()
+            .find(|(name, _)| name == "f0.features")
+            .unwrap()
+            .1;
+        let mut features = vec![0.0; FEATURES * n];
+        self.session.read_buffer(buffer, &mut features);
+        features.split_off(42 * n)
+    }
     /// Only call after waiting for the resolve submission.
     pub fn read_state(&self) -> Vec<State> {
         let n = (self.low[0] * self.low[1] * self.config.scale.pow(2)) as usize;
