@@ -16,9 +16,9 @@ concurrency:
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
-  # Blade checkout supplies capture shaders and fixtures; crates use Cargo.lock.
-  BLADE_REV: c24621aa6606da968fd1b3967d5993f8aa2b74e8
-  MEGANEURA_REV: 185b1014bba05e760d4679e1db4fde38ece2e056
+  # Sibling checkouts overlay the git pins in Cargo.toml through [patch].
+  BLADE_REV: fbb4f28c4869e81ae15de58925945b423b9c1ac5
+  MEGANEURA_REV: 0dbfcc0029bf98b33a03fc792e1f4e90ead17f23
 
 jobs:
   platform:

@@ -26,11 +26,11 @@ limitations](docs/results-overview.md).
 
 ## Build
 
-Place `ommatidia` and `meganeura` in sibling directories. CI pins Meganeura 0.3
-at `185b101` ([merged softplus correctness fix](https://github.com/kvark/meganeura/pull/164));
-Blade 0.9 and Naga 30 come from crates.io and Cargo.lock. The data generator
-reads Blade's WGSL from `../blade/blade-render/code` (or `--shader-dir`);
-CI uses the matching `c24621a` source checkout for shaders and fixtures.
+Place `ommatidia`, `blade`, and `meganeura` in sibling directories. Cargo pins
+Blade at `fbb4f28` and Meganeura at `0dbfcc0`, with sibling checkouts overriding
+those pins for local development. CI checks out those exact revisions. Naga 30
+is pinned to the same git revision used by Blade and Meganeura. The data generator
+reads Blade's matching WGSL from `../blade/blade-render/code` (or `--shader-dir`).
 
 ```sh
 cargo +1.92.0 test --workspace --locked

@@ -219,6 +219,7 @@ fn where_the_frame_time_goes() {
             samples: 5,
             unprofiled_median_ms: Some(wall_ms),
             include_pipeline_statistics: true,
+            ..Default::default()
         },
     )
     .expect("capture deployment profile");
