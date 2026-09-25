@@ -10,6 +10,17 @@ field/relighting work unless it directly tests transfer to denoising. Keep the
 Rust/Meganeura/Blade path portable. Quality comes before latency: a larger model
 is allowed; LavaPipe speed is not a quality gate.
 
+## Correctness follow-up — 2026-09-25
+
+The [legacy rebaseline](results/rebaseline-2026-09-25.md) improved after retraining
+on current dependencies, but it used the retired trainer. It does not supersede
+the transport/field results or the quality-first goal below. The active transport
+model already conditions on reconstructed history, mixes linear radiance, and
+uses short BPTT. Carry forward the effective-source/input provenance, independent
+model-gradient checks, and rejected-history scoring; do not resurrect the old
+trainer. Resolve the Naga workgroup-layout validation failure before claiming a
+validation-clean deployment.
+
 ## Latest: the masked-selector control is complete
 
 [Eight paired experiments](results/masked-selector-lavapipe-2026-09-09.md) now use

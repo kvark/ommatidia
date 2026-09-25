@@ -8,7 +8,7 @@
 //! ```
 
 use ommatidia::model::{
-    ModelConfig, Objective, Prediction, ReconstructionBase, build, build_for_extent,
+    InitKind, ModelConfig, Objective, Prediction, ReconstructionBase, build, build_for_extent,
 };
 use ommatidia::rng::Rng;
 use ommatidia::{Plane, PlaneSet};
@@ -153,6 +153,101 @@ fn direct_objective_runs_without_a_timestep() {
         last < first * 0.5,
         "loss barely moved: {first:.6} -> {last:.6}"
     );
+}
+
+/// Check the retained temporal kernel recipe, including every parameter's
+/// gradient. Memorising a batch alone cannot detect a silently missing gradient.
+///
+/// ```sh
+/// MEGANEURA_DEVICE_ID=0x744c cargo test --release -p ommatidia --test gpu_model \
+///   kernel_training_matches_reference -- --ignored --nocapture --test-threads=1
+/// ```
+#[test]
+#[ignore = "requires a GPU; set MEGANEURA_DEVICE_ID to select the adapter"]
+fn kernel_training_matches_reference() {
+    use meganeura::graph::Op;
+    use meganeura::reference::{Feeds, gpu, gradients};
+
+    let config = ModelConfig {
+        tile: 8,
+        batch: 2,
+        base_channels: 16,
+        cond_planes: ModelConfig::default().cond_planes.with(Plane::Jitter),
+        prediction: Prediction::SubpixelKernel,
+        reconstruction_base: ReconstructionBase::Sample,
+        kernel_radius: 3,
+        linear_kernel: true,
+        demodulate: true,
+        guide_mix: true,
+        temporal: Some(ommatidia::temporal::Config {
+            frames: 4,
+            rejection: Default::default(),
+            previous_output: true,
+            features: ommatidia::temporal::Features::Variance,
+            unrejected_tap: false,
+        }),
+        ..ModelConfig::default()
+    };
+    let mut model = build(&config, true).expect("build temporal kernel model");
+    let mut feeds = Feeds::new();
+    let mut rng = Rng::new(71);
+    for param in &model.params {
+        let data = match &param.kind {
+            InitKind::Kaiming { fan_in } => {
+                filled(&mut rng, param.len, (2.0 / *fan_in as f32).sqrt())
+            }
+            // A zero head hides the backbone gradients. Perturb zero-valued
+            // parameters so this checks an actual training step, not just init.
+            InitKind::Zeros => filled(&mut rng, param.len, 0.02),
+            InitKind::Ones => vec![1.0; param.len],
+            InitKind::Values(values) => values.clone(),
+        };
+        feeds.set(&param.name, &data);
+    }
+    for node in model.graph.nodes() {
+        let Op::Input { ref name } = node.op else {
+            continue;
+        };
+        let data: Vec<_> = (0..node.ty.num_elements())
+            .map(|i| match name.as_str() {
+                "history_validity" => u8::from(!i.is_multiple_of(3)) as f32,
+                "taps" => 0.05 + rng.uniform() * 4.0,
+                "cond" => rng.normal() * 0.5,
+                "guide" | "history" | "target" => 0.05 + rng.uniform() * 0.8,
+                _ => panic!("uncovered model input {name}"),
+            })
+            .collect();
+        feeds.set(name, &data);
+    }
+    let finite_difference = gradients::check(
+        &model.graph,
+        &feeds,
+        &gradients::Options {
+            max_elementwise: 0,
+            ..Default::default()
+        },
+    )
+    .expect("reference finite differences");
+    println!("finite differences\n{finite_difference}");
+    assert!(finite_difference.passed(), "{finite_difference}");
+    // Observing the prediction extends its lifetime. Check the production
+    // loss-only graph too, so instrumentation cannot conceal a reuse bug.
+    for expose_prediction in [false, true] {
+        let mut outputs = vec![model.loss.unwrap()];
+        if expose_prediction {
+            outputs.push(model.output);
+        }
+        model.graph.set_outputs(outputs);
+        for (name, options) in gpu::Options::lowerings() {
+            let report = gpu::check_training(&model.graph, &feeds, &options)
+                .expect("GPU/reference training comparison");
+            println!("{name}, expose_prediction={expose_prediction}\n{report}");
+            assert!(
+                report.passed(),
+                "{name}, expose_prediction={expose_prediction}\n{report}"
+            );
+        }
+    }
 }
 
 /// What one reconstruction costs at frame resolution.

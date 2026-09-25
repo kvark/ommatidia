@@ -77,3 +77,7 @@ Old captures may have mismatched path depth or camera-motion history. The new
 trainer requires matched transport provenance and disjoint scene/family splits;
 do not relabel old data or edit old checkpoint sidecars into the new model.
 Historical training commands require their recorded Git revisions.
+
+The [September 25 legacy rebaseline](docs/results/rebaseline-2026-09-25.md)
+records a gain from retraining the retired recipe and an unresolved Vulkan
+shader-layout validation failure. It does not evaluate the active transport model.

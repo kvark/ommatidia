@@ -14,6 +14,27 @@ pub fn error(a: &[f32], b: &[f32]) -> f32 {
     sum / a.len() as f32
 }
 
+/// Compressed-space RGB MSE restricted to an output-pixel-major mask.
+/// An empty region has no score, rather than a misleading perfect score.
+pub fn masked_error(a: &[f32], b: &[f32], keep: &[bool]) -> Option<f64> {
+    assert_eq!(a.len(), b.len());
+    assert_eq!(a.len(), keep.len() * 3);
+    let mut squared = 0.0;
+    let mut values = 0;
+    for ((a, b), &keep) in a.chunks_exact(3).zip(b.chunks_exact(3)).zip(keep) {
+        if !keep {
+            continue;
+        }
+        for (&a, &b) in a.iter().zip(b) {
+            let delta =
+                f64::from(crate::transform::compress(a)) - f64::from(crate::transform::compress(b));
+            squared += delta * delta;
+            values += 1;
+        }
+    }
+    (values != 0).then(|| squared / values as f64)
+}
+
 /// Relative mean squared error, after Rousselle.
 ///
 /// [`error`] is an absolute difference in a compressed space, so a scene's
@@ -358,6 +379,29 @@ mod tests {
     use super::{detail, error, low_frequency_error, relative_error};
 
     const EXTENT: usize = 32;
+
+    #[test]
+    fn masked_error_counts_only_selected_rgb_pixels() {
+        let reference = [1.0; 6];
+        let prediction = [0.0, 0.0, 0.0, 1.0, 1.0, 1.0];
+        assert_eq!(
+            super::masked_error(&prediction, &reference, &[true, false]),
+            Some(0.25)
+        );
+        assert_eq!(
+            super::masked_error(&prediction, &reference, &[false, true]),
+            Some(0.0)
+        );
+        assert_eq!(
+            super::masked_error(&prediction, &reference, &[true, true]),
+            Some(0.125)
+        );
+        assert_eq!(
+            super::masked_error(&prediction, &reference, &[false, false]),
+            None
+        );
+        assert_eq!(super::masked_error(&[], &[], &[]), None);
+    }
 
     fn box_blur(image: &[f32]) -> Vec<f32> {
         let mut out = vec![0.0; image.len()];

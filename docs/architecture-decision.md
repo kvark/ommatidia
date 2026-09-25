@@ -8,6 +8,16 @@ U-Nets?” Ommatidia has to reconstruct linear HDR radiance from sparse paths,
 use motion history, upscale 2×, run on non-vendor-specific GPU kernels, and fit
 inside a frame budget. Architecture names are secondary to those constraints.
 
+## Historical control update (2026-09-25)
+
+The [legacy rebaseline](results/rebaseline-2026-09-25.md) improved substantially
+on current dependencies without widening the old network. Its predictor was
+blind to reconstructed history; final mixtures were compressed, and its rollout
+teacher was detached. These limitations do not describe the active transport
+model, which already uses history conditioning, linear mixtures and short BPTT.
+The [quality roadmap](quality-roadmap.md) remains the current experiment order;
+the legacy rerun motivates independent numerical checks, not architectural rollback.
+
 ## Decision
 
 Keep the multi-scale U-shaped image path and make temporal evidence the next
