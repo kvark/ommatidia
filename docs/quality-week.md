@@ -401,6 +401,10 @@ predeclared ratio-at-most-0.5 gate. Lighting-case smooth crops regress in
 aggregate (ratio 1.106), despite better whole-frame scores. This result is not
 promoted as completion of the quality sprint. Do not round 44.8% into a pass,
 change crop weights, omit cold starts, or select another checkpoint on this audit.
+The fixed smooth-crop ratios at frames 0 / 31 / 63 are 0.879 / 0.332 / 0.315.
+Cold starts are a major part of the missed gate, and remain in its denominator.
+The inspected cold-frame progressions show conspicuous colored outliers and
+surface blotches, even where the late sequence is substantially cleaner.
 
 `score-sequences` reuses the existing temporal metric on saved full-precision
 outputs and observed capture motion. It reproduces both evaluator averages to
@@ -429,6 +433,13 @@ search. The first audit is now a regression/diagnostic set, not an untouched
 holdout for any subsequent model. A newly frozen confirmation audit is required
 before promoting a later candidate. The original crop/data lock and failed
 selection record remain unchanged.
+Supplementary development cold-start crops reuse the reference-checked smooth
+wall/floor regions at frame zero in the static, object-motion, lighting and
+catalog cases. The textured camera ceiling is not a smooth region in this
+diagnostic. These are explicitly tuning data, not changes to the audit: the
+frozen candidate's full-precision cold smooth-error ratio is 0.844 versus the
+original runtime (`dev-cold-signed-history16.json`). Middle-frame development
+results remain separately reported; they cannot stand in for cold-start quality.
 
 ## Progress and evidence
 

@@ -80,7 +80,7 @@ jobs:
       - name: Check quality harness syntax
         working-directory: ommatidia
         run: |
-          python3 -m py_compile scripts/prepare-naga.py scripts/record-run.py scripts/verify-results.py scripts/fetch-catalog.py scripts/score-regions.py
+          python3 -m py_compile scripts/prepare-naga.py scripts/record-run.py scripts/verify-results.py scripts/fetch-catalog.py scripts/score-regions.py scripts/render-comparisons.py
           python3 scripts/test-fetch-catalog.py
           python3 scripts/test-score-regions.py
           bash -n scripts/check-cache.sh scripts/capture-catalog.sh
