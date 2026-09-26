@@ -26,11 +26,15 @@ normal/depth/albedo/roughness, variance, age and validity. Subpixel packing keep
 convolutions at input resolution. No image-wide normalization, diffusion,
 transformer branch, generated texture, or ground-truth input.
 
-The six-channel subpixel head corrects the incoming spatial estimate `S`, then
-accumulates it with reprojected history `H` and lobe-specific history weight `h`:
-`(1-h) * max(S + 0.1 * (S + 1/exposure) * residual, 0) + h * H`.
+The six-channel subpixel head supplies a signed correction to the incoming
+spatial estimate `S`, then accumulates it with reprojected history `H` and
+lobe-specific history weight `h`:
+`max((1-h) * (S + 0.1 * (S + 1/exposure) * residual) + h * H, 0)`.
 The correction is not applied again to retained history. This avoids magnifying
 a stationary correction by the accumulation length, as a post-blend residual did.
+Clamp only the accumulated result: clamping the incoming correction first would
+prevent subtracting obsolete illumination, imposing the lower bound `h * H`.
+Final lobe radiance stays nonnegative; the internal correction need not be.
 A zero head exactly reproduces the fixed spatial/history guide. Unlike a convex
 candidate selector, this decoder can recover detail outside its filtered
 candidates' range. The default width is 16: 188,160 parameters at 2x scale.

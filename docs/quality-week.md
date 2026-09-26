@@ -294,6 +294,52 @@ PNG-error ratio versus the original implementation is 0.337; edge/texture ratios
 are 0.692 / 0.425 (`dev-display-original-4000.json`). These remain tuning-set
 diagnostics, not final-audit claims or a reason to skip reset/motion review.
 
+### Illumination response: a remaining structural constraint
+
+Reset-balanced training completed all 4,000 updates. At 3,000, development PSNR
+is 30.09515 dB, reset PSNR 26.02241, temporal MSE 0.00036847 and energy ratio
+1.00262. All ten cold-start frames improve over the original published runtime.
+At 4,000, mean PSNR is 29.92771, reset PSNR 26.09906 and temporal MSE 0.00035775,
+but energy ratio rises to 1.01212. The last checkpoint is not automatically best.
+
+Worst-frame review exposes excessive brightness as the second lighting scene
+darkens. At update 3,000, its final frame scores 25.95757 dB, versus 26.72249 for
+the original model. Resetting history on that same frame scores 32.27004 dB
+(`dev-lights-reset-3000-run/`). The images confirm persistent bright illumination,
+not just grain. Its mean compressed RGB is 0.21439 versus reference 0.17814;
+the original model is also too bright, at 0.20594.
+
+This failure is not captured by a better temporal average alone: the
+development-only 8×8-block change diagnostic improves by about 50% in that scene
+(`dev-light-flicker-3000.json`). Both static development scenes also improve,
+by 44–46% (`dev-static-flicker-4000.json`). These inverse-sRGB PNG diagnostics
+use fixed primary geometry, not motion compensation or full-precision audit
+data. Slow response bias and random flicker must be inspected separately.
+
+The first corrected decoder clamps the corrected incoming estimate before
+history blending. That imposes `output >= h * history`, so the network cannot
+subtract stale illumination quickly. Test keeping the innovation signed until
+after accumulation, while retaining its `(1-h)` weighting. This is the same
+six-channel head and 188,160 parameters, not another model family. The
+256-frame regression still prevents amplification of stationary corrections,
+now covering negative, zero-clipped and positive values. A separate regression
+shows that stale history can be removed while final radiance stays nonnegative.
+
+All four debug GPU checks pass on RADV and LavaPipe with zero validation errors
+(`signed-numerics/`, `signed-numerics-lavapipe/`), including gradients,
+recurrence, timing parity and reload. All 80 regular workspace tests, Rust 1.92
+Clippy and formatting pass. With unchanged update-3,000 weights, the 256-frame
+static/lighting diagnostic changes mean PSNR by −0.042 / −0.023 dB; the failing
+final lighting frame only rises to 26.00429 dB (`dev-signed-3000-run/`).
+Do not claim that the code change alone fixes response quality.
+
+The bounded follow-up starts from `reset-fit/step-3000.safetensors`, the
+reset-balanced checkpoint with the best mean development PSNR and lower energy
+bias than update 4,000. Use the same corpus, reset sampling and loss, fresh Adam,
+seed 31, learning rate 0.0001, two-frame unroll and 1,000 updates, evaluating at
+500 and 1,000. Check illumination response and static noise together before
+selecting any final candidate. The learned final audit remains unseen.
+
 ## Progress and evidence
 
 - Initial validation reproduction:
@@ -364,7 +410,7 @@ diagnostics, not final-audit claims or a reason to skip reset/motion review.
   eight-pixel horizontal tap has weight 0.923, versus 0.009–0.022 vertically.
   The sampled normals are identical; depth slope causes the rejection. This is
   a candidate explanation for horizontal streaks; the tested correction follows.
-- The retained decoder corrects the incoming spatial observation before history
+- The first corrected decoder corrects the incoming spatial observation before history
   blending. A 256-frame stationary regression verifies that a constant residual
   is not magnified by the accumulation length. With unchanged lobe-fit weights,
   this changes the independent 64-frame score from 24.30 to 30.28 dB and energy

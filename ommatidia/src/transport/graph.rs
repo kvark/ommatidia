@@ -112,6 +112,7 @@ fn decode(
     // `spatial` already contains its (1-h) weight. Correct only this incoming
     // observation, then accumulate it; a post-blend residual is added again
     // every frame and amplifies a stationary bias by the history length.
+    // Keep the innovation signed so dimming can remove obsolete history.
     let one = filled(g, history_weight, 1.0);
     let negative = g.neg(history_weight);
     let incoming_weight = g.add(one, negative);
@@ -122,9 +123,9 @@ fn decode(
     let amplitude = g.mul(amplitude, scale);
     let correction = g.mul(residual, amplitude);
     let corrected = g.add(spatial, correction);
-    let corrected = g.relu(corrected);
     let retained = g.mul(history_weight, history);
-    g.add(corrected, retained)
+    let accumulated = g.add(corrected, retained);
+    g.relu(accumulated)
 }
 
 /// `unroll == 0` builds inference; positive values build a tied-weight training
@@ -373,33 +374,37 @@ mod tests {
     fn residual_is_accumulated_once_in_a_long_stationary_history() {
         let g = decoder();
         for cap in [1.0_f32, 8.0, 32.0] {
-            let mut previous = 0.0_f32;
-            let mut feeds = Feeds::new();
-            for step in 1..=256 {
-                let h = 1.0 - 1.0 / (step as f32).min(cap);
-                feeds.set("spatial", &[1.0 - h]);
-                feeds.set("history", &[previous]);
-                feeds.set("h", &[h]);
-                feeds.set("residual", &[1.0]);
-                previous = evaluate_outputs(&g, &feeds).unwrap()[0].data[0] as f32;
-                assert!(
-                    (previous - 1.2).abs() < 1e-5,
-                    "cap {cap}, step {step}: {previous}"
-                );
+            for residual in [-20.0_f32, -1.0, 1.0, 10.0] {
+                let mut previous = 0.0_f32;
+                let mut feeds = Feeds::new();
+                for step in 1..=256 {
+                    let h = 1.0 - 1.0 / (step as f32).min(cap);
+                    feeds.set("spatial", &[1.0 - h]);
+                    feeds.set("history", &[previous]);
+                    feeds.set("h", &[h]);
+                    feeds.set("residual", &[residual]);
+                    previous = evaluate_outputs(&g, &feeds).unwrap()[0].data[0] as f32;
+                    assert!(
+                        (previous - (1.0 + 0.2 * residual).max(0.0)).abs() < 1e-5,
+                        "cap {cap}, residual {residual}, step {step}: {previous}"
+                    );
+                }
             }
         }
     }
 
     #[test]
-    fn clamping_an_incoming_estimate_does_not_erase_retained_history() {
+    fn signed_innovation_can_remove_obsolete_history_without_negative_output() {
         let g = decoder();
         let mut feeds = Feeds::new();
         feeds.set("spatial", &[0.25]);
         feeds.set("history", &[2.0]);
         feeds.set("h", &[0.75]);
         feeds.set("residual", &[-100.0]);
-        assert_eq!(evaluate_outputs(&g, &feeds).unwrap()[0].data[0], 1.5);
+        assert_eq!(evaluate_outputs(&g, &feeds).unwrap()[0].data[0], 0.0);
         feeds.set("residual", &[0.0]);
         assert_eq!(evaluate_outputs(&g, &feeds).unwrap()[0].data[0], 1.75);
+        feeds.set("residual", &[-30.0]);
+        assert!((evaluate_outputs(&g, &feeds).unwrap()[0].data[0] - 0.25).abs() < 1e-6);
     }
 }
