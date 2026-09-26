@@ -47,9 +47,9 @@ these are fresh scenes using the same four audit families as the previous report
 
 ## Build and train
 
-Rust 1.92+. Place `ommatidia`, `blade` and `meganeura` in sibling directories.
-Cargo pins Blade to `fbb4f28` and Meganeura to `0dbfcc0`; local sibling checkouts
-override those pins. Keep Blade's shader directory at the same revision.
+Rust 1.92+. Place `ommatidia` and `blade` in sibling directories.
+Cargo pins Blade to `fbb4f28` and Meganeura to `ee3aea4`; only Blade has a local
+sibling override. Keep Blade's shader directory at the same revision.
 
 ```sh
 cargo +1.92.0 test --workspace --locked

@@ -60,7 +60,11 @@ impl Corpus {
             let sample = reader.sample(index)?;
             let frame = Frame::from_sample(&sample, layout, config)?;
             let target = Target::from_sample(&sample, layout, config)?;
-            if target.rgb.iter().any(|v| !v.is_finite() || *v < 0.0)
+            if target
+                .rgb
+                .iter()
+                .chain(&target.lobes)
+                .any(|v| !v.is_finite() || *v < 0.0)
                 || target.rgb.iter().all(|v| *v <= 1e-6)
             {
                 return Err(format!("{} record {index}: invalid or entirely black reference; inspect the capture camera", path.display()).into());
@@ -145,6 +149,7 @@ struct Score {
     linear_mse: f64,
     energy_ratio: f64,
     detail_ratio: f64,
+    gradient_mse: f64,
     temporal_mse: f64,
     temporal_frames: usize,
     reset_psnr: f64,
@@ -181,6 +186,8 @@ impl Score {
             / target.iter().map(|v| *v as f64).sum::<f64>().max(1e-12);
         self.detail_ratio += metrics::detail(image, extent[0] as usize, extent[1] as usize)
             / metrics::detail(target, extent[0] as usize, extent[1] as usize).max(1e-12);
+        self.gradient_mse +=
+            metrics::gradient_error(image, target, extent[0] as usize, extent[1] as usize);
         if reset {
             self.reset_psnr += psnr;
             self.resets += 1;
@@ -203,6 +210,7 @@ impl Score {
         self.linear_mse /= n;
         self.energy_ratio /= n;
         self.detail_ratio /= n;
+        self.gradient_mse /= n;
         self.temporal_mse /= self.temporal_frames.max(1) as f64;
         self.reset_psnr /= self.resets.max(1) as f64;
         if let Some(total) = &mut self.rejected_history_mse {
@@ -236,23 +244,61 @@ fn surfaces(frame: &Frame) -> Vec<ommatidia::temporal::Surface> {
         })
         .collect()
 }
+
+fn reference_lobes(frame: &Frame, target: &Target, config: Config) -> [Vec<f32>; 2] {
+    let width = (frame.low[0] * config.scale) as usize;
+    std::array::from_fn(|lobe| {
+        (0..frame.surfaces.len())
+            .flat_map(|i| {
+                (0..3).map(move |c| {
+                    target.lobes[config.index(frame.low, lobe * 3 + c, i % width, i / width)]
+                })
+            })
+            .collect()
+    })
+}
+
+fn compose_lobes(frame: &Frame, lobes: &[Vec<f32>; 2]) -> Vec<f32> {
+    frame
+        .surfaces
+        .iter()
+        .enumerate()
+        .flat_map(|(i, s)| {
+            (0..3).map(move |c| {
+                lobes[0][i * 3 + c] * s.albedo_roughness[c] + lobes[1][i * 3 + c] + s.emission[c]
+            })
+        })
+        .collect()
+}
+
+#[derive(Clone, Copy, Default)]
+struct EvaluationOptions {
+    reset_history: bool,
+    save_lobes: bool,
+}
+
 fn evaluate(
     corpus: &Corpus,
     config: Config,
     learned: &mut native::Native,
     baseline: &mut native::Native,
     out: &Path,
+    options: EvaluationOptions,
 ) -> Result<serde_json::Value> {
     let mut scores = [Score::default(), Score::default()];
     let mut previous: Option<EvaluationHistory> = None;
+    let mut diagnostics = Vec::new();
     let mut rows = std::fs::File::create(out.join("frames.csv"))?;
     writeln!(rows, "sequence,frame,baseline_psnr,learned_psnr")?;
     for (index, (frame, target)) in corpus.frames.iter().enumerate() {
-        let reset = index % corpus.length == 0;
+        let sequence_start = index % corpus.length == 0;
+        let reset = sequence_start || options.reset_history;
+        if sequence_start {
+            previous = None;
+        }
         if reset {
             learned.reset();
             baseline.reset();
-            previous = None;
         }
         let images = [baseline.process(frame)?, learned.process(frame)?];
         let extent = frame.low.map(|v| v * config.scale);
@@ -305,6 +351,59 @@ fn evaluate(
         )?;
         // All frames are retained: evaluation is not a cherry-picked screenshot.
         let prefix = format!("{:03}-{:03}", index / corpus.length, index % corpus.length);
+        let truth = reference_lobes(frame, target, config);
+        let composition = compose_lobes(frame, &truth);
+        let mut diagnostic = serde_json::json!({
+            "sequence": index / corpus.length,
+            "frame": index % corpus.length,
+            "reference_composition_mse": metrics::error(&composition, &target.rgb),
+        });
+        for (name, model) in [("baseline", &*baseline), ("learned", &*learned)] {
+            let state = model.read_state();
+            let lobes: [Vec<f32>; 2] = [
+                state
+                    .iter()
+                    .flat_map(|s| s.diffuse[..3].iter().copied())
+                    .collect(),
+                state
+                    .iter()
+                    .flat_map(|s| s.specular[..3].iter().copied())
+                    .collect(),
+            ];
+            let shaded = |values: &[f32]| -> Vec<f32> {
+                values
+                    .iter()
+                    .enumerate()
+                    .map(|(i, v)| v * frame.surfaces[i / 3].albedo_roughness[i % 3])
+                    .collect()
+            };
+            diagnostic[name] = serde_json::json!({
+                "diffuse_illumination_mse": metrics::error(&lobes[0], &truth[0]),
+                "diffuse_radiance_mse": metrics::error(&shaded(&lobes[0]), &shaded(&truth[0])),
+                "specular_radiance_mse": metrics::error(&lobes[1], &truth[1]),
+                "mean_diffuse_age": state.iter().map(|s| f64::from(s.diffuse[3])).sum::<f64>() / state.len() as f64,
+                "mean_specular_age": state.iter().map(|s| f64::from(s.specular[3])).sum::<f64>() / state.len() as f64,
+            });
+            if options.save_lobes {
+                for (lobe, values) in ["diffuse", "specular"].into_iter().zip(&lobes) {
+                    save_png(
+                        &out.join(format!("{prefix}-{name}-{lobe}.png")),
+                        values,
+                        extent,
+                    )?;
+                }
+            }
+        }
+        if options.save_lobes {
+            for (lobe, values) in ["diffuse", "specular"].into_iter().zip(&truth) {
+                save_png(
+                    &out.join(format!("{prefix}-reference-{lobe}.png")),
+                    values,
+                    extent,
+                )?;
+            }
+        }
+        diagnostics.push(diagnostic);
         for (name, image) in [
             ("base", &images[0]),
             ("learned", &images[1]),
@@ -314,9 +413,13 @@ fn evaluate(
         }
         previous = Some((images, target.rgb.clone(), current));
     }
+    std::fs::write(
+        out.join("diagnostics.json"),
+        serde_json::to_vec_pretty(&diagnostics)?,
+    )?;
     scores.iter_mut().for_each(Score::finish);
     Ok(
-        serde_json::json!({"baseline":scores[0],"learned":scores[1],"metric_space":"PSNR/SSIM: x/(1+x); energy: scene-linear; PNG: same compression then sRGB", "rejected_history_space":"pixel-weighted compressed RGB MSE on non-reset pixels with unavailable reprojection in either lobe; includes disocclusions and out-of-frame motion, excludes reactive/learned gate suppression; empty regions are null", "speed_claim":false}),
+        serde_json::json!({"baseline":scores[0],"learned":scores[1],"history_mode":if options.reset_history { "reset-every-frame diagnostic" } else { "causal" }, "metric_space":"PSNR/SSIM/gradient/lobe MSE: x/(1+x); energy: scene-linear; PNG: same compression then sRGB", "rejected_history_space":"pixel-weighted compressed RGB MSE on non-reset pixels with unavailable reprojection in either lobe; includes disocclusions and out-of-frame motion, excludes reactive/learned gate suppression; empty regions are null", "speed_claim":false}),
     )
 }
 fn main() -> Result<()> {
@@ -334,6 +437,7 @@ fn main() -> Result<()> {
     let mut eval_every = 500usize;
     let mut device_id = None;
     let mut weights = graph::LossWeights::default();
+    let mut evaluation = EvaluationOptions::default();
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
         if arg == "--help" {
@@ -343,8 +447,11 @@ fn main() -> Result<()> {
   --lr F [0.0003] --eval-every N [500] --device-id ID
   --checkpoint FILE (weights-only warm start, or evaluation input)
   --eval-only (loads checkpoint sidecar; evaluation resolution may differ)
+  --reset-history (eval-only diagnostic: reset the model before every frame)
+  --save-lobes (save diffuse/specular images alongside per-frame diagnostics)
   --compressed-weight F [1] --physical-weight F [0.005]
   --low-frequency-weight F [0.01] --temporal-weight F [0.02]
+  --lobe-weight F [0.5] (absolute diffuse/specular supervision)
 Repeat data arguments for multiple captures. Training and development scene
 seeds/catalog families must be disjoint. Use a separate final audit split."
             );
@@ -352,6 +459,14 @@ seeds/catalog families must be disjoint. Use a separate final audit split."
         }
         if arg == "--eval-only" {
             eval_only = true;
+            continue;
+        }
+        if arg == "--reset-history" {
+            evaluation.reset_history = true;
+            continue;
+        }
+        if arg == "--save-lobes" {
+            evaluation.save_lobes = true;
             continue;
         }
         let v = args.next().ok_or(format!("missing value for {arg}"))?;
@@ -371,10 +486,14 @@ seeds/catalog families must be disjoint. Use a separate final audit split."
             "--physical-weight" => weights.physical = v.parse()?,
             "--low-frequency-weight" => weights.low_frequency = v.parse()?,
             "--temporal-weight" => weights.temporal = v.parse()?,
+            "--lobe-weight" => weights.lobes = v.parse()?,
             _ => return Err(format!("unknown option {arg}").into()),
         }
     }
     weights.validate()?;
+    if evaluation.reset_history && !eval_only {
+        return Err("--reset-history is an evaluation-only diagnostic".into());
+    }
     if !eval_only && out.join("model.safetensors").exists() {
         return Err("refusing to overwrite an existing checkpoint".into());
     }
@@ -515,7 +634,14 @@ seeds/catalog families must be disjoint. Use a separate final audit split."
                 learned.session.load_checkpoint(&path)?;
                 let dir = out.join(format!("dev-{}", update + 1));
                 std::fs::create_dir_all(&dir)?;
-                let report = evaluate(&holdout, config, &mut learned, &mut baseline, &dir)?;
+                let report = evaluate(
+                    &holdout,
+                    config,
+                    &mut learned,
+                    &mut baseline,
+                    &dir,
+                    evaluation,
+                )?;
                 std::fs::write(
                     dir.join("quality.json"),
                     serde_json::to_vec_pretty(&report)?,
@@ -531,7 +657,14 @@ seeds/catalog families must be disjoint. Use a separate final audit split."
         // Score serialized weights, not the still-live training session.
         learned.session.load_checkpoint(&checkpoint)?;
     }
-    let mut report = evaluate(&holdout, config, &mut learned, &mut baseline, &out)?;
+    let mut report = evaluate(
+        &holdout,
+        config,
+        &mut learned,
+        &mut baseline,
+        &out,
+        evaluation,
+    )?;
     report["role"] = serde_json::json!(if eval_only {
         "evaluation"
     } else {
@@ -551,6 +684,50 @@ seeds/catalog families must be disjoint. Use a separate final audit split."
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn lobe_diagnostics_preserve_subpixel_packing_and_observed_materials() {
+        let config = Config::default();
+        let low = [4, 8];
+        let n = (low[0] * low[1] * config.scale.pow(2)) as usize;
+        let frame = Frame {
+            low,
+            jitter: [0.0; 2],
+            rays: Vec::new(),
+            surfaces: vec![
+                ommatidia::transport::Surface {
+                    albedo_roughness: [0.2, 0.4, 0.8, 0.5],
+                    emission: [0.01, 0.02, 0.03, 0.0],
+                    ..Default::default()
+                };
+                n
+            ],
+        };
+        let mut target = Target {
+            lobes: vec![0.0; 6 * n],
+            rgb: Vec::new(),
+        };
+        for i in 0..n {
+            for c in 0..6 {
+                target.lobes[config.index(low, c, i % 8, i / 8)] = c as f32 + i as f32 * 0.01;
+            }
+        }
+        let lobes = reference_lobes(&frame, &target, config);
+        let composition = compose_lobes(&frame, &lobes);
+        for i in 0..n {
+            for c in 0..3 {
+                assert_eq!(lobes[0][i * 3 + c], c as f32 + i as f32 * 0.01);
+                assert_eq!(lobes[1][i * 3 + c], (c + 3) as f32 + i as f32 * 0.01);
+                let s = frame.surfaces[i];
+                assert_eq!(
+                    composition[i * 3 + c],
+                    lobes[0][i * 3 + c] * s.albedo_roughness[c]
+                        + lobes[1][i * 3 + c]
+                        + s.emission[c]
+                );
+            }
+        }
+    }
 
     #[test]
     fn capture_quality_rejects_measured_invisible_assets() {

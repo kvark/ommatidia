@@ -35,6 +35,37 @@ pub fn masked_error(a: &[f32], b: &[f32], keep: &[bool]) -> Option<f64> {
     (values != 0).then(|| squared / values as f64)
 }
 
+/// Reference-relative RGB gradient MSE in compressed space. Unlike gradient
+/// magnitude, this penalizes both spurious noise and missing edges/texture.
+pub fn gradient_error(a: &[f32], b: &[f32], width: usize, height: usize) -> f64 {
+    assert_eq!(a.len(), width * height * 3);
+    assert_eq!(a.len(), b.len());
+    assert!(width > 1 && height > 1);
+    let residual = |i: usize| {
+        f64::from(crate::transform::compress(a[i])) - f64::from(crate::transform::compress(b[i]))
+    };
+    let mut squared = 0.0;
+    let mut count = 0;
+    for y in 0..height {
+        for x in 0..width {
+            for c in 0..3 {
+                let i = (y * width + x) * 3 + c;
+                for j in [
+                    (x + 1 < width).then_some(i + 3),
+                    (y + 1 < height).then_some(i + width * 3),
+                ]
+                .into_iter()
+                .flatten()
+                {
+                    squared += (residual(j) - residual(i)).powi(2);
+                    count += 1;
+                }
+            }
+        }
+    }
+    squared / count as f64
+}
+
 /// Relative mean squared error, after Rousselle.
 ///
 /// [`error`] is an absolute difference in a compressed space, so a scene's
@@ -376,6 +407,25 @@ pub fn temporal_low_frequency_error(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn gradient_error_distinguishes_edges_from_noise_and_blur() {
+        let reference = [0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0];
+        let inverted = reference.map(|v| 1.0 - v);
+        assert_eq!(super::gradient_error(&reference, &reference, 2, 2), 0.0);
+        assert_eq!(super::gradient_error(&[0.0; 12], &[1.0; 12], 2, 2), 0.0);
+        assert!((super::gradient_error(&[0.5; 12], &reference, 2, 2) - 0.125).abs() < 1e-7);
+        assert!((super::gradient_error(&inverted, &reference, 2, 2) - 0.5).abs() < 1e-7);
+    }
+
+    #[test]
+    fn gradient_error_counts_each_rectangular_neighbor_once() {
+        let reference: Vec<_> = (0..6)
+            .flat_map(|i| [[0.0; 3], [1.0 / 3.0; 3], [1.0; 3]][i % 3])
+            .collect();
+        let expected = 4.0 * 0.25_f64.powi(2) / 7.0;
+        assert!((super::gradient_error(&[0.0; 18], &reference, 3, 2) - expected).abs() < 1e-7);
+    }
+
     use super::{detail, error, low_frequency_error, relative_error};
 
     const EXTENT: usize = 32;
