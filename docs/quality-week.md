@@ -209,22 +209,54 @@ checks the measurement plumbing: training was concurrent, so its timings are
 **not publication measurements**. Run the selected model with no other GPU work,
 two warmup sequences and three measured sequences before publishing performance.
 
+## Development evidence and reset supervision
+
 The first 1,000-update development evaluation scores 29.55472 dB versus 28.95310
 with the published weights through the corrected decoder (`dev-starting-run/`).
 Temporal MSE falls from 0.00052124 to 0.00043569; reference-gradient MSE also
 improves. Cold starts regress, however, by up to 2.69 dB. The worst reset images
 have conspicuous broad blotches; this checkpoint is not ready to promote.
+At 2,000 updates, mean PSNR reaches 29.65474 dB, temporal MSE 0.00035966 and
+gradient MSE 0.00060897. Cold-start mean PSNR is 25.35790 versus 25.66830 for the
+starting weights; the worst cold-start regression shrinks to 0.64 dB, but the
+inspected chair scene still has broad chromatic blotches. Let the original
+bounded 4,000-update run finish; do not select this interim checkpoint from its
+aggregate improvement alone. The final learned audit is still unseen.
+
+The matched `dev-reset-2000-run/` evaluates 256 development frames (static and
+catalog cases) with history reset before every frame and saves both components.
+The four true sequence-start images exactly match causal evaluation. Causal
+versus reset-every-frame PSNR is 31.98485 versus 27.79600 dB for static scenes,
+and 29.49573 versus 24.51924 dB for catalog scenes. History lowers material-weighted
+diffuse MSE by 47.2% / 65.3% and specular MSE by 62.1% / 57.8%, respectively.
+The component images show diffuse chromatic blotches, not only noisy reflections.
+Separate compressed component errors are diagnostics and cannot be added to
+recover composed RGB error. These development diagnostics support retaining
+recurrence while improving reset behavior, not replacing it with a spatial model.
+
 Uniform starts in a 64-frame sequence with two-frame unroll expose frame zero
-in only 1/63 of updates. Check the next development checkpoint before deciding
-whether to increase reset supervision. The final learned audit is still unseen.
+in only 1/63 of updates. Replaying seed 31 yields 65 such updates out of 4,000;
+one training scene has none. Test one targeted sampling change with the same
+published warm start, corpus, seed, 4,000 updates, learning rate, unroll and loss:
+every fourth update (zero-based phase zero) skips warmup at the uniformly sampled
+start. The other updates keep the complete causal prefix. This gives varied
+simulated cuts throughout every scene, rather than repeatedly fitting only 20
+first frames. Sequence/start RNG draws are unchanged. Record actual starts and
+warmup lengths in `loss.csv`, and the policy in `training.json`. Test correctness
+and reload before starting the bounded comparison; select only on development.
+The unit regression covers all 20 scenes and 63 possible starts. The eight-update
+debug smoke exercises cuts at nonzero positions; train and reload complete with
+zero validation errors, identical frame scores and all 24 PNGs identical
+(`reset-policy-{smoke,reload}-run/`). All 80 non-ignored workspace tests and
+Clippy pass on Rust 1.92, along with formatting and five crop-scoring tests.
 
 ## Progress and evidence
 
 - Initial validation reproduction:
   `runs/quality-week-2026-09-26/validation-baseline/manifest.json` records failure:
   nine `VUID-StandaloneSpirv-None-10684` errors in the native recurrence test,
-  despite numerical CPU/GPU agreement within approximately 7.8e-7. No conformance
-  gate has passed yet.
+  despite numerical CPU/GPU agreement within approximately 7.8e-7. This was an
+  initial failure; the later compiler repair is documented above.
 - Controlled fit captures are complete: `data/fit-train.omd`, `data/fit-dev.omd`,
   `data/fit-noise.omd`, and `data/fit-reference-b.omd`, all under
   `runs/quality-week-2026-09-26/`. Their capture-run manifests record the exact
@@ -332,6 +364,8 @@ whether to increase reset supervision. The final learned audit is still unseen.
 - All 75 non-ignored Rust tests pass on the default and Rust 1.92 toolchains;
   Clippy and formatting pass on both toolchains, and all five crop-scoring
   Python tests pass. The three release GPU numerical tests also pass.
-  Debug Vulkan conformance still fails and has not been reclassified as success.
+  Debug Vulkan conformance failed at this stage. The later patched-compiler
+  checks above establish a separate conformance result; the original failure
+  records are retained unchanged.
 - Held-out learned quality gates, final uncontended timings, and videos remain
   pending. No README quality improvement is claimed by these diagnostics.
