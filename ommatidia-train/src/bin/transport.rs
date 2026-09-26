@@ -14,7 +14,7 @@ use std::{
 type EvaluationHistory = ([Vec<f32>; 2], Vec<f32>, Vec<ommatidia::temporal::Surface>);
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 
-const RESET_WINDOW_INTERVAL: usize = 4;
+const RESET_WINDOW_INTERVAL: usize = 2;
 
 fn warmup_length(update: usize, start: usize) -> usize {
     if update.is_multiple_of(RESET_WINDOW_INTERVAL) {
@@ -687,14 +687,14 @@ mod tests {
     #[test]
     fn training_cuts_preserve_random_frame_coverage_and_full_warmup() {
         let mut rng = ommatidia::rng::Rng::new(31);
-        let mut cut_scenes = [0; 20];
+        let mut cut_scenes = [0; 40];
         let mut cut_starts = [false; 63];
         let mut forced_cuts = 0;
         for update in 0..4000 {
-            let sequence = rng.below(20) as usize;
+            let sequence = rng.below(cut_scenes.len() as u32) as usize;
             let start = rng.below(63) as usize;
             let warmup = warmup_length(update, start);
-            if update % 4 == 0 {
+            if update % 2 == 0 {
                 assert_eq!(warmup, 0);
                 cut_scenes[sequence] += 1;
                 cut_starts[start] = true;
@@ -704,7 +704,7 @@ mod tests {
             }
             assert_eq!(warmup_length(update, 0), 0);
         }
-        assert_eq!(forced_cuts, 1000);
+        assert_eq!(forced_cuts, 2000);
         assert!(cut_scenes.iter().all(|&count| count > 0));
         assert!(cut_starts.iter().all(|&seen| seen));
     }

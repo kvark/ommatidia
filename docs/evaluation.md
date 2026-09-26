@@ -29,7 +29,7 @@ cargo run --release -p ommatidia-train --bin transport -- \
 Repeat `--data` and `--eval-data` to combine captures with equal dimensions and
 sequence lengths. Training samples sequences uniformly across the combined
 corpus (larger captures contribute more). Evaluation can use another resolution.
-Unroll starts are uniform over complete windows. Every fourth update resets
+Unroll starts are uniform over complete windows. Every other update resets
 history at that sampled start, providing varied cold-start examples rather than
 only the first frame of each scene. Other updates warm the full prefix using
 current weights. The sampling policy is recorded in `training.json`; `loss.csv`

@@ -43,6 +43,12 @@ benchmark, crops, and metric definitions before selecting a new checkpoint.
 Implementation protocol and evidence: [docs/quality-week.md](docs/quality-week.md).
 The quality gates below remain open until the final audit and visual review pass.
 
+First frozen audit: +1.74 dB and 35% lower temporal error, but only 44.8% lower
+smooth-crop MSE versus the protocol's 50% gate. Cold starts remain noisy. The
+goal is not complete and this candidate has not replaced the README result.
+Follow-up selection must use development; an independent confirmation set is
+specified in [docs/quality-confirmation.md](docs/quality-confirmation.md).
+
 ### Days 1–2: establish what is broken
 
 - [x] Freeze a small benchmark covering diffuse lighting, glossy reflections,
