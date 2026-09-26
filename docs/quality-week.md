@@ -511,6 +511,11 @@ length, preserving all observation, jitter and target bytes. Record the source
 capture/sidecar hashes and record digest in the derived sidecar. This also avoids
 changing the sampling footprint: the capture CLI disallows projection jitter
 for a newly rendered one-frame sequence.
+The first probe load was rejected by the shared loader's old minimum length of
+two. Allow valid nonempty one-frame captures while retaining provenance and
+input-source checks; recurrent training still rejects unrolls longer than the
+sequence, and frozen benchmark checks still require their locked lengths.
+Single-frame scores have zero temporal pairs and establish no temporal result.
 
 ## Progress and evidence
 
