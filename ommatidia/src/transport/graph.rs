@@ -101,6 +101,32 @@ fn scaled_mse(g: &mut Graph, a: NodeId, b: NodeId, scale: NodeId) -> NodeId {
     g.mse_loss(a, b)
 }
 
+fn decode(
+    g: &mut Graph,
+    spatial: NodeId,
+    history: NodeId,
+    history_weight: NodeId,
+    residual: NodeId,
+    exposure: f32,
+) -> NodeId {
+    // `spatial` already contains its (1-h) weight. Correct only this incoming
+    // observation, then accumulate it; a post-blend residual is added again
+    // every frame and amplifies a stationary bias by the history length.
+    let one = filled(g, history_weight, 1.0);
+    let negative = g.neg(history_weight);
+    let incoming_weight = g.add(one, negative);
+    let floor = filled(g, spatial, 1.0 / exposure);
+    let floor = g.mul(incoming_weight, floor);
+    let amplitude = g.add(spatial, floor);
+    let scale = filled(g, spatial, 0.1);
+    let amplitude = g.mul(amplitude, scale);
+    let correction = g.mul(residual, amplitude);
+    let corrected = g.add(spatial, correction);
+    let corrected = g.relu(corrected);
+    let retained = g.mul(history_weight, history);
+    g.add(corrected, retained)
+}
+
 /// `unroll == 0` builds inference; positive values build a tied-weight training
 /// graph. Geometry, rejection maps and moments are detached, radiance is not.
 pub fn build(config: Config, low: [u32; 2], unroll: usize) -> Result<Network, String> {
@@ -157,10 +183,9 @@ pub fn build(config: Config, low: [u32; 2], unroll: usize) -> Result<Network, St
         let prior = b.g.input(&format!("{tag}.prior"), &[CANDIDATES * 2 * n]);
         let ws = split(&mut b.g, prior, CANDIDATES as u32, 2 * slots, spatial);
         let candidates = b.g.input(&format!("{tag}.candidates"), &[SCALES * 6 * n]);
-        let mut candidates = split(&mut b.g, candidates, SCALES as u32, 6 * slots, spatial);
-        candidates.push(history);
+        let candidates = split(&mut b.g, candidates, SCALES as u32, 6 * slots, spatial);
         let mut image = None;
-        for k in 0..CANDIDATES {
+        for k in 0..SCALES {
             let w = ws[k];
             let wrgb = rgb_weights(&mut b.g, w, slots, spatial);
             let part = b.g.mul(wrgb, candidates[k]);
@@ -169,16 +194,15 @@ pub fn build(config: Config, low: [u32; 2], unroll: usize) -> Result<Network, St
                 Some(a) => b.g.add(a, part),
             });
         }
-        let base = image.unwrap();
-        // Zero initialization reproduces the deterministic guide exactly. Unlike
-        // a candidate selector, a radiance residual can restore missing detail.
-        let floor = filled(&mut b.g, base, 1.0 / config.exposure);
-        let amplitude = b.g.add(base, floor);
-        let scale = filled(&mut b.g, base, 0.1);
-        let amplitude = b.g.mul(amplitude, scale);
-        let correction = b.g.mul(residual, amplitude);
-        let corrected = b.g.add(base, correction);
-        let image = b.g.relu(corrected);
+        let history_weight = rgb_weights(&mut b.g, ws[SCALES], slots, spatial);
+        let image = decode(
+            &mut b.g,
+            image.unwrap(),
+            history,
+            history_weight,
+            residual,
+            config.exposure,
+        );
         previous = Some(image);
         if unroll == 0 {
             b.g.set_outputs(vec![image]);
@@ -327,4 +351,55 @@ pub fn feed_rgb(
     session.set_input(&format!("{tag}.rgb.albedo"), &albedo);
     session.set_input(&format!("{tag}.rgb.emission"), &emission);
     session.set_input(&format!("{tag}.rgb.target"), &rgb);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use meganeura::reference::{Feeds, evaluate_outputs};
+
+    fn decoder() -> Graph {
+        let mut g = Graph::new();
+        let spatial = g.input("spatial", &[1]);
+        let history = g.input("history", &[1]);
+        let h = g.input("h", &[1]);
+        let residual = g.input("residual", &[1]);
+        let out = decode(&mut g, spatial, history, h, residual, 1.0);
+        g.set_outputs(vec![out]);
+        g
+    }
+
+    #[test]
+    fn residual_is_accumulated_once_in_a_long_stationary_history() {
+        let g = decoder();
+        for cap in [1.0_f32, 8.0, 32.0] {
+            let mut previous = 0.0_f32;
+            let mut feeds = Feeds::new();
+            for step in 1..=256 {
+                let h = 1.0 - 1.0 / (step as f32).min(cap);
+                feeds.set("spatial", &[1.0 - h]);
+                feeds.set("history", &[previous]);
+                feeds.set("h", &[h]);
+                feeds.set("residual", &[1.0]);
+                previous = evaluate_outputs(&g, &feeds).unwrap()[0].data[0] as f32;
+                assert!(
+                    (previous - 1.2).abs() < 1e-5,
+                    "cap {cap}, step {step}: {previous}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn clamping_an_incoming_estimate_does_not_erase_retained_history() {
+        let g = decoder();
+        let mut feeds = Feeds::new();
+        feeds.set("spatial", &[0.25]);
+        feeds.set("history", &[2.0]);
+        feeds.set("h", &[0.75]);
+        feeds.set("residual", &[-100.0]);
+        assert_eq!(evaluate_outputs(&g, &feeds).unwrap()[0].data[0], 1.5);
+        feeds.set("residual", &[0.0]);
+        assert_eq!(evaluate_outputs(&g, &feeds).unwrap()[0].data[0], 1.75);
+    }
 }
