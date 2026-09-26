@@ -78,6 +78,7 @@ architecture switches or compatibility interpretations of their weights.
 The retained runtime is `ommatidia::transport::native::Native`, config version 3.
 
 Numerical CPU/GPU, gradient, recurrence and reload checks pass on the tested
-adapters. **Vulkan validation is not clean:** Naga's Workgroup-array layout emits
-`VUID-StandaloneSpirv-None-10684`. This is a release blocker, recorded as failure
-by the test harness; optimized training results do not waive it.
+adapters. With the pinned compiler correction, debug GPU checks pass on RADV and
+LavaPipe with zero validation errors; debug capture/train/reload also pass.
+This fixes the reproduced Workgroup-array layout failure, not all possible
+compiler bugs. [Quality-sprint evidence and remaining gates](docs/quality-week.md).

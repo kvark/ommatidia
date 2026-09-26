@@ -14,6 +14,16 @@ use std::{
 type EvaluationHistory = ([Vec<f32>; 2], Vec<f32>, Vec<ommatidia::temporal::Surface>);
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 
+const RESET_WINDOW_INTERVAL: usize = 4;
+
+fn warmup_length(update: usize, start: usize) -> usize {
+    if update.is_multiple_of(RESET_WINDOW_INTERVAL) {
+        0
+    } else {
+        start
+    }
+}
+
 struct Record {
     layout: Layout,
     sample: Sample,
@@ -557,13 +567,18 @@ seeds/catalog families must be disjoint. Use a separate final audit split."
                 "loss_weights":weights, "warm_start":checkpoint_input, "optimizer_resumed":false,
                 "preparation":"native GPU features/guide/history; CPU differentiable gather maps",
                 "cpu_corpus":"original f16 capture records; per-frame f32 expansion with no requantization",
+                "window_sampling":{
+                    "sequence":"uniform", "start":"uniform among complete unrolls",
+                    "reset_every_updates":RESET_WINDOW_INTERVAL, "reset_phase_zero_based":0,
+                    "otherwise":"warm from sequence start using current weights"
+                },
                 "training":train.provenance, "development":holdout.provenance,
                 "parameters":network.params.iter().map(|p|p.len).sum::<usize>()
             }))?,
         )?;
         let mut rng = ommatidia::rng::Rng::new(seed);
         let mut losses = std::fs::File::create(out.join("loss.csv"))?;
-        writeln!(losses, "update,loss")?;
+        writeln!(losses, "update,loss,sequence,start,warmup_frames")?;
         let started = std::time::Instant::now();
         for update in 0..steps {
             session.wait();
@@ -572,13 +587,15 @@ seeds/catalog families must be disjoint. Use a separate final audit split."
             let sequence = rng.below((train.frames.len() / train.length) as u32) as usize;
             let start = rng.below((train.length - unroll + 1) as u32) as usize;
             let offset = sequence * train.length;
-            for record in &train.frames[offset..offset + start] {
+            // Simulate cuts at varied times, retaining full causal warmup otherwise.
+            let warmup = warmup_length(update, start);
+            for record in &train.frames[offset..offset + warmup] {
                 learned.advance(&record.frame(config)?)?;
             }
             for slot in 0..unroll {
                 let (frame, target) = train.frames[offset + start + slot].decode(config)?;
                 let (frame, target) = (&frame, &target);
-                let old = if start + slot == 0 {
+                let old = if warmup + slot == 0 {
                     Vec::new()
                 } else {
                     learned.read_state()
@@ -602,7 +619,7 @@ seeds/catalog families must be disjoint. Use a separate final audit split."
             if !loss.is_finite() {
                 return Err("training became non-finite".into());
             }
-            writeln!(losses, "{},{loss}", update + 1)?;
+            writeln!(losses, "{},{loss},{sequence},{start},{warmup}", update + 1)?;
             if update % 16 == 0 {
                 println!(
                     "update {}/{steps}: loss {loss:.7}, {:.2} updates/s",
@@ -666,6 +683,31 @@ seeds/catalog families must be disjoint. Use a separate final audit split."
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn training_cuts_preserve_random_frame_coverage_and_full_warmup() {
+        let mut rng = ommatidia::rng::Rng::new(31);
+        let mut cut_scenes = [0; 20];
+        let mut cut_starts = [false; 63];
+        let mut forced_cuts = 0;
+        for update in 0..4000 {
+            let sequence = rng.below(20) as usize;
+            let start = rng.below(63) as usize;
+            let warmup = warmup_length(update, start);
+            if update % 4 == 0 {
+                assert_eq!(warmup, 0);
+                cut_scenes[sequence] += 1;
+                cut_starts[start] = true;
+                forced_cuts += 1;
+            } else {
+                assert_eq!(warmup, start);
+            }
+            assert_eq!(warmup_length(update, 0), 0);
+        }
+        assert_eq!(forced_cuts, 1000);
+        assert!(cut_scenes.iter().all(|&count| count > 0));
+        assert!(cut_starts.iter().all(|&seen| seen));
+    }
 
     #[test]
     fn lobe_diagnostics_preserve_subpixel_packing_and_observed_materials() {

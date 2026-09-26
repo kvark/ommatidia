@@ -131,11 +131,13 @@ with fused/unfused lowerings, loss reduction, and checkpoint image reload.
 The trainer now reuses GPU preparation and avoids unused RGB readbacks; this
 changes execution cost, not the learned architecture.
 
-**Vulkan validation is still not clean.** Prior debug Radeon/LavaPipe checks
+**These published results predate the compiler repair.** Prior debug Radeon/LavaPipe checks
 recorded 20/40 Naga `VUID-StandaloneSpirv-None-10684` Workgroup-array layout
 errors despite passing numerical assertions. Those failures remain recorded.
 Optimized training/evaluation disable validation; their successful exits do not
-establish conformance. This remains a release blocker, with no real-time claim.
+establish conformance. Subsequent debug checks with the pinned compiler repair
+pass with zero validation errors; see [the quality sprint](../quality-week.md).
+That does not retroactively validate these older runs or establish real-time speed.
 
 Blade `fbb4f28`, Naga `323acfb`, and the user's clean Meganeura checkout
 `5253d35` (atop pinned upstream `0dbfcc0`) were used. Blade/Meganeura main

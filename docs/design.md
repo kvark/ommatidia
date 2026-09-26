@@ -40,6 +40,9 @@ Known material albedo and emission are composed only at the end:
 Training uses the same recurrence, warming history with the current model's
 own predictions. Two-frame BPTT differentiates through bilinear radiance
 reprojection; geometry, rejection maps, ages and moments are detached.
+Every fourth training window starts with empty history at a uniformly sampled
+frame, simulating a cut. The other windows retain full causal warmup; long clips
+must not starve reset supervision.
 The objective combines compressed displayed-RGB MSE, absolute compressed-lobe
 MSE, a small fixed-exposure linear RGB term, coarse linear structure and
 valid-history temporal changes. Direct lobe supervision prevents diffuse and
@@ -89,11 +92,12 @@ is checked against
 Meganeura's f64 reference for its loss and every parameter gradient, including
 fused/unfused lowerings. A training-and-reload test must reduce loss.
 
-Blade is pinned to `fbb4f28`, Meganeura to `ee3aea4`, and Naga to `323acfb`.
+Blade is pinned to `fbb4f28`, Meganeura to `ee3aea4`, and Naga to `323acfb` plus
+the tracked [workgroup-layout correction](../patches/README.md).
 A sibling Cargo patch allows local Blade development; Meganeura uses its exact
-upstream pin. Run manifests record actual revisions and dirty diffs. The current
-Naga SPIR-V backend still triggers
-`VUID-StandaloneSpirv-None-10684` for Workgroup array layout. Numerical tests
-pass on the tested adapters, but validation is not clean. The run recorder
-treats this as failure even when the child exits zero. This remains a release
-blocker; optimized quality measurements do not waive it.
+upstream pin. Run manifests record actual revisions and dirty diffs. The patched
+SPIR-V backend resolves the reproduced `VUID-StandaloneSpirv-None-10684` failure:
+debug GPU checks pass on RADV and LavaPipe with zero validation errors, as do
+debug capture/train/reload. The run recorder still treats validation errors as
+failure even when the child exits zero. This targeted conformance result does
+not establish full wgpu/CTS coverage; see the [evidence](quality-week.md).
