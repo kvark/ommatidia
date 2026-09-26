@@ -76,8 +76,9 @@ pause scaling training and resolve the bottleneck first.
 - [x] Change the specific input, history, or loss behavior supported by the
       diagnostic tests.
 - [x] Add targeted training data where the tests expose a coverage gap.
-      Added 20 diverse 64-frame training scenes and 10 disjoint development
+      Now 40 diverse 64-frame training scenes and 10 disjoint development
       scenes, covering static lighting, camera/object/light motion and assets.
+      The bounded follow-up tests more varied cold-start supervision.
 - [x] Run bounded, hypothesis-driven experiments, selecting checkpoints on the
       development set rather than the final audit.
       Selected the reset-balanced model plus the signed-decoder follow-up, with
