@@ -115,6 +115,45 @@ visibility before admitting the capture. Train from the published starting
 weights with the one corrected implementation. Do not warm-start from the
 overfit diagnostic weights or select updates on the final audit.
 
+All 1,280 training and 640 development frames were captured successfully.
+The actual scene seeds and sampled families are disjoint across training,
+development and audit. Minimum catalog coverage over every frame is 1.92% in
+training and 5.60% in development. The bounded run `diverse-training/` starts
+from the published weights, with 4,000 updates, seed 31, learning rate 0.0003,
+unroll 2 and lobe loss weight 0.5. Evaluate development at 1,000-update intervals;
+these are candidate checkpoints, not a commitment to promote the last update.
+
+## External spatial reference
+
+Use the official [OIDN 2.5.1 Linux SDK](https://github.com/RenderKit/oidn/releases/tag/v2.5.1),
+archive SHA-256 `743c3e2aff8c220d5d70fe6cb970fb3d36f2702d2693c61d1d148e404cf37cd6`.
+The `oidn-reference` executable invokes its `oidnDenoise` tool with RT, HDR, high
+quality, automatic input scaling, CPU device, four threads, affinity disabled,
+and clean auxiliary guides. This is an offline quality reference, not a speed
+comparison. Record both the SDK archive and executable as run inputs.
+
+Feed unaltered 1-spp **native 128×128** beauty, primary albedo approximated by
+`clamp(diffuse_albedo + specular_F0, 0, 1)`, and normalized world normals. It has
+no target, high-resolution guides or history as inputs. Denoise before bilinear
+upsampling to 256×256 and removing input projection jitter: the
+[RT documentation](https://www.openimagedenoise.org/documentation.html#rt) warns
+against noise correlation introduced by pre-denoising interpolation. Thus it has
+the same traced input budget, but fewer guides and no dedicated super-resolution
+or temporal reconstruction. Disclose these differences alongside comparisons.
+
+Run `cargo run --release -p ommatidia-train --bin oidn-reference -- --help` for
+options. Repeat the same ordered `--eval-data` inputs as the learned evaluator;
+use `--eval-only --save-linear` with the common recorded crop-scoring protocol.
+The filename `learned` is only the common scorer's prediction slot; the JSON
+report identifies OIDN explicitly. PFM orientation/HDR, jitter resampling and
+target-input isolation have unit coverage. `oidn-smoke-run/` completed on eight
+independent-noise diagnostic frames; images were inspected for orientation and
+alignment. No audit-quality or temporal pass follows from this smoke test.
+
+The shared capture/output helper refactor was checked against the retained
+executable on the 64-frame diagnostic: identical per-frame scores and identical
+final-frame PNG and full-precision radiance files (`output-refactor-check/`).
+
 ## Progress and evidence
 
 - Initial validation reproduction:

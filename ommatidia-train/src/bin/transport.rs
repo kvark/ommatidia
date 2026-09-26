@@ -1,8 +1,9 @@
 //! Train and evaluate the lobe-separated recurrent reconstructor on full sequences.
 use ommatidia::{
-    dataset, metrics,
+    metrics,
     transport::{Config, Frame, Target, graph, native},
 };
+use ommatidia_train::{open_capture, save_linear, save_png};
 use serde::Serialize;
 use std::{
     io::Write,
@@ -12,30 +13,6 @@ use std::{
 type EvaluationHistory = ([Vec<f32>; 2], Vec<f32>, Vec<ommatidia::temporal::Surface>);
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 
-fn validate_capture(provenance: &serde_json::Value) -> Result<()> {
-    if provenance["matching_path_depth"] != true
-        || provenance["input_estimator"] != "independent-paths"
-    {
-        return Err(
-            "transport training requires verified, matched independent-path captures".into(),
-        );
-    }
-    if let Some(value) = provenance
-        .get("minimum_catalog_visible_fraction")
-        .filter(|v| !v.is_null())
-    {
-        let coverage = value
-            .as_f64()
-            .ok_or("invalid catalog coverage provenance")?;
-        if !(0.01..=1.0).contains(&coverage) {
-            return Err(
-                "catalog coverage below 1%; fix the asset, camera or driver before training".into(),
-            );
-        }
-    }
-    Ok(())
-}
-
 #[derive(Clone)]
 struct Corpus {
     frames: Vec<(Frame, Target)>,
@@ -44,17 +21,8 @@ struct Corpus {
 }
 impl Corpus {
     fn load(path: &Path, config: Config) -> Result<Self> {
-        let provenance: serde_json::Value =
-            serde_json::from_slice(&std::fs::read(path.with_extension("transport.json"))?)?;
-        validate_capture(&provenance)?;
-        let mut reader = dataset::Reader::open(path)?;
+        let (mut reader, provenance) = open_capture(path)?;
         let layout = *reader.layout();
-        if provenance["records"].as_u64() != Some(reader.len() as u64) {
-            return Err("provenance record count differs from dataset".into());
-        }
-        if reader.sequence_length() < 2 || reader.is_empty() {
-            return Err("a nonempty sequence dataset is required".into());
-        }
         let mut frames = Vec::new();
         for index in 0..reader.len() {
             let sample = reader.sample(index)?;
@@ -119,25 +87,6 @@ impl Corpus {
         }
         Ok(())
     }
-}
-fn save_png(path: &Path, rgb: &[f32], extent: [u32; 2]) -> Result<()> {
-    let bytes: Vec<_> = rgb
-        .iter()
-        .map(|&v| {
-            let v = ommatidia::transform::compress(v);
-            let s = if v <= 0.0031308 {
-                12.92 * v
-            } else {
-                1.055 * v.powf(1.0 / 2.4) - 0.055
-            };
-            (s.clamp(0.0, 1.0) * 255.0).round() as u8
-        })
-        .collect();
-    let mut encoder = png::Encoder::new(std::fs::File::create(path)?, extent[0], extent[1]);
-    encoder.set_color(png::ColorType::Rgb);
-    encoder.set_depth(png::BitDepth::Eight);
-    encoder.write_header()?.write_image_data(&bytes)?;
-    Ok(())
 }
 #[derive(Default, Serialize)]
 struct Score {
@@ -412,13 +361,7 @@ fn evaluate(
         ] {
             save_png(&out.join(format!("{prefix}-{name}.png")), image, extent)?;
             if options.save_linear {
-                let mut file = std::io::BufWriter::new(std::fs::File::create(
-                    out.join(format!("{prefix}-{name}.rgbf32")),
-                )?);
-                for value in image {
-                    file.write_all(&value.to_le_bytes())?;
-                }
-                file.flush()?;
+                save_linear(&out.join(format!("{prefix}-{name}.rgbf32")), image)?;
             }
         }
         previous = Some((images, target.rgb.clone(), current));
@@ -742,24 +685,6 @@ mod tests {
                 );
             }
         }
-    }
-
-    #[test]
-    fn capture_quality_rejects_measured_invisible_assets() {
-        let mut p =
-            serde_json::json!({"matching_path_depth":true,"input_estimator":"independent-paths"});
-        assert!(validate_capture(&p).is_ok());
-        for coverage in [
-            serde_json::json!(0),
-            serde_json::json!(-1),
-            serde_json::json!(1.1),
-            serde_json::json!("unknown"),
-        ] {
-            p["minimum_catalog_visible_fraction"] = coverage;
-            assert!(validate_capture(&p).is_err());
-        }
-        p["minimum_catalog_visible_fraction"] = serde_json::json!(0.05);
-        assert!(validate_capture(&p).is_ok());
     }
 
     #[test]
