@@ -65,6 +65,15 @@ training/development ancestry and the current diagnostic scenes. Catalog objects
 remain visible throughout, with minimum coverage 3.04%. Crop frames are 0, 31,
 and 63; global and temporal scores still cover all 640 frames.
 
+Publication views are also fixed before candidate audit: frame 31 of global
+sequences 0 (static), 2 (glossy camera motion) and 8 (catalog). Show original
+published model, selected model and reference with unmodified native-resolution
+PNGs. Include complete 64-frame comparison videos for the first sequence of
+each of the five cases, at 24 fps with identical display transforms and labels.
+Video encoding is for presentation only, never a source of numerical metrics.
+Review all ten clips, not only the five illustrated ones. These choices do not
+alter the frozen crop/data JSON or permit checkpoint reselection on the audit.
+
 ## Measurement contract
 
 - Primary crop error: mean squared RGB error after fixed `x/(1+x)` compression,
@@ -204,7 +213,8 @@ buffer bytes and separately samples process-local driver memory usage, including
 warmup; unsupported queries are null. Percentiles use nearest rank.
 Native's offline upload/readback buffers are included in memory accounting.
 The new timed/untimed eight-frame regression produces exactly identical output
-with zero validation errors (`timing-parity/`). `benchmark-smoke-run/` only
+with zero validation errors on RADV and LavaPipe (`timing-parity/`,
+`timing-parity-lavapipe/`). `benchmark-smoke-run/` only
 checks the measurement plumbing: training was concurrent, so its timings are
 **not publication measurements**. Run the selected model with no other GPU work,
 two warmup sequences and three measured sequences before publishing performance.
@@ -249,6 +259,40 @@ debug smoke exercises cuts at nonzero positions; train and reload complete with
 zero validation errors, identical frame scores and all 24 PNGs identical
 (`reset-policy-{smoke,reload}-run/`). All 80 non-ignored workspace tests and
 Clippy pass on Rust 1.92, along with formatting and five crop-scoring tests.
+
+The original `diverse-training/` completed all 4,000 updates. Update 3,000 has
+the highest mean development PSNR (30.08857 dB); update 4,000 scores 29.98015 dB
+with temporal MSE 0.00035807, gradient MSE 0.00060280 and reset PSNR 25.55948.
+At 4,000, 630/640 development frames improve over the starting weights through
+the corrected decoder; the worst regression is 0.46 dB on a cold start.
+Neither the highest mean PSNR nor the final update is automatically selected.
+
+The matched reset-balanced run is `reset-training/`, using the clean
+`ff724e3` source and `reset-policy-runtime/transport`. Its first 1,000-update
+evaluation scores 29.51474 dB versus 29.55472 for uniform warmup at the same
+budget. Reset PSNR improves from 24.10975 to 25.59155 dB, and temporal MSE falls
+from 0.00043569 to 0.00037933. Mean energy ratio is 0.98010, so brightness and
+long-history behavior still need review at later checkpoints. This is evidence
+for continuing the bounded comparison, not a selected result.
+
+An additional development-only PNG crop diagnostic uses inverse sRGB on
+quantized outputs. Reference-inspected **middle-frame** crops cover five cases;
+they are tuning data, not the frozen audit or its full-precision metric.
+`dev-display-middle-{3000,4000}.json` reports smooth-error ratios 0.711 / 0.629
+versus the starting weights through the corrected decoder. Edge error and
+reference-relative gradient error also improve. The initial fixed-rectangle
+three-frame attempt is not used: camera motion changed some regions' content.
+This correction follows reference inspection, and none of these development
+crops replaces or modifies the predeclared final audit. A separate
+`dev-original-run/` evaluates the original published runtime, to distinguish
+implementation gains from retraining gains.
+That evaluation completed at 28.27361 dB, versus 28.95310 with unchanged weights
+through the corrected runtime. The uniform 4,000-update run therefore gains
+1.70654 dB over the actually published implementation on development, not just
+1.02706 dB over the corrected decoder. Its development middle-frame smooth-crop
+PNG-error ratio versus the original implementation is 0.337; edge/texture ratios
+are 0.692 / 0.425 (`dev-display-original-4000.json`). These remain tuning-set
+diagnostics, not final-audit claims or a reason to skip reset/motion review.
 
 ## Progress and evidence
 
