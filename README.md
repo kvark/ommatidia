@@ -50,8 +50,11 @@ these are fresh scenes using the same four audit families as the previous report
 Rust 1.92+. Place `ommatidia` and `blade` in sibling directories.
 Cargo pins Blade to `fbb4f28` and Meganeura to `ee3aea4`; only Blade has a local
 sibling override. Keep Blade's shader directory at the same revision.
+Naga also needs the tracked [workgroup-layout correction](patches/README.md);
+the preparation command below installs it into the ignored build directory.
 
 ```sh
+python3 scripts/prepare-naga.py
 cargo +1.92.0 test --workspace --locked
 cargo build --release --workspace
 cargo run --release -p ommatidia-train --bin transport -- \
