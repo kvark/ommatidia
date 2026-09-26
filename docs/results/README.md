@@ -1,116 +1,161 @@
-# Current reconstruction result — 2026-09-25
+# Current reconstruction result — 2026-09-26
 
-One architecture, one training run, one selected checkpoint. This replaces the
-historical experiment galleries; Git preserves those at `e0922c6`.
+One architecture, one selected checkpoint. The width-16 recurrent
+lobe-separated residual U-Net remains unchanged at **188,160 parameters**.
+This updates the single result gallery; earlier evidence remains in Git at
+`91c123d`, and retired architectures at `b838674`.
 
 ## Outcome
 
-Across the two untouched 64-frame audits, PSNR improves by **3.06 dB**
-(procedural) and **3.12 dB** (object scenes) over the fixed
-guide. Temporal error falls 54.4% / 58.1%. All 128 frames improve
-in PSNR; minimum gains are 1.11 / 1.03 dB. These are results on this small
-corpus, not a claim about production games or DLSS.
+On 256 fresh audit frames, fine-tuning improves PSNR over the previous
+**trained checkpoint** by **0.47 dB** (procedural) and **0.69 dB** (objects).
+Temporal error falls 7.7% / 7.8%. PSNR improves on 121/128 procedural and
+125/128 object frames; worst regressions are 0.26 / 0.19 dB.
+These are modest, measured improvements, not a production-quality or DLSS claim.
 
-| Metric | Procedural guide | Model | Object guide | Model |
+| Metric | Procedural previous | Now | Object previous | Now |
 |---|---:|---:|---:|---:|
-| PSNR ↑ | 25.18 | 28.24 | 25.92 | 29.04 |
-| SSIM ↑ | 0.6753 | 0.7937 | 0.6538 | 0.7879 |
-| Low-frequency PSNR ↑ | 29.25 | 32.02 | 29.93 | 32.75 |
-| Reset PSNR ↑ | 20.61 | 25.57 | 21.25 | 26.55 |
-| Temporal MSE ↓ | 0.001476 | 0.000673 | 0.001544 | 0.000647 |
-| Rejected-history MSE ↓ | 0.012934 | 0.007570 | 0.015236 | 0.008642 |
-| Linear RGB MSE ↓ | 0.045935 | 0.025643 | 0.033650 | 0.016518 |
-| Relative MSE ↓ | 0.230135 | 0.088795 | 0.188087 | 0.078339 |
-| Mean energy ratio (ideal 1) | 0.9996 | 1.0102 | 1.0012 | 1.0235 |
-| Detail ratio (ideal 1) | 1.1552 | 0.9500 | 1.1094 | 0.9053 |
+| PSNR ↑ | 28.1844 | 28.6494 | 28.9113 | 29.6024 |
+| SSIM ↑ | 0.8225 | 0.8370 | 0.7972 | 0.8159 |
+| Low-frequency PSNR ↑ | 31.9213 | 32.6576 | 33.1506 | 34.3204 |
+| Reset PSNR ↑ | 26.0761 | 26.5433 | 27.3614 | 28.2154 |
+| Temporal MSE ↓ | 0.000583 | 0.000538 | 0.000699 | 0.000645 |
+| Rejected-history MSE ↓ | 0.004839 | 0.004404 | 0.006179 | 0.005761 |
+| Linear RGB MSE ↓ | 0.038519 | 0.037317 | 0.011005 | 0.009646 |
+| Relative MSE ↓ | 0.118350 | 0.099908 | 0.138055 | 0.121908 |
+| Mean energy ratio (ideal 1) | 1.0134 | 0.9960 | 1.0258 | 1.0000 |
+| Detail ratio (ideal 1) | 0.8925 | 0.8924 | 0.8517 | 0.8479 |
 
-Both methods run their own history from reset. Rejected-history regions cover
-1.53% / 1.62% of non-reset pixels, identical between methods. Reset scores cover
-four first frames per audit; temporal scores cover sixty adjacent-frame pairs.
-Energy and detail ratios are averaged per frame. Metric definitions are in
-[evaluation.md](../evaluation.md).
+Both checkpoints receive identical observations and run their own history from
+reset. The fixed guide scores 25.93 / 26.09 dB; the new model beats it by
+2.72 / 3.51 dB. All control metrics are retained in [results.json](results.json).
+Reset scores cover eight initial frames per set; temporal scores cover 120
+adjacent-frame pairs per set. Definitions are in [evaluation.md](../evaluation.md).
 
-## Training, data and selection
+The original published audit is now a **regression set**, not an untouched test.
+Both checkpoints were rerun on those same frames with the current runtime:
 
-The 188,160-parameter, width-16 residual U-Net completed 4,000 Adam updates,
-seed 7, two-frame BPTT, learning rate 0.0003 with cosine decay to 10%.
-The objective weights are compressed RGB 1, linear RGB 0.005, coarse linear
-RGB 0.01 and temporal change 0.02. This was not a hyperparameter sweep.
+| Original published scenes | Previous PSNR | Now | Previous SSIM | Now |
+|---|---:|---:|---:|---:|
+| Procedural | 28.2367 | 28.6660 | 0.7937 | 0.8105 |
+| Objects | 29.0376 | 29.7915 | 0.7879 | 0.8058 |
+
+Temporal error also decreases there. Detail ratios fall from 0.9500 to 0.9341
+and 0.9053 to 0.8993; brightness changes from slightly high to slightly low.
+Higher PSNR does not mean every diagnostic or frame improves.
+
+## Data correctness before more training
+
+Asset ids in a sidecar did not prove that earlier captures actually showed
+those objects. On the tested RX 7900 XT, Mesa 26.0.3 and 26.0.8 silently omitted
+an opaque 18,572-triangle chair. An isolated Mesa 26.2.3 + libdrm 2.4.134 stack
+restored it, matching LavaPipe's 17.8% primary-ray coverage. The system driver
+was not replaced. Driver/environment details are recorded with the captures.
+
+Object captures now frame authored meshes without the extra spheres/boxes,
+reject assets without supported opaque triangles, and measure actual visible
+coverage. A separate geometry renderer checks the entire camera trajectory
+before expensive path tracing, retrying an obscured camera up to eight times.
+It does not consume input/reference sampling or camera history. Per-frame
+visibility remains checked during capture and in training provenance.
+
+| Object capture | Frames | Minimum coverage | Mean coverage | Maximum coverage |
+|---|---:|---:|---:|---:|
+| Training | 512 | 1.87% | 14.55% | 30.63% |
+| Development | 64 | 9.42% | 15.59% | 25.91% |
+| Fresh audit | 128 | 4.19% | 18.52% | 40.48% |
+
+Coverage is the union of catalog first hits, not an object-only quality score.
+One training camera was retried because a foreground light obscured the object.
+Two fully non-opaque assets, `B0719H3LG2` and `B071F6VV2T`, were excluded;
+the original files remain unmodified. See [catalog.md](../catalog.md).
+
+## Training and selection
+
+The previous checkpoint had 3,500 updates on 64→128 captures. This run starts
+from those weights, with fresh Adam state, and trains at 128→256:
+4,000 updates, seed 17, two-frame BPTT, learning rate 0.0001 with cosine decay
+to 10%. Loss weights remain compressed RGB 1, linear RGB 0.005, coarse linear
+RGB 0.01 and temporal change 0.02. No graph or parameter-count change.
 
 | Split | Procedural + object scenes | Frames/scene | Input → output | Reference |
 |---|---:|---:|---|---:|
-| Training | 32 + 16 | 8 | 64×64 → 128×128 | 512 spp |
-| Development | 4 + 4 | 8 | 64×64 → 128×128 | 1,024 spp |
-| Final audit | 4 + 4 | 16 | 128×128 → 256×256 | 4,096 spp |
+| Fine-tuning | 64 + 64 | 8 | 128×128 → 256×256 | 1,024 spp |
+| Development | 8 + 8 | 8 | 128×128 → 256×256 | 4,096 spp |
+| Fresh audit | 8 + 8 | 16 | 128×128 → 256×256 | 4,096 spp |
 
-All inputs are 1 spp at matching eight-bounce depth. Capture includes projection
-jitter, camera/object/light motion, textured materials, gloss, canopy shadows
-and exact output-resolution primary surfaces. A canopy-camera bug that could
-produce all-black frames was fixed before these captures. The trainer refuses
-entirely black references.
+All inputs are 1 spp at matching eight-bounce depth, with projection jitter,
+camera/object/light motion, textured materials, gloss, canopy shadows and
+output-resolution primary surfaces. Training uses 22 supported ABO families;
+development and audit use four each. Scene seeds and families are disjoint
+across splits and from the warm-start model's original training.
+The fresh audit uses new scene seeds, **not new audit families** relative to
+the previous publication.
 
-Training uses 24 ABO families; development and final audit use separate sets of
-four families each. The catalog's eight holdout ids were sorted lexicographically:
-the first four went to development, the last four to the final audit. Their
-exact ids are in the dataset provenance in results.json. Scene-seed and family intersections were checked across all
-six captures. This does not establish that every catalog object occupies a
-useful visible area; the preselected images are still dominated by primitives.
+Selection was frozen at **2026-09-26 05:17:25 UTC**, before final model evaluation.
+The final checkpoint has the highest joint development PSNR, **29.65290 dB**
+versus 29.00100 at the start. All nine evaluations, including the starting
+checkpoint, are recorded. Development detail ratio declined from 0.8549 to
+0.8361; this trade-off was disclosed before the audit, not used for audit-based
+reselection.
 
-Selection used development mean frame PSNR only. The best checkpoint is update
-3,500 (27.02056 dB); update 4,000 is 27.01284 dB and has slightly better SSIM and
-temporal error. The final audit was run only after selecting update 3,500.
-All eight development evaluations are retained in [results.json](results.json).
+A provisional procedural-only run was stopped after its 500-update evaluation
+while object capture was being fixed. It and the 64-update performance smoke
+tests are not ancestors of the selected model. Incomplete captures were not
+used. The training-source commit was `d74f76c`; upstream subsequently rebased
+it as `e45ed32` with a byte-identical source tree. Run manifests retain the
+actual execution-time commit ids. The earlier result commit `730e84c` likewise
+has the same tree as the now-mainline `91c123d`.
 
-Checkpoint (local run artifact):
-`runs/focused-2026-09-25/train/step-3500.safetensors`
+Selected checkpoint (local artifact):
+`runs/quality-2026-09-26/train/model.safetensors`
 
 SHA-256:
-`6c58120fbcb5f18978058749c616d1fab1b51dc77885cc852468b9f1b76fb367`
+`5d0c7411c4581a0a8ad99cd87069e4344222dd43020bc28cc0f16a40e47d1321`
 
 [Config](model.transport.ron) · [Procedural frames](procedural.csv) ·
-[Object frames](abo.csv) · [Commands, captures and hashes](results.json)
+[Object frames](abo.csv) · [Commands, captures, selection and hashes](results.json)
 
 ## Reference and runtime checks
 
-Two independent 4,096-spp references for the first 16-frame sequence of each audit
-have pair PSNR 36.89 dB (procedural) / 43.36 dB (object). Input planes agree exactly.
-The equal-variance half-noise estimates are 39.90 / 46.37 dB. Energy B/A is
-1.000010 / 0.999961. Reference noise remains finite, but is substantially below
-the measured reconstruction error. This noise audit does not cover every scene.
+Independent 4,096-spp references for each audit's first 16-frame sequence have
+pair PSNR 39.10 / 39.70 dB. Input planes agree exactly. Equal-variance
+single-reference noise-floor estimates are 42.11 / 42.71 dB; energy B/A is
+1.000014 / 0.999903. This check does not cover every scene.
 
-Rust 1.92 workspace tests: 63 passed, three hardware tests separately exercised.
-Formatting, all-target checking and Clippy pass. Radeon RX 7900 XT / RADV and
-LavaPipe pass the full-width two-frame numerical loss/gradient checks with
-fused/unfused lowerings. CPU/WGSL features, 12-frame recurrence, HDR, reset,
-loss reduction, bit-exact checkpoint image reload and capture-cache independence
-are covered.
+Rust 1.92 workspace tests: 66 passed; three hardware tests are separate.
+Formatting, Clippy and three Python catalog-support tests pass.
+On the updated Radeon driver, optimized tests pass for CPU/WGSL preparation,
+12-frame recurrence/reset/HDR, full-width two-frame loss and parameter gradients
+with fused/unfused lowerings, loss reduction, and checkpoint image reload.
+The trainer now reuses GPU preparation and avoids unused RGB readbacks; this
+changes execution cost, not the learned architecture.
 
-**Validation still fails.** The debug Radeon gradient run recorded 20 validation
-errors; the full LavaPipe run recorded 40. All were the known Naga
-`VUID-StandaloneSpirv-None-10684` Workgroup-array layout failure. Child tests
-exited zero, but the recorder correctly marks these runs failed. Release
-training/evaluation disable validation by Meganeura's build default, so their
-successful exits are not evidence of Vulkan conformance. No release or speed
-claim is made.
+**Vulkan validation is still not clean.** Prior debug Radeon/LavaPipe checks
+recorded 20/40 Naga `VUID-StandaloneSpirv-None-10684` Workgroup-array layout
+errors despite passing numerical assertions. Those failures remain recorded.
+Optimized training/evaluation disable validation; their successful exits do not
+establish conformance. This remains a release blocker, with no real-time claim.
 
-The run used Blade `fbb4f28`, Naga `323acfb`, and the user's clean Meganeura
-checkout `5253d35` (the GGUF parameter-reuse commit atop pinned upstream
-`0dbfcc0`). Exact hashes and the training source-patch hash are recorded.
-Current remote Blade/Meganeura heads were checked and match the repository pins.
+Blade `fbb4f28`, Naga `323acfb`, and the user's clean Meganeura checkout
+`5253d35` (atop pinned upstream `0dbfcc0`) were used. Blade/Meganeura main
+heads were rechecked on September 26 and still match the pins. Exact revisions,
+compiler, driver library hashes and source diffs are in the run evidence.
 
-## Pictures and remaining limitations
+## Pictures and limitations
 
-README uses frame 7 of sequence 0 in both sets, preselected before evaluation.
-The six PNGs are byte-for-byte copies of evaluator output, with one fixed
-`x/(1+x)` then sRGB transform. All frames exist in the local audit directories;
-the full-frame CSVs, selected images and their hashes are checked in.
-`python3 scripts/verify-results.py` checks the published evidence.
+README shows sequence 0, frame 7 in each fresh set, selected before training.
+The six PNGs are byte-for-byte evaluator outputs: previous model, selected
+model, reference. Native 256×256 resolution, identical `x/(1+x)` then sRGB
+display transform, no retouching. All frames and checkpoints remain in the
+local run; full-frame comparison CSVs and selected images are checked in.
+`python3 scripts/verify-results.py` checks image hashes, dimensions, full-sequence
+scores, checkpoint-selection timing, split membership and visibility evidence.
 
-The model still leaves visible specular sparkle and low-frequency blotches.
-Mean energy is high by 1.0% / 2.3%, and detail ratios remain below one. The data
-lacks production game traces, broad interior coverage and an asset-visibility
-audit. Output-resolution primary surfaces are extra observations, not free
-ground truth for a fair comparison with a renderer that supplies only LR guides.
-There is no matched DLSS/OIDN comparison. More training on this fixed small
-corpus has largely plateaued; the next quality work should improve data coverage
-and resolution within this architecture, not add another model family.
+Specular sparkle, low-frequency blotches and missing detail remain visible.
+The model is still trained on a small synthetic/object-in-room corpus, without
+production game traces, broad interior coverage, matched external denoisers or
+perceptual-video evaluation. Output-resolution primary surfaces are extra
+observations, not a fair assumption for a system supplied only LR guides.
+The next work should improve data realism and reconstruction within this one
+architecture, not accumulate alternative model families.

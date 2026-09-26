@@ -13,30 +13,37 @@ low-resolution radiance, motion/jitter and output-resolution primary surfaces.
 
 ## Measured results
 
-Fresh, scene/asset-disjoint audit: **128 frames**, 1-spp 128×128 input → 256×256
-output, 16-frame causal sequences, 4,096-spp references. One 4,000-update run;
-the 3,500-update checkpoint was selected on development PSNR before this audit.
+Fresh-scene audit: **256 frames**, 1-spp 128×128 input → 256×256 output,
+16-frame causal sequences, 4,096-spp references. The same model was fine-tuned
+for 4,000 updates at this resolution. Development selected the final checkpoint
+before the audit. Both checkpoints receive identical frames and run their own history.
 
-| Audit | PSNR, guide → model ↑ | SSIM, guide → model ↑ | Temporal error ↓ |
+| Audit | PSNR, previous → now ↑ | SSIM, previous → now ↑ | Temporal error ↓ |
 |---|---|---|---|
-| Procedural scenes | 25.18 → **28.24 dB** | 0.675 → 0.794 | −54% |
-| Held-out object scenes | 25.92 → **29.04 dB** | 0.654 → 0.788 | −58% |
+| Procedural scenes | 28.18 → **28.65 dB** | 0.823 → 0.837 | −7.7% |
+| Held-out object scenes | 28.91 → **29.60 dB** | 0.797 → 0.816 | −7.8% |
 
-The control is the fixed multiscale/recurrent guide, not a historical model.
-All 128 frames improve in PSNR in this audit. Mean energy is still 1.0% high
-on procedural scenes and 2.3% high on object scenes; specular noise and blotches
-remain. [Full metrics, protocol, hashes and limitations](docs/results/README.md).
+The comparison is against the previous **trained checkpoint**, not just the fixed
+guide. PSNR improves on 246/256 frames; the worst regression is 0.26 dB.
+The unchanged, previously published audit also improves: **28.24 → 28.67 dB**
+(procedural) and **29.04 → 29.79 dB** (objects).
+
+Mean energy bias on the fresh audit is now −0.40% / approximately 0%, down from
++1.34% / +2.58%. Specular noise, blotches and missing detail remain.
+[Full metrics, protocol, hashes and limitations](docs/results/README.md).
 
 Sequence 0, frame 7 in each set, chosen before evaluation. Native 256×256
 outputs; identical display transform, no retouching.
 
-| Fixed guide | Residual U-Net | Reference |
+| Previous checkpoint | Fine-tuned checkpoint | Reference |
 |---|---|---|
-| <img src="docs/results/procedural-guide.png" alt="Procedural scene: fixed recurrent guide" width="256" height="256"> | <img src="docs/results/procedural-model.png" alt="Procedural scene: trained residual U-Net" width="256" height="256"> | <img src="docs/results/procedural-reference.png" alt="Procedural scene: 4096-spp reference" width="256" height="256"> |
-| <img src="docs/results/abo-guide.png" alt="Object scene: fixed recurrent guide" width="256" height="256"> | <img src="docs/results/abo-model.png" alt="Object scene: trained residual U-Net" width="256" height="256"> | <img src="docs/results/abo-reference.png" alt="Object scene: 4096-spp reference" width="256" height="256"> |
+| <img src="docs/results/procedural-previous.png" alt="Procedural scene: previous trained checkpoint" width="256" height="256"> | <img src="docs/results/procedural-model.png" alt="Procedural scene: fine-tuned residual U-Net" width="256" height="256"> | <img src="docs/results/procedural-reference.png" alt="Procedural scene: 4096-spp reference" width="256" height="256"> |
+| <img src="docs/results/abo-previous.png" alt="Object scene: previous trained checkpoint" width="256" height="256"> | <img src="docs/results/abo-model.png" alt="Object scene: fine-tuned residual U-Net" width="256" height="256"> | <img src="docs/results/abo-reference.png" alt="Object scene: 4096-spp reference" width="256" height="256"> |
 
-Object assets: Amazon.com, [ABO / CC BY 4.0](docs/catalog.md). These views are
-primitive-dominated; asset-disjoint membership alone is not a visibility audit.
+Object assets: Amazon.com, [ABO / CC BY 4.0](docs/catalog.md). Authored objects
+replace the extra primitives; measured visible coverage is 4.2–40.5% per audit
+frame. Scene seeds and asset families are disjoint from training and development;
+these are fresh scenes using the same four audit families as the previous report.
 
 ## Build and train
 
@@ -63,7 +70,7 @@ The training corpus is still small and synthetic; game traces, broad interiors,
 and matched external-denoiser comparisons remain missing.
 
 The old diffusion, kernel-selector, field/relighting, C ABI, trainers and result
-galleries were removed. They remain in Git at `e0922c6`. There are no hidden
+galleries were removed. They remain in Git at `b838674`. There are no hidden
 architecture switches or compatibility interpretations of their weights.
 The retained runtime is `ommatidia::transport::native::Native`, config version 3.
 

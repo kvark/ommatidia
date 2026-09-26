@@ -3,7 +3,7 @@
 The maintained model is a lobe-separated radiance-residual U-Net. There is one
 graph builder, one trainer, and one GPU runtime. Config version 3 rejects the
 retired selector versions. Earlier diffusion, kernel, field/relighting and C ABI
-implementations are recoverable at Git commit `e0922c6` (also the local branch
+implementations are recoverable at Git commit `b838674` (also the local branch
 `archive/experiments-2026-09-25`); they are not compatibility modes.
 
 ## Architecture
@@ -32,6 +32,9 @@ reprojection; geometry, rejection maps, ages and moments are detached.
 The objective combines compressed displayed-RGB MSE, a small fixed-exposure
 linear RGB term, coarse linear structure and valid-history temporal changes.
 There are no selector labels or target-normalized brightness weights.
+The trainer reuses native GPU preparation; the CPU only expands differentiable
+history-gather maps and supplies the numerical reference implementation.
+Warmup advances the native state without downloading unused displayed RGB.
 
 ## Why this scope
 
