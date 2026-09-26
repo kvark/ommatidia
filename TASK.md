@@ -10,7 +10,8 @@ Keep the existing recurrent, lobe-separated residual U-Net as the single model
 family. Improve the implementation where diagnosis supports it; do not accumulate
 alternative architectures or historical result galleries in the repository.
 
-The latest 4,000-update fine-tune took about 25 minutes, but visible noise remains.
+At the start of this sprint, a 4,000-update fine-tune took about 25 minutes,
+but visible noise remained.
 Prioritize diagnosing learning limitations, improving supervision, and testing
 over simply extending training.
 
@@ -71,8 +72,10 @@ pause scaling training and resolve the bottleneck first.
 - [x] Add targeted training data where the tests expose a coverage gap.
       Added 20 diverse 64-frame training scenes and 10 disjoint development
       scenes, covering static lighting, camera/object/light motion and assets.
-- [ ] Run bounded, hypothesis-driven experiments, selecting checkpoints on the
+- [x] Run bounded, hypothesis-driven experiments, selecting checkpoints on the
       development set rather than the final audit.
+      Selected the reset-balanced model plus the signed-decoder follow-up, with
+      16/8-frame diffuse/specular history limits. See the protocol for trade-offs.
 - [ ] Retain one implementation and record the configuration and provenance of
       the selected checkpoint.
 

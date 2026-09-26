@@ -199,6 +199,56 @@ fn two_frame_training_matches_reference() {
 
 #[test]
 #[ignore = "requires Vulkan or Metal"]
+fn native_history_caps_match_cpu_after_continuous_accumulation() {
+    let context = ommatidia::gpu::create_context(None, false);
+    let surface = Surface {
+        normal_depth: [0.0, 0.0, 1.0, 3.0],
+        albedo_roughness: [0.5, 0.5, 0.5, 1.0],
+        motion: [0.0, 0.0, 3.0, 0.0],
+        ..Default::default()
+    };
+    let ray = Ray {
+        diffuse: [0.5, 0.25, 0.125, 1.0],
+        specular: [2.0, 1.0, 0.5, 1.0],
+        normal_depth: surface.normal_depth,
+        albedo_roughness: surface.albedo_roughness,
+    };
+    let frame = Frame {
+        low: [4, 8],
+        jitter: [0.0; 2],
+        rays: vec![ray; 32],
+        surfaces: vec![surface; 128],
+    };
+    for diffuse_frames in [16.0, 32.0] {
+        let config = Config {
+            channels: 2,
+            diffuse_frames,
+            ..Config::default()
+        };
+        let mut native =
+            native::Native::new(std::sync::Arc::clone(&context), config, frame.low).unwrap();
+        let mut old = Vec::new();
+        for step in 1..=40 {
+            let prepared = cpu::prepare(&frame, &old, config);
+            let (states, expected) =
+                cpu::commit(&frame, &prepared, &cpu::reconstruct(&prepared), config);
+            let actual = native.process(&frame).unwrap();
+            for (a, b) in actual.iter().zip(&expected) {
+                assert!((a - b).abs() / (1.0 + b.abs()) < 1e-5);
+            }
+            for state in native.read_state() {
+                assert!((state.diffuse[3] - (step as f32).min(diffuse_frames)).abs() < 1e-5);
+                assert!(
+                    (state.specular[3] - (step as f32).min(config.specular_frames)).abs() < 1e-5
+                );
+            }
+            old = states;
+        }
+    }
+}
+
+#[test]
+#[ignore = "requires Vulkan or Metal"]
 fn native_multiscale_recurrence_reset_and_hdr() {
     let context = ommatidia::gpu::create_context(None, false);
     let config = Config::default();
