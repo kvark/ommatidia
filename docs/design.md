@@ -47,7 +47,7 @@ Known material albedo and emission are composed only at the end:
 Training uses the same recurrence, warming history with the current model's
 own predictions. Two-frame BPTT differentiates through bilinear radiance
 reprojection; geometry, rejection maps, ages and moments are detached.
-Every fourth training window starts with empty history at a uniformly sampled
+Every other training window starts with empty history at a uniformly sampled
 frame, simulating a cut. The other windows retain full causal warmup; long clips
 must not starve reset supervision.
 The objective combines compressed displayed-RGB MSE, absolute compressed-lobe

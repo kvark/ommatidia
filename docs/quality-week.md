@@ -441,6 +441,40 @@ frozen candidate's full-precision cold smooth-error ratio is 0.844 versus the
 original runtime (`dev-cold-signed-history16.json`). Middle-frame development
 results remain separately reported; they cannot stand in for cold-start quality.
 
+The matched-history run completed. At 500 updates, development PSNR is 29.99455,
+reset PSNR 26.03237, and temporal MSE 0.00035810. At 1,000, these are 30.16505,
+26.12158 and 0.00036162, with energy ratio 1.00062. Development PNG diagnostics
+give middle/cold smooth-error ratios 0.336 / 0.841 at 1,000. This is not a
+material cold-start improvement over the frozen candidate. Matching the limit
+alone does not resolve the remaining quality gap; do not send this checkpoint
+to the confirmation audit as if the bottleneck had been fixed.
+
+### More varied reset supervision
+
+Test one bounded cold-coverage package within the same architecture: increase
+the long corpus from 20 to 40 scenes and reset every other training window.
+The original every-fourth policy supplies a true reset in only one eighth of
+the two-frame loss slots. The new policy doubles that fraction while retaining
+full-prefix warmup in the other half of windows. Sequence/start draws remain
+uniform and are recorded. This tests the package, not isolated attribution to
+either scene diversity or reset frequency.
+
+Capture four additional 64-frame training scenes per case with base seeds
+910001–950001 in increments of 10000, the same case settings, 1-spp 128→256
+observations, eight bounces, 1,024-spp targets and the existing training-only
+catalog pool. All 20 new scene seeds were checked against every current capture,
+confirmation scenes and published ancestry before capture. Keep development
+unchanged. Verify complete trajectories, membership and hashes before training.
+No confirmation prediction may influence training or selection.
+
+After a debug train/reload smoke, warm-start from `matched-history-fit/model.safetensors`
+(weights only, fresh Adam), retaining diffuse/specular limits 16/8, losses and
+two-frame unroll. Bound training to 4,000 updates, learning rate 0.0001, seed 31,
+evaluating development every 1,000 updates. Select on cold and mature spatial
+quality, motion, texture and brightness together. A higher mean PSNR alone is
+not enough. The original failed audit remains fixed, and confirmation data/crops
+are locked independently before any further candidate audit.
+
 ## Progress and evidence
 
 - Initial validation reproduction:
