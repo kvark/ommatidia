@@ -1,5 +1,6 @@
 //! Train and evaluate the lobe-separated recurrent reconstructor on full sequences.
 use ommatidia::{
+    dataset::{Layout, Sample},
     metrics,
     transport::{Config, Frame, Target, graph, native},
 };
@@ -13,9 +14,27 @@ use std::{
 type EvaluationHistory = ([Vec<f32>; 2], Vec<f32>, Vec<ommatidia::temporal::Surface>);
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 
-#[derive(Clone)]
+struct Record {
+    layout: Layout,
+    sample: Sample,
+}
+impl Record {
+    fn low(&self) -> [u32; 2] {
+        [self.layout.lr_width, self.layout.lr_height]
+    }
+    fn frame(&self, config: Config) -> Result<Frame> {
+        Ok(Frame::from_sample(&self.sample, self.layout, config)?)
+    }
+    fn decode(&self, config: Config) -> Result<(Frame, Target)> {
+        Ok((
+            self.frame(config)?,
+            Target::from_sample(&self.sample, self.layout, config)?,
+        ))
+    }
+}
+
 struct Corpus {
-    frames: Vec<(Frame, Target)>,
+    frames: Vec<Record>,
     length: usize,
     provenance: serde_json::Value,
 }
@@ -26,8 +45,8 @@ impl Corpus {
         let mut frames = Vec::new();
         for index in 0..reader.len() {
             let sample = reader.sample(index)?;
-            let frame = Frame::from_sample(&sample, layout, config)?;
-            let target = Target::from_sample(&sample, layout, config)?;
+            let record = Record { layout, sample };
+            let (_, target) = record.decode(config)?;
             if target
                 .rgb
                 .iter()
@@ -37,7 +56,8 @@ impl Corpus {
             {
                 return Err(format!("{} record {index}: invalid or entirely black reference; inspect the capture camera", path.display()).into());
             }
-            frames.push((frame, target));
+            // Retain original f16 records; expand only the frames being consumed.
+            frames.push(record);
         }
         Ok(Self {
             frames,
@@ -49,7 +69,7 @@ impl Corpus {
         let first = corpora.first().ok_or("empty capture list")?;
         if corpora
             .iter()
-            .any(|c| c.length != first.length || c.frames[0].0.low != first.frames[0].0.low)
+            .any(|c| c.length != first.length || c.frames[0].low() != first.frames[0].low())
         {
             return Err("capture sequence/extent mismatch".into());
         }
@@ -240,7 +260,9 @@ fn evaluate(
     let mut diagnostics = Vec::new();
     let mut rows = std::fs::File::create(out.join("frames.csv"))?;
     writeln!(rows, "sequence,frame,baseline_psnr,learned_psnr")?;
-    for (index, (frame, target)) in corpus.frames.iter().enumerate() {
+    for (index, record) in corpus.frames.iter().enumerate() {
+        let (frame, target) = record.decode(config)?;
+        let (frame, target) = (&frame, &target);
         let sequence_start = index % corpus.length == 0;
         let reset = sequence_start || options.reset_history;
         if sequence_start {
@@ -481,7 +503,7 @@ seeds/catalog families must be disjoint. Use a separate final audit split."
         .map(|p| Corpus::load(p, config))
         .collect::<Result<Vec<_>>>()?;
     let holdout = Corpus::combine(&mut held_corpora)?;
-    let low = holdout.frames[0].0.low;
+    let low = holdout.frames[0].low();
     let context = ommatidia::gpu::create_context(device_id, false);
     let mut learned = native::Native::new(Arc::clone(&context), config, low)?;
     let mut baseline = native::Native::new(Arc::clone(&context), config, low)?;
@@ -503,7 +525,7 @@ seeds/catalog families must be disjoint. Use a separate final audit split."
             }
         }
         let train = Corpus::combine(&mut training)?;
-        if unroll > train.length || train.frames.iter().any(|(f, _)| f.low != low) {
+        if unroll > train.length || train.frames.iter().any(|r| r.low() != low) {
             return Err("unroll exceeds sequence or extents differ".into());
         }
         let network = graph::build(config, low, unroll)?;
@@ -534,6 +556,7 @@ seeds/catalog families must be disjoint. Use a separate final audit split."
                 "steps":steps, "unroll":unroll, "seed":seed, "learning_rate":rate,
                 "loss_weights":weights, "warm_start":checkpoint_input, "optimizer_resumed":false,
                 "preparation":"native GPU features/guide/history; CPU differentiable gather maps",
+                "cpu_corpus":"original f16 capture records; per-frame f32 expansion with no requantization",
                 "training":train.provenance, "development":holdout.provenance,
                 "parameters":network.params.iter().map(|p|p.len).sum::<usize>()
             }))?,
@@ -549,11 +572,12 @@ seeds/catalog families must be disjoint. Use a separate final audit split."
             let sequence = rng.below((train.frames.len() / train.length) as u32) as usize;
             let start = rng.below((train.length - unroll + 1) as u32) as usize;
             let offset = sequence * train.length;
-            for (frame, _) in &train.frames[offset..offset + start] {
-                learned.advance(frame)?;
+            for record in &train.frames[offset..offset + start] {
+                learned.advance(&record.frame(config)?)?;
             }
             for slot in 0..unroll {
-                let (frame, target) = &train.frames[offset + start + slot];
+                let (frame, target) = train.frames[offset + start + slot].decode(config)?;
+                let (frame, target) = (&frame, &target);
                 let old = if start + slot == 0 {
                     Vec::new()
                 } else {

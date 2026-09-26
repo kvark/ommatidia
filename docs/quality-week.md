@@ -154,6 +154,70 @@ The shared capture/output helper refactor was checked against the retained
 executable on the 64-frame diagnostic: identical per-frame scores and identical
 final-frame PNG and full-precision radiance files (`output-refactor-check/`).
 
+The complete 640-frame OIDN comparison is recorded in `audit-oidn-run/` and
+`audit-oidn-crops.json`. Frame-mean PSNR is 27.39 dB versus the original model's
+29.63 dB. OIDN reduces the predefined smooth-crop MSE by 47.7%, but texture-crop
+gradient error rises 3.64×. This illustrates why smoother pictures or a single
+aggregate score cannot establish the full quality gate. These are external
+reference results, not a new selected Ommatidia checkpoint.
+
+## Compiler conformance repair
+
+The isolated [Naga correction](../patches/README.md) replaces decorated workgroup
+composites with undecorated storage types while retaining host-buffer layouts.
+All three debug GPU correctness tests now pass with zero validation errors on
+both RADV and LavaPipe (`corrected-compiler-debug/`,
+`corrected-compiler-lavapipe/`). CPU/native discrepancy remains 7.47e-7 and
+two-frame BPTT loss remains 0.00174994 → 0.00065509. Full-model directional and
+parameter gradients pass. Debug capture, training and serialized reload also
+pass with zero validation errors (`patched-capture-{train,dev}/`,
+`patched-{train,reload}-smoke/`); the reloaded frame scores match exactly.
+This resolves the project's reproduced conformance failure, not all possible
+Vulkan/compiler bugs. The 64-frame diagnostic scores and final linear output
+are unchanged by the compiler fix (`compiler-evaluation-run/`).
+
+The patch's targeted structural and `spirv-val` regressions pass, along with all
+139 Naga library unit tests and all-feature/all-target Clippy. A full
+`cargo xtask test` was attempted but could not start: `cargo-nextest` is not
+installed. No full-wgpu-suite or CTS pass is claimed. Early regression fixture
+failures involved a reserved WGSL name, unsupported workgroup pointer arguments,
+unsupported checked out-of-bounds atomics, and a disallowed test map type; these
+fixtures were corrected to supported inputs. Fresh-checkout patch application
+and repeat preparation were independently verified.
+
+## Host memory and performance measurement
+
+The long corpus previously retained every observation and target expanded to
+f32. The trainer now retains the original f16 capture records, expanding only
+consumed frames, without requantization. The 16-step `loader-{expanded,compact}`
+comparison has identical loss/frame CSVs and all 36 checkpoint tensors,
+including optimizer state. Safetensors headers differ only in key ordering.
+The long diagnostic also matches (`compact-evaluation-run/`). The already
+running bounded experiment keeps its recorded executable; no mid-run code swap
+or dataset change is performed.
+
+`benchmark` measures hardware GPU pass spans separately for preparation,
+ordinary grouped neural execution and resolve. It excludes CPU validation,
+upload/readback, compilation, submission and inter-submission queue gaps, and
+must not be presented as end-to-end throughput. It reports requested resident
+buffer bytes and separately samples process-local driver memory usage, including
+warmup; unsupported queries are null. Percentiles use nearest rank.
+Native's offline upload/readback buffers are included in memory accounting.
+The new timed/untimed eight-frame regression produces exactly identical output
+with zero validation errors (`timing-parity/`). `benchmark-smoke-run/` only
+checks the measurement plumbing: training was concurrent, so its timings are
+**not publication measurements**. Run the selected model with no other GPU work,
+two warmup sequences and three measured sequences before publishing performance.
+
+The first 1,000-update development evaluation scores 29.55472 dB versus 28.95310
+with the published weights through the corrected decoder (`dev-starting-run/`).
+Temporal MSE falls from 0.00052124 to 0.00043569; reference-gradient MSE also
+improves. Cold starts regress, however, by up to 2.69 dB. The worst reset images
+have conspicuous broad blotches; this checkpoint is not ready to promote.
+Uniform starts in a 64-frame sequence with two-frame unroll expose frame zero
+in only 1/63 of updates. Check the next development checkpoint before deciding
+whether to increase reset supervision. The final learned audit is still unseen.
+
 ## Progress and evidence
 
 - Initial validation reproduction:
@@ -269,5 +333,5 @@ final-frame PNG and full-precision radiance files (`output-refactor-check/`).
   Clippy and formatting pass on both toolchains, and all five crop-scoring
   Python tests pass. The three release GPU numerical tests also pass.
   Debug Vulkan conformance still fails and has not been reclassified as success.
-- Held-out quality gains, validation repair, OIDN comparison, timings, and videos
-  remain pending. No README quality improvement is claimed by these diagnostics.
+- Held-out learned quality gates, final uncontended timings, and videos remain
+  pending. No README quality improvement is claimed by these diagnostics.

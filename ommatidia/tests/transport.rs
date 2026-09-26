@@ -49,6 +49,32 @@ fn shader_parses() {
 }
 
 #[test]
+#[ignore = "requires a GPU with timestamp support"]
+fn timed_execution_matches_uninstrumented_outputs() {
+    let context = ommatidia::gpu::create_context(None, true);
+    let config = Config {
+        channels: 2,
+        ..Config::default()
+    };
+    let (frame, _) = fixture(config, 0, 1);
+    let mut plain = native::Native::new(Arc::clone(&context), config, frame.low).unwrap();
+    let mut timed =
+        native::Native::with_timing(Arc::clone(&context), config, frame.low, true).unwrap();
+    assert!(timed.gpu_timings().is_none());
+    for i in 0..8 {
+        let (frame, _) = fixture(config, i, 1);
+        assert_eq!(
+            plain.process(&frame).unwrap(),
+            timed.process(&frame).unwrap()
+        );
+        assert!(plain.gpu_timings().is_none());
+        let times = timed.gpu_timings().unwrap();
+        assert!(times.iter().all(|d| !d.is_zero()));
+    }
+    assert!(timed.buffer_memory_bytes() > timed.session.memory_summary().total_allocated_bytes());
+}
+
+#[test]
 fn lobe_supervision_detects_errors_that_cancel_in_rgb() {
     use meganeura::reference::{Feeds, evaluate_outputs};
 

@@ -1317,7 +1317,6 @@ checksum = "e53debba6bda7a793e5f99b8dacf19e626084f525f7829104ba9898f367d85ff"
 [[package]]
 name = "naga"
 version = "30.0.0"
-source = "git+https://github.com/gfx-rs/wgpu?rev=323acfb729a00c3030e362faa27252afe6368792#323acfb729a00c3030e362faa27252afe6368792"
 dependencies = [
  "arrayvec",
  "bit-set",
@@ -1342,7 +1341,6 @@ dependencies = [
 [[package]]
 name = "naga-types"
 version = "30.0.0"
-source = "git+https://github.com/gfx-rs/wgpu?rev=323acfb729a00c3030e362faa27252afe6368792#323acfb729a00c3030e362faa27252afe6368792"
 dependencies = [
  "hashbrown 0.17.1",
  "indexmap",

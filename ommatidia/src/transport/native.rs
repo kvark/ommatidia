@@ -51,11 +51,26 @@ pub struct Native {
     output: gpu::Buffer,
     current: usize,
     ready: bool,
+    timing: bool,
+    last_timings: Option<[std::time::Duration; 3]>,
 }
 impl Native {
     pub fn new(context: Arc<gpu::Context>, config: Config, low: [u32; 2]) -> Result<Self, String> {
+        Self::with_timing(context, config, low, false)
+    }
+    /// When enabled, `context` must have been created with GPU timing enabled.
+    pub fn with_timing(
+        context: Arc<gpu::Context>,
+        config: Config,
+        low: [u32; 2],
+        timing: bool,
+    ) -> Result<Self, String> {
+        if timing && !context.capabilities().timing {
+            return Err("GPU timestamps unavailable".into());
+        }
         let network = graph::build(config, low, 0)?;
-        let mut session = crate::gpu::inference_session(&network.graph, Arc::clone(&context));
+        let mut session =
+            crate::gpu::inference_session_with_timing(&network.graph, Arc::clone(&context), timing);
         network.initialize(&mut session, 1);
         let shader = context.create_shader(gpu::ShaderDesc {
             source: include_str!("prepare.wgsl"),
@@ -107,10 +122,27 @@ impl Native {
             output,
             current: 0,
             ready: false,
+            timing,
+            last_timings: None,
         })
     }
     pub fn reset(&mut self) {
         self.ready = false;
+    }
+    /// Preparation, neural inference and resolve GPU pass spans for the last
+    /// completed `advance`. Excludes uploads, readback and CPU/queue gaps.
+    pub fn gpu_timings(&self) -> Option<[std::time::Duration; 3]> {
+        self.last_timings
+    }
+    /// Requested resident buffer bytes, including this wrapper's offline
+    /// upload/readback buffers; excludes driver objects and temporary staging.
+    pub fn buffer_memory_bytes(&self) -> usize {
+        let low_texels = (self.low[0] * self.low[1]) as usize;
+        let high_texels = low_texels * self.config.scale.pow(2) as usize;
+        self.session.memory_summary().total_allocated_bytes()
+            + low_texels * std::mem::size_of::<Ray>()
+            + high_texels
+                * (2 * std::mem::size_of::<State>() + std::mem::size_of::<Surface>() + 16 + 8 + 16)
     }
     pub fn sync_parameters(&mut self, source: &meganeura::Session) {
         let names: Vec<_> = self
@@ -224,6 +256,7 @@ impl Native {
     /// Offline recurrent step without reading displayed RGB back. Training
     /// warmup and unrolls only need state and prepared network inputs.
     pub fn advance(&mut self, frame: &Frame) -> Result<(), String> {
+        self.last_timings = None;
         frame.validate(self.config)?;
         if frame.low != self.low {
             return Err("frame extent changed; recreate the reconstructor".into());
@@ -264,8 +297,21 @@ impl Native {
         {
             return Err("preparation timeout".into());
         }
+        let preparation = self
+            .timing
+            .then(|| encoder.last_timing().pass_durations().map(|(_, d)| d).sum());
         self.session.step();
         self.session.wait();
+        let inference = if self.timing {
+            let timings = self.session.gpu_timings();
+            if timings.is_empty() {
+                self.context.destroy_command_encoder(&mut encoder);
+                return Err("missing neural GPU timestamps".into());
+            }
+            timings.iter().map(|(_, d)| *d).sum()
+        } else {
+            std::time::Duration::ZERO
+        };
         encoder.start();
         self.record_resolve(&mut encoder, self.surfaces.into(), self.output.into());
         let sync = self.context.submit(&mut encoder);
@@ -275,6 +321,10 @@ impl Native {
             .map_err(|e| format!("{e:?}"))?
         {
             return Err("resolve timeout".into());
+        }
+        if let Some(preparation) = preparation {
+            let resolve = encoder.last_timing().pass_durations().map(|(_, d)| d).sum();
+            self.last_timings = Some([preparation, inference, resolve]);
         }
         self.context.destroy_command_encoder(&mut encoder);
         Ok(())

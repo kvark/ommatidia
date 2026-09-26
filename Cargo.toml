@@ -1,6 +1,7 @@
 [workspace]
 resolver = "2"
 members = ["ommatidia", "ommatidia-data", "ommatidia-train"]
+exclude = ["target/patched-naga"]
 
 [workspace.package]
 version = "0.1.0"
@@ -41,3 +42,7 @@ blade-macros = { path = "../blade/blade-macros" }
 
 [patch.crates-io]
 blade-macros = { path = "../blade/blade-macros" }
+
+# Run scripts/prepare-naga.py before Cargo; see patches/README.md.
+[patch."https://github.com/gfx-rs/wgpu"]
+naga = { path = "target/patched-naga/naga" }

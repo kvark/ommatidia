@@ -52,9 +52,11 @@ The quality gates below remain open until the final audit and visual review pass
       and stable on independent noise for that scene, but overfits the scene.
       This is not a held-out quality pass. See the protocol.
 - [ ] Isolate diffuse, specular, and temporal-history contributions to the noise.
-- [ ] Verify capture and supervision correctness, and address the remaining
+- [x] Verify capture and supervision correctness, and address the remaining
       GPU-validation failure. Track numerical correctness and API conformance
       separately.
+      The pinned compiler correction passes debug GPU checks on RADV and
+      LavaPipe, plus capture/train/reload with zero validation errors.
 
 **Day-two checkpoint:** if a simple stationary scene still cannot become clean,
 pause scaling training and resolve the bottleneck first.
@@ -75,7 +77,7 @@ pause scaling training and resolve the bottleneck first.
 
 - [ ] Evaluate the selected checkpoint against the starting checkpoint on the
       frozen audit, including worst cases and temporal behavior.
-- [ ] Add an established spatial-quality reference such as OIDN, documenting
+- [x] Add an established spatial-quality reference such as OIDN, documenting
       input, guide, and resolution differences. OIDN is not temporally stable;
       assess temporal quality separately. See the
       [OIDN documentation](https://www.openimagedenoise.org/documentation.html#rt).

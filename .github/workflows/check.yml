@@ -47,6 +47,9 @@ jobs:
           path: blade
       - name: Install Rust
         run: rustup toolchain install 1.92.0 --profile minimal
+      - name: Prepare corrected shader compiler
+        working-directory: ommatidia
+        run: python3 scripts/prepare-naga.py
       - name: Check workspace
         working-directory: ommatidia
         run: cargo +1.92.0 check --workspace --all-targets --locked
@@ -68,13 +71,16 @@ jobs:
           path: blade
       - name: Install Rust
         run: rustup toolchain install 1.92.0 --profile minimal --component rustfmt,clippy
+      - name: Prepare corrected shader compiler
+        working-directory: ommatidia
+        run: python3 scripts/prepare-naga.py
       - name: Format
         working-directory: ommatidia
         run: cargo +1.92.0 fmt --all -- --check
       - name: Check quality harness syntax
         working-directory: ommatidia
         run: |
-          python3 -m py_compile scripts/record-run.py scripts/verify-results.py scripts/fetch-catalog.py scripts/score-regions.py
+          python3 -m py_compile scripts/prepare-naga.py scripts/record-run.py scripts/verify-results.py scripts/fetch-catalog.py scripts/score-regions.py
           python3 scripts/test-fetch-catalog.py
           python3 scripts/test-score-regions.py
           bash -n scripts/check-cache.sh scripts/capture-catalog.sh
@@ -110,6 +116,9 @@ jobs:
           rustup toolchain install 1.92.0 --profile minimal
           sudo apt-get update -o Acquire::Retries=3
           sudo apt-get install -y libvulkan1 mesa-vulkan-drivers vulkan-validationlayers
+      - name: Prepare corrected shader compiler
+        working-directory: ommatidia
+        run: python3 scripts/prepare-naga.py
       - name: Check gradients, raw features, recurrence, HDR and reload
         working-directory: ommatidia
         run: python3 scripts/record-run.py target/ci-gpu -- cargo +1.92.0 test -p ommatidia --test transport --locked -- --ignored --nocapture --test-threads=1

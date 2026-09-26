@@ -1,0 +1,494 @@
+diff --git a/CHANGELOG.md b/CHANGELOG.md
+index e1f360de580f6d7879668ffb6e5139190190cc75..e88ac400dabecebb99eda4c31868108712e03027 100644
+--- a/CHANGELOG.md
++++ b/CHANGELOG.md
+@@ -179,6 +179,9 @@ By @sagudev in [#10109](https://github.com/gfx-rs/wgpu/pull/10109).
+ 
+ ### Bug Fixes
+ 
++- SPIR-V workgroup arrays and structures use undecorated storage types, including
++  when their logical types are also used by explicitly laid-out host buffers.
++
+ #### General
+ 
+ - Zero-initialize padding (if any) at the end of a buffer allocation. This was application-visible in rare cases on Vulkan when a shader read beyond the valid range of a vertex buffer. By @andyleiserson in [#9791](https://github.com/gfx-rs/wgpu/pull/9791).
+diff --git a/naga/src/back/spv/block.rs b/naga/src/back/spv/block.rs
+index 345e04df788261590471bfa8eada14705cd78c58..8faa18247b51fe9c71c6683a6b32ce2e8b350096 100644
+--- a/naga/src/back/spv/block.rs
++++ b/naga/src/back/spv/block.rs
+@@ -2898,13 +2898,24 @@ impl BlockContext<'_> {
+                 };
+             };
+ 
+-            let (load_type_id, access_type_adjustment) = match wrapped_load {
++            let (mut load_type_id, access_type_adjustment) = match wrapped_load {
+                 Some(ref wrapped_load) => (
+                     self.writer.std140_compat_uniform_types[&wrapped_load.r#type].type_id,
+                     wrapped_load.access_type_adjustment,
+                 ),
+                 None => (result_type_id, access_type_adjustment),
+             };
++            let workgroup_base = match *self.fun_info[pointer].ty.inner_with(&self.ir_module.types)
++            {
++                crate::TypeInner::Pointer {
++                    base,
++                    space: crate::AddressSpace::WorkGroup,
++                } => Some(base),
++                _ => None,
++            };
++            if workgroup_base.is_some() {
++                load_type_id = self.writer.workgroup_type_id(load_type_id);
++            }
+ 
+             let load_id = match self.write_access_chain(pointer, block, access_type_adjustment)? {
+                 ExpressionPointer::Ready { pointer_id } => {
+@@ -2959,6 +2970,15 @@ impl BlockContext<'_> {
+                 }
+             };
+ 
++            if let Some(base) = workgroup_base {
++                return self.writer.convert_workgroup_value(
++                    self.ir_module,
++                    base,
++                    load_id,
++                    false,
++                    &mut block.body,
++                );
++            }
+             match wrapped_load {
+                 Some(ref wrapped_load) => {
+                     // If we loaded a std140 compat type then we must call the
+@@ -3869,7 +3889,20 @@ impl BlockContext<'_> {
+                     self.writer.write_memory_barrier(flags, &mut block);
+                 }
+                 Statement::Store { pointer, value } => {
+-                    let value_id = self.cached[value];
++                    let mut value_id = self.cached[value];
++                    if let crate::TypeInner::Pointer {
++                        base,
++                        space: crate::AddressSpace::WorkGroup,
++                    } = *self.fun_info[pointer].ty.inner_with(&self.ir_module.types)
++                    {
++                        value_id = self.writer.convert_workgroup_value(
++                            self.ir_module,
++                            base,
++                            value_id,
++                            true,
++                            &mut block.body,
++                        )?;
++                    }
+                     match self.write_access_chain(
+                         pointer,
+                         &mut block,
+diff --git a/naga/src/back/spv/mod.rs b/naga/src/back/spv/mod.rs
+index 1443c2e2a2635fc0df079cb1931b2f6bd4c58782..678361e77d73e9c57842d991823791a8f44de230 100644
+--- a/naga/src/back/spv/mod.rs
++++ b/naga/src/back/spv/mod.rs
+@@ -950,6 +950,8 @@ pub struct Writer {
+     tuple_of_u32s_ty_id: Option<Word>,
+     //TODO: convert most of these into vectors, addressable by handle indices
+     lookup_type: crate::FastHashMap<LookupType, Word>,
++    workgroup_type_handles: crate::FastHashSet<Handle<crate::Type>>,
++    workgroup_type_ids: crate::FastHashMap<Word, Word>,
+     lookup_function: crate::FastHashMap<Handle<crate::Function>, Word>,
+     lookup_function_type: crate::FastHashMap<LookupFunctionType, Word>,
+     /// Operations which have been wrapped in a helper function. The value is
+diff --git a/naga/src/back/spv/writer.rs b/naga/src/back/spv/writer.rs
+index 74d1bfe24ab25ac74e04fd42c1a12772c47ef315..0a2c4802e5d3f05cc813cda832f071769571e4c6 100644
+--- a/naga/src/back/spv/writer.rs
++++ b/naga/src/back/spv/writer.rs
+@@ -107,6 +107,8 @@ impl Writer {
+             cached_constants: crate::FastHashMap::default(),
+             global_variables: HandleVec::new(),
+             std140_compat_uniform_types: crate::FastHashMap::default(),
++            workgroup_type_handles: crate::FastHashSet::default(),
++            workgroup_type_ids: crate::FastHashMap::default(),
+             fake_missing_bindings: options.fake_missing_bindings,
+             binding_map: options.binding_map.clone(),
+             saved_cached: CachedExpressions::default(),
+@@ -206,6 +208,8 @@ impl Writer {
+             cached_constants: take(&mut self.cached_constants).reclaim(),
+             global_variables: take(&mut self.global_variables).reclaim(),
+             std140_compat_uniform_types: take(&mut self.std140_compat_uniform_types).reclaim(),
++            workgroup_type_handles: take(&mut self.workgroup_type_handles).reclaim(),
++            workgroup_type_ids: take(&mut self.workgroup_type_ids).reclaim(),
+             saved_cached: take(&mut self.saved_cached).reclaim(),
+             temp_list: take(&mut self.temp_list).reclaim(),
+             ray_query_functions: take(&mut self.ray_query_functions).reclaim(),
+@@ -351,6 +355,128 @@ impl Writer {
+         self.get_type_id(LookupType::Local(LocalType::Pointer { base, class }))
+     }
+ 
++    pub(super) fn workgroup_type_id(&self, type_id: Word) -> Word {
++        self.workgroup_type_ids
++            .get(&type_id)
++            .copied()
++            .unwrap_or(type_id)
++    }
++
++    fn collect_workgroup_types(&mut self, module: &crate::Module, ty: Handle<crate::Type>) {
++        if !matches!(
++            module.types[ty].inner,
++            crate::TypeInner::Array { .. } | crate::TypeInner::Struct { .. }
++        ) {
++            return;
++        }
++        if !self.workgroup_type_handles.insert(ty) {
++            return;
++        }
++        match module.types[ty].inner {
++            crate::TypeInner::Array { base, .. } => self.collect_workgroup_types(module, base),
++            crate::TypeInner::Struct { ref members, .. } => {
++                for member in members {
++                    self.collect_workgroup_types(module, member.ty);
++                }
++            }
++            _ => (),
++        }
++    }
++
++    fn write_workgroup_type(
++        &mut self,
++        module: &crate::Module,
++        ty: Handle<crate::Type>,
++        original_id: Word,
++    ) -> Result<(), Error> {
++        if !self.workgroup_type_handles.contains(&ty) {
++            return Ok(());
++        }
++        let id = self.id_gen.next();
++        let instruction = match module.types[ty].inner {
++            crate::TypeInner::Array { base, size, .. } => {
++                let base_id = self.get_handle_type_id(base);
++                let base_id = self.workgroup_type_id(base_id);
++                match size.resolve(module.to_ctx())? {
++                    crate::proc::IndexableLength::Known(length) => {
++                        let length_id = self.get_index_constant(length);
++                        Instruction::type_array(id, base_id, length_id)
++                    }
++                    crate::proc::IndexableLength::Dynamic => {
++                        unreachable!("unsized workgroup array")
++                    }
++                }
++            }
++            crate::TypeInner::Struct { ref members, .. } => {
++                let members: Vec<_> = members
++                    .iter()
++                    .map(|member| {
++                        let id = self.get_handle_type_id(member.ty);
++                        self.workgroup_type_id(id)
++                    })
++                    .collect();
++                Instruction::type_struct(id, &members)
++            }
++            _ => return Ok(()),
++        };
++        instruction.to_words(&mut self.logical_layout.declarations);
++        self.workgroup_type_ids.insert(original_id, id);
++        Ok(())
++    }
++
++    pub(super) fn convert_workgroup_value(
++        &mut self,
++        module: &crate::Module,
++        ty: Handle<crate::Type>,
++        value: Word,
++        to_workgroup: bool,
++        body: &mut Vec<Instruction>,
++    ) -> Result<Word, Error> {
++        let regular = self.get_handle_type_id(ty);
++        let workgroup = self.workgroup_type_id(regular);
++        if workgroup == regular {
++            return Ok(value);
++        }
++        let components = match module.types[ty].inner {
++            crate::TypeInner::Array { base, size, .. } => match size.resolve(module.to_ctx())? {
++                crate::proc::IndexableLength::Known(length) => vec![base; length as usize],
++                crate::proc::IndexableLength::Dynamic => unreachable!("unsized workgroup array"),
++            },
++            crate::TypeInner::Struct { ref members, .. } => members.iter().map(|m| m.ty).collect(),
++            _ => unreachable!("workgroup variant must be composite"),
++        };
++        let mut values = Vec::with_capacity(components.len());
++        for (index, component) in components.into_iter().enumerate() {
++            let regular_component = self.get_handle_type_id(component);
++            let source_type = if to_workgroup {
++                regular_component
++            } else {
++                self.workgroup_type_id(regular_component)
++            };
++            let extracted = self.id_gen.next();
++            body.push(Instruction::composite_extract(
++                source_type,
++                extracted,
++                value,
++                &[index as u32],
++            ));
++            values.push(self.convert_workgroup_value(
++                module,
++                component,
++                extracted,
++                to_workgroup,
++                body,
++            )?);
++        }
++        let result = self.id_gen.next();
++        body.push(Instruction::composite_construct(
++            if to_workgroup { workgroup } else { regular },
++            result,
++            &values,
++        ));
++        Ok(result)
++    }
++
+     pub(super) fn get_handle_pointer_type_id(
+         &mut self,
+         base: Handle<crate::Type>,
+@@ -2166,7 +2292,14 @@ impl Writer {
+                 self.write_cooperative_type_declaration_local(id, coop);
+                 return;
+             }
+-            LocalType::Pointer { base, class } => Instruction::type_pointer(id, class, base),
++            LocalType::Pointer { base, class } => {
++                let base = if class == spirv::StorageClass::Workgroup {
++                    self.workgroup_type_id(base)
++                } else {
++                    base
++                };
++                Instruction::type_pointer(id, class, base)
++            }
+             LocalType::Image(image) => {
+                 let local_type = LocalType::Numeric(NumericType::Scalar(image.sampled_type));
+                 let type_id = self.get_localtype_id(local_type);
+@@ -2298,6 +2431,9 @@ impl Writer {
+         // Add this handle as a new alias for that type.
+         self.lookup_type.insert(LookupType::Handle(handle), id);
+ 
++        // Workgroup storage cannot use host buffer layout decorations.
++        self.write_workgroup_type(module, handle, id)?;
++
+         if self.flags.contains(WriterFlags::DEBUG) {
+             if let Some(ref name) = ty.name {
+                 self.debugs.push(Instruction::name(id, name));
+@@ -2876,6 +3012,11 @@ impl Writer {
+                 // get wrapped, and we're initializing `WorkGroup` variables.
+                 let var_id = self.global_variables[handle].var_id;
+                 let var_type_id = self.get_handle_type_id(var.ty);
++                let var_type_id = if var.space == crate::AddressSpace::WorkGroup {
++                    self.workgroup_type_id(var_type_id)
++                } else {
++                    var_type_id
++                };
+                 let init_word = self.get_constant_null(var_type_id);
+                 Instruction::store(var_id, init_word, None)
+             })
+@@ -3615,6 +3756,11 @@ impl Writer {
+             }
+         };
+ 
++        let inner_type_id = if global_variable.space == crate::AddressSpace::WorkGroup {
++            self.workgroup_type_id(inner_type_id)
++        } else {
++            inner_type_id
++        };
+         let init_word = match (global_variable.space, self.zero_initialize_workgroup_memory) {
+             (crate::AddressSpace::Private, _)
+             | (crate::AddressSpace::WorkGroup, super::ZeroInitializeWorkgroupMemoryMode::Native) => {
+@@ -3812,6 +3958,21 @@ impl Writer {
+             }
+         }
+ 
++        for (_, var) in ir_module.global_variables.iter() {
++            if var.space == crate::AddressSpace::WorkGroup {
++                self.collect_workgroup_types(ir_module, var.ty);
++            }
++        }
++        for (_, ty) in ir_module.types.iter() {
++            if let crate::TypeInner::Pointer {
++                base,
++                space: crate::AddressSpace::WorkGroup,
++            } = ty.inner
++            {
++                self.collect_workgroup_types(ir_module, base);
++            }
++        }
++
+         // write all types
+         for (handle, _) in ir_module.types.iter() {
+             self.write_type_declaration_arena(ir_module, handle)?;
+diff --git a/naga/tests/naga/main.rs b/naga/tests/naga/main.rs
+index 7253e3cdf2bfd5c9c9db189200b793039be49c51..8e1b84e59dc36bd1c50620359dad4102c5cd0949 100644
+--- a/naga/tests/naga/main.rs
++++ b/naga/tests/naga/main.rs
+@@ -3,5 +3,6 @@ mod snapshots;
+ mod spirv_capabilities;
+ mod spirv_debug_info;
+ mod spirv_roundtrip;
++mod spirv_workgroup_layout;
+ mod validation;
+ mod wgsl_errors;
+diff --git a/naga/tests/naga/spirv_workgroup_layout.rs b/naga/tests/naga/spirv_workgroup_layout.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..f06258efc7e29ebde36de38981de549d9e3928a8
+--- /dev/null
++++ b/naga/tests/naga/spirv_workgroup_layout.rs
+@@ -0,0 +1,159 @@
++#![cfg(all(feature = "wgsl-in", spv_out))]
++
++use naga::{back::spv, valid};
++use std::{
++    io::Write,
++    process::{Command, Stdio},
++};
++
++const SOURCE: &str = r#"
++struct Payload {
++    basis: mat2x3<f32>,
++    values: array<vec3<f32>, 3>,
++    tag: u32,
++}
++@group(0) @binding(0) var<storage, read_write> backing: array<Payload, 4>;
++@group(0) @binding(1) var<uniform> control: Payload;
++var<workgroup> wg_data: array<Payload, 4>;
++var<workgroup> counters: array<atomic<u32>, 4>;
++fn copy(index: u32) -> Payload {
++    wg_data[index] = control;
++    return wg_data[index];
++}
++@compute @workgroup_size(4)
++fn main(@builtin(local_invocation_index) lane: u32) {
++    if lane == 0u { wg_data = backing; }
++    workgroupBarrier();
++    backing[lane] = copy(lane);
++    let uniform_value = workgroupUniformLoad(&wg_data[0]);
++    backing[lane].basis = uniform_value.basis;
++    let old = atomicAdd(&counters[0], lane);
++    backing[lane].tag += old;
++}
++"#;
++
++fn modules() -> Vec<Vec<u32>> {
++    let module = naga::front::wgsl::parse_str(SOURCE).unwrap();
++    let info = valid::Validator::new(valid::ValidationFlags::all(), valid::Capabilities::all())
++        .validate(&module)
++        .unwrap();
++    let mut modules = Vec::new();
++    for version in [(1, 3), (1, 4)] {
++        for initialize in [
++            spv::ZeroInitializeWorkgroupMemoryMode::None,
++            spv::ZeroInitializeWorkgroupMemoryMode::Polyfill,
++            spv::ZeroInitializeWorkgroupMemoryMode::Native,
++        ] {
++            let mut options = spv::Options {
++                lang_version: version,
++                zero_initialize_workgroup_memory: initialize,
++                ..Default::default()
++            };
++            options.bounds_check_policies.index = naga::proc::BoundsCheckPolicy::ReadZeroSkipWrite;
++            let mut writer = spv::Writer::new(&options).unwrap();
++            let mut first = Vec::new();
++            writer
++                .write(&module, &info, None, &None, &mut first)
++                .unwrap();
++            let mut second = Vec::new();
++            writer
++                .write(&module, &info, None, &None, &mut second)
++                .unwrap();
++            assert_eq!(
++                first, second,
++                "workgroup type cache must reset with the writer"
++            );
++            modules.push(first);
++        }
++    }
++    modules
++}
++
++#[test]
++fn workgroup_has_no_layout_but_shared_buffer_types_keep_it() {
++    for words in modules() {
++        let mut types = naga::FastHashMap::default();
++        let mut decorated = Vec::new();
++        let mut variables = Vec::new();
++        let mut position = 5;
++        while position < words.len() {
++            let size = (words[position] >> 16) as usize;
++            let operands = &words[position + 1..position + size];
++            let opcode = words[position] & 65535;
++            if [
++                spirv::Op::TypeArray,
++                spirv::Op::TypeStruct,
++                spirv::Op::TypePointer,
++            ]
++            .iter()
++            .any(|op| opcode == *op as u32)
++            {
++                let children = if opcode == spirv::Op::TypeArray as u32 {
++                    vec![operands[1]]
++                } else if opcode == spirv::Op::TypePointer as u32 {
++                    vec![operands[2]]
++                } else {
++                    operands[1..].to_vec()
++                };
++                types.insert(operands[0], children);
++            }
++            if opcode == spirv::Op::Decorate as u32
++                && operands[1] == spirv::Decoration::ArrayStride as u32
++                || opcode == spirv::Op::MemberDecorate as u32
++                    && [spirv::Decoration::Offset, spirv::Decoration::MatrixStride]
++                        .iter()
++                        .any(|d| operands[2] == *d as u32)
++            {
++                decorated.push(operands[0]);
++            }
++            if opcode == spirv::Op::Variable as u32 {
++                variables.push((operands[0], operands[2]));
++            }
++            position += size;
++        }
++        for (ty, class) in variables {
++            let mut pending = vec![ty];
++            let mut has_layout = false;
++            while let Some(ty) = pending.pop() {
++                has_layout |= decorated.contains(&ty);
++                if let Some(children) = types.get(&ty) {
++                    pending.extend(children);
++                }
++            }
++            if class == spirv::StorageClass::Workgroup as u32 {
++                assert!(!has_layout);
++            }
++            if class == spirv::StorageClass::StorageBuffer as u32
++                || class == spirv::StorageClass::Uniform as u32
++            {
++                assert!(has_layout);
++            }
++        }
++    }
++}
++
++#[test]
++#[ignore = "requires spirv-val"]
++fn workgroup_layout_passes_spirv_validation() {
++    for words in modules() {
++        let mut child = Command::new("spirv-val")
++            .args(["--target-env", "vulkan1.3"])
++            .stdin(Stdio::piped())
++            .stdout(Stdio::piped())
++            .stderr(Stdio::piped())
++            .spawn()
++            .unwrap();
++        child
++            .stdin
++            .take()
++            .unwrap()
++            .write_all(bytemuck::cast_slice(&words))
++            .unwrap();
++        let output = child.wait_with_output().unwrap();
++        assert!(
++            output.status.success(),
++            "{}",
++            String::from_utf8_lossy(&output.stderr)
++        );
++    }
++}

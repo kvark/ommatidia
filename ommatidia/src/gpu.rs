@@ -48,11 +48,24 @@ pub fn inference_session(
     graph: &meganeura::Graph,
     context: Arc<blade_graphics::Context>,
 ) -> meganeura::Session {
+    inference_session_with_timing(graph, context, false)
+}
+
+/// `timing` must match the timestamp configuration of the supplied context.
+pub fn inference_session_with_timing(
+    graph: &meganeura::Graph,
+    context: Arc<blade_graphics::Context>,
+    timing: bool,
+) -> meganeura::Session {
     meganeura::train::build(
         graph,
         meganeura::SessionConfig {
             mode: meganeura::Mode::Inference,
             gpu: Some(context),
+            runtime: meganeura::SessionOptions {
+                gpu_timing: timing,
+                ..Default::default()
+            },
             ..Default::default()
         },
     )
