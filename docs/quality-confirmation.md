@@ -34,6 +34,13 @@ Evaluate all 640 frames, both scenes per case, including temporal metrics and
 matched full-length videos. Illustrated views remain frame 31 of global
 sequences 0, 2 and 8, and full 64-frame videos for sequences 0, 2, 4, 6 and 8.
 
+Use `export-references --data FILE [--data FILE ...] --out NEW_DIRECTORY` to
+export the first, middle and last references of every sequence. It does not load
+weights or create a GPU context. Its static-audit check matches all six reference
+PNGs and all six linear f32 files from the original evaluator byte-for-byte
+(`reference-export-check/`). This avoids rendering a candidate while choosing
+regions. Keep the exact dataset order when assigning global sequence ids.
+
 Select one candidate on development, recording weights, config, executable and
 source hashes before either confirmation evaluation or a new regression run.
 Report **both** the original frozen audit and confirmation outcomes. Do not use a
