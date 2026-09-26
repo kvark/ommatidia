@@ -21,6 +21,12 @@ pub fn encode(v: f32, exposure: f32) -> f32 {
     let v = v.max(0.0) * exposure;
     v / (1.0 + v)
 }
+fn normal_similarity(a: [f32; 4], b: [f32; 4]) -> f32 {
+    let dot = a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+    let aa = a[0] * a[0] + a[1] * a[1] + a[2] * a[2];
+    let bb = b[0] * b[0] + b[1] * b[1] + b[2] * b[2];
+    (dot / (aa * bb).max(1e-12).sqrt()).clamp(0.0, 1.0)
+}
 pub fn geometry(a: [f32; 4], b: [f32; 4]) -> f32 {
     if a[3] >= 60000.0 || b[3] >= 60000.0 {
         return if a[3] >= 60000.0 && b[3] >= 60000.0 {
@@ -29,9 +35,59 @@ pub fn geometry(a: [f32; 4], b: [f32; 4]) -> f32 {
             0.0
         };
     }
-    let dot = (a[0] * b[0] + a[1] * b[1] + a[2] * b[2]).max(0.0);
     let d = (a[3] - b[3]).abs() / (0.01 + 0.02 * a[3].abs());
-    dot.powi(16) * (-d).exp()
+    normal_similarity(a, b).powi(16) * (-d).exp()
+}
+
+fn inverse_depth_gradient(frame: &Frame, width: usize, x: usize, y: usize) -> [f32; 2] {
+    let a = frame.surfaces[y * width + x].normal_depth;
+    if a[3] <= 0.0 || a[3] >= 60000.0 {
+        return [0.0; 2];
+    }
+    let mut gradient = [0.0; 2];
+    for (axis, size) in [width, frame.surfaces.len() / width]
+        .into_iter()
+        .enumerate()
+    {
+        let coordinate = [x, y][axis];
+        let mut slopes = [0.0; 2];
+        let mut valid = [false; 2];
+        for (side, sign) in [-1isize, 1].into_iter().enumerate() {
+            let q = coordinate as isize + sign;
+            if q < 0 || q >= size as isize {
+                continue;
+            }
+            let mut p = [x, y];
+            p[axis] = q as usize;
+            let b = frame.surfaces[p[1] * width + p[0]].normal_depth;
+            if b[3] > 0.0 && b[3] < 60000.0 && normal_similarity(a, b) > 0.95 {
+                slopes[side] = sign as f32 * (b[3].recip() - a[3].recip());
+                valid[side] = true;
+            }
+        }
+        // Minmod avoids interpreting a foreground/background jump as a slope.
+        gradient[axis] = match valid {
+            [true, true] if slopes[0] * slopes[1] > 0.0 => {
+                if slopes[0].abs() < slopes[1].abs() {
+                    slopes[0]
+                } else {
+                    slopes[1]
+                }
+            }
+            _ => 0.0,
+        };
+    }
+    gradient
+}
+
+fn spatial_geometry(a: [f32; 4], b: [f32; 4], gradient: [f32; 2], delta: [f32; 2]) -> f32 {
+    if a[3] <= 0.0 || b[3] <= 0.0 || a[3] >= 60000.0 || b[3] >= 60000.0 {
+        return geometry(a, b);
+    }
+    let inverse = a[3].recip();
+    let expected = inverse + gradient[0] * delta[0] + gradient[1] * delta[1];
+    let d = (expected - b[3].recip()).abs() / (0.02 * inverse + 0.01 * inverse * inverse);
+    normal_similarity(a, b).powi(16) * (-d).exp()
 }
 pub fn matches(s: &Surface, p: &State) -> bool {
     let mut expected = s.normal_depth;
@@ -128,6 +184,9 @@ pub fn prepare(frame: &Frame, previous: &[State], config: Config) -> Prepared {
     let n = width * height;
     assert!(previous.is_empty() || previous.len() == n);
     let index = |c, x, y| config.index(low, c, x, y);
+    let gradients: Vec<_> = (0..n)
+        .map(|i| inverse_depth_gradient(frame, width, i % width, i / width))
+        .collect();
     let mut p = Prepared {
         features: vec![0.0; FEATURES * n],
         candidates: vec![0.0; SCALES * 6 * n],
@@ -153,7 +212,16 @@ pub fn prepare(frame: &Frame, previous: &[State], config: Config) -> Prepared {
                     let sy = ((qy + 0.5).floor() as i32 + dy).clamp(0, low[1] as i32 - 1) as usize;
                     let r = frame.rays[sy * low[0] as usize + sx];
                     let distance = (sx as f32 - qx).powi(2) + (sy as f32 - qy).powi(2);
-                    let w = geometry(s.normal_depth, r.normal_depth) * (-2.0 * distance).exp();
+                    let delta = [
+                        (sx as f32 - qx) * config.scale as f32,
+                        (sy as f32 - qy) * config.scale as f32,
+                    ];
+                    let w = spatial_geometry(
+                        s.normal_depth,
+                        r.normal_depth,
+                        gradients[y * width + x],
+                        delta,
+                    ) * (-2.0 * distance).exp();
                     for c in 0..3 {
                         sum[c] += w * r.diffuse[c];
                         sum[3 + c] += w * r.specular[c];
@@ -189,7 +257,12 @@ pub fn prepare(frame: &Frame, previous: &[State], config: Config) -> Prepared {
                             let sx = (x as i32 + dx * step).clamp(0, width as i32 - 1) as usize;
                             let sy = (y as i32 + dy * step).clamp(0, height as i32 - 1) as usize;
                             let t = frame.surfaces[sy * width + sx];
-                            let mut w = geometry(s.normal_depth, t.normal_depth);
+                            let mut w = spatial_geometry(
+                                s.normal_depth,
+                                t.normal_depth,
+                                gradients[y * width + x],
+                                [sx as f32 - x as f32, sy as f32 - y as f32],
+                            );
                             if lobe == 1 {
                                 w *= (-(s.albedo_roughness[3] - t.albedo_roughness[3]).abs()
                                     * 16.0)
@@ -257,8 +330,12 @@ pub fn prepare(frame: &Frame, previous: &[State], config: Config) -> Prepared {
                             as usize;
                         let sy = (y as i32 + dy * config.scale as i32).clamp(0, height as i32 - 1)
                             as usize;
-                        let w =
-                            geometry(s.normal_depth, frame.surfaces[sy * width + sx].normal_depth);
+                        let w = spatial_geometry(
+                            s.normal_depth,
+                            frame.surfaces[sy * width + sx].normal_depth,
+                            gradients[i],
+                            [sx as f32 - x as f32, sy as f32 - y as f32],
+                        );
                         let v = luminance(std::array::from_fn(|c| {
                             p.candidates[index(lobe * 3 + c, sx, sy)]
                         }));
@@ -391,4 +468,85 @@ pub fn commit(
         states.push(state);
     }
     (states, rgb)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn surface_grid(depth: impl Fn(usize, usize) -> f32) -> Frame {
+        Frame {
+            low: [16, 16],
+            jitter: [0.0; 2],
+            rays: Vec::new(),
+            surfaces: (0..32 * 32)
+                .map(|i| Surface {
+                    normal_depth: [0.0, -1.005, 0.0, depth(i % 32, i / 32)],
+                    ..Surface::default()
+                })
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn quantized_normals_do_not_amplify_geometry_weights() {
+        let a = [0.0, -1.005, 0.0, 7.0];
+        let b = [0.0, -0.995, 0.0, 7.0];
+        assert!((geometry(a, a) - 1.0).abs() < 1e-6);
+        assert!((geometry(a, b) - 1.0).abs() < 1e-6);
+        assert_eq!(geometry(a, [0.0, 1.0, 0.0, 7.0]), 0.0);
+    }
+
+    #[test]
+    fn spatial_support_follows_sloped_surfaces_but_history_stays_strict() {
+        let frame = surface_grid(|x, y| 1.0 / (0.3 + x as f32 * 0.001 - y as f32 * 0.007));
+        let a = frame.surfaces[12 * 32 + 12].normal_depth;
+        let gradient = inverse_depth_gradient(&frame, 32, 12, 12);
+        for (x, y) in [(4, 12), (20, 12), (12, 4), (12, 20)] {
+            let b = frame.surfaces[y * 32 + x].normal_depth;
+            assert!(spatial_geometry(a, b, gradient, [x as f32 - 12.0, y as f32 - 12.0]) > 0.999);
+        }
+        let far = frame.surfaces[20 * 32 + 12].normal_depth;
+        assert!(
+            geometry(a, far) < 1e-6,
+            "temporal depth test must not inherit the slope allowance"
+        );
+    }
+
+    #[test]
+    fn slope_estimate_does_not_bridge_parallel_depth_edges() {
+        for thin in [false, true] {
+            let frame = surface_grid(|x, _| {
+                if x == 15 || (!thin && x > 15) {
+                    2.0
+                } else {
+                    8.0
+                }
+            });
+            for x in [14, 15] {
+                let gradient = inverse_depth_gradient(&frame, 32, x, 16);
+                assert_eq!(gradient, [0.0; 2]);
+                let a = frame.surfaces[16 * 32 + x].normal_depth;
+                let b = frame.surfaces[16 * 32 + 29 - x].normal_depth;
+                assert!(spatial_geometry(a, b, gradient, [29.0 - 2.0 * x as f32, 0.0]) < 1e-10);
+            }
+        }
+        for x in [0, 31] {
+            let frame = surface_grid(|sx, _| if sx == x { 2.0 } else { 8.0 });
+            let gradient = inverse_depth_gradient(&frame, 32, x, 16);
+            assert_eq!(
+                gradient, [0.0; 2],
+                "an image boundary must not turn a depth edge into a slope"
+            );
+            let q = if x == 0 { 1 } else { 30 };
+            assert!(
+                spatial_geometry(
+                    frame.surfaces[16 * 32 + x].normal_depth,
+                    frame.surfaces[16 * 32 + q].normal_depth,
+                    gradient,
+                    [q as f32 - x as f32, 0.0]
+                ) < 1e-10
+            );
+        }
+    }
 }

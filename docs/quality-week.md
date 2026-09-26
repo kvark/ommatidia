@@ -57,6 +57,14 @@ captures, not only the latest fine-tune. Check object visibility over the comple
 trajectory. Geometry/reference inspection is permitted to define valid smooth
 regions; candidate outputs must not influence crop selection.
 
+The completed audit and 29 reference-selected crops (78 crop/frame pairs) are
+locked in [quality-benchmark.json](quality-benchmark.json), SHA-256
+`28b712791d598b1d0ea444a5e11e964166391da523bac49135f3e52be997a58b`.
+All ten scene seeds and the two sampled catalog families are disjoint from
+training/development ancestry and the current diagnostic scenes. Catalog objects
+remain visible throughout, with minimum coverage 3.04%. Crop frames are 0, 31,
+and 63; global and temporal scores still cover all 640 frames.
+
 ## Measurement contract
 
 - Primary crop error: mean squared RGB error after fixed `x/(1+x)` compression,
@@ -77,6 +85,35 @@ regions; candidate outputs must not influence crop selection.
 - Measure inference GPU time and memory separately from capture, CPU upload,
   readback, image saving and shader compilation; do not label synchronous
   evaluator wall-clock time as GPU frame time.
+
+For crop scoring, evaluate with `--save-linear`, recording the benchmark JSON,
+ordered datasets, executable, and checkpoint as `scripts/record-run.py` inputs.
+The evaluator writes row-major little-endian scene-linear RGB f32 files alongside
+the display PNGs. `scripts/score-regions.py --benchmark docs/quality-benchmark.json
+--before-run BEFORE_RECORDER --after-run AFTER_RECORDER --out crops.json` checks
+the locked hashes, dataset order and identical references, then reports each
+crop/frame and pixel-weighted summaries. It does not infer a temporal or visual
+pass from spatial metrics. `python3 scripts/test-score-regions.py` checks crop
+bounds, compression, reference-relative gradients and provenance rejection.
+
+## Targeted long-sequence training
+
+Use the same five case types as the audit, but independent scenes and asset
+families. Training has four 64-frame scenes per case; development has two per
+case. In case order (static, camera, objects, lights, catalog), base seeds are
+510001–550001 and 610001–650001 in increments of 10000. These seeds were checked
+against the starting checkpoint's full training/development ancestry, diagnostic
+captures and final audit before capture. Training uses 1,024-spp targets
+(`--canonical-frames 256`); development keeps 4,096-spp targets. Both keep matched
+eight-bounce, 1-spp inputs, projection jitter and observed HR surfaces.
+
+Catalog pools remain `runs/quality-2026-09-26/data/opaque-train-catalog.json`
+(22 training families) and `runs/focused-2026-09-25/data/dev-catalog.json`
+(four development families), disjoint from each other and all audit families.
+Each catalog scene uses one object at target extent 2; inspect full-trajectory
+visibility before admitting the capture. Train from the published starting
+weights with the one corrected implementation. Do not warm-start from the
+overfit diagnostic weights or select updates on the final audit.
 
 ## Progress and evidence
 
@@ -129,8 +166,8 @@ regions; candidate outputs must not influence crop selection.
   the pre-update baseline (`updated-runtime-baseline/`).
 - The static final-audit capture is complete: two 64-frame sequences, data hash
   `2d5b776cd48f292d10f315931a4ffb30d2eea8eeec3443a88858dc516ee634a7`.
-  No candidate has been evaluated on it. Other audit cases and crop locking
-  remain pending. A separate 64-frame diagnostic rollout of scene 310001 uses
+  All five audit cases and crop locking are now complete; no candidate has been
+  evaluated on them. A separate 64-frame diagnostic rollout of scene 310001 uses
   input sample offset 128 (`data/fit-long.omd`); it is not audit data.
 - **The long-rollout diagnostic fails.** On that independent 64-frame noise
   stream, the starting checkpoint averages 28.73 dB. The RGB-only tiny-scene fit
@@ -140,18 +177,58 @@ regions; candidate outputs must not influence crop selection.
   candidates, despite their short-clip gains. This also demonstrates that a
   lower temporal-change error alone can hide accumulated reconstruction bias.
   Evidence: `baseline-long/`, `rgb-fit-long/`, and `lobes-long/`.
-  Investigate the residual being added after history blending, and the mismatch
-  between eight-frame training sequences and a 32-frame diffuse-history cap.
-  Any correction must pass this long-rollout gate before broad training resumes.
+  This led to testing the residual being added after history blending, and the
+  mismatch between eight-frame training sequences and a 32-frame diffuse-history
+  cap. The corrective experiments below are diagnostics, not final audit results.
 - A separate spatial-support diagnostic found that the original depth cutoff
   heavily rejects valid neighbors on a grazing ceiling: at pixel (40,24), an
   eight-pixel horizontal tap has weight 0.923, versus 0.009–0.022 vertically.
   The sampled normals are identical; depth slope causes the rejection. This is
-  a candidate explanation for horizontal streaks, not yet an evaluated fix.
-- All 70 non-ignored Rust tests pass on the default and Rust 1.92 toolchains;
-  Clippy, formatting and the existing published-evidence verifier pass. The
-  three separate release GPU numerical tests also pass. Debug Vulkan conformance
-  still fails and has not been reclassified as success.
-- Final audit captures and crop lock, a visually clean diagnostic fit, held-out
-  quality gains, validation repair, OIDN comparison, timings, and videos remain
-  pending. No README quality improvement is claimed by these diagnostics.
+  a candidate explanation for horizontal streaks; the tested correction follows.
+- The retained decoder corrects the incoming spatial observation before history
+  blending. A 256-frame stationary regression verifies that a constant residual
+  is not magnified by the accumulation length. With unchanged lobe-fit weights,
+  this changes the independent 64-frame score from 24.30 to 30.28 dB and energy
+  ratio from 1.129 to 0.9993 (`incoming-fitted/`). Fitting only eight frames with
+  this decoder still drifts: 32.70 dB at frame 15 falls to 27.82 at frame 63
+  (`incoming-trained-long/`). The incoming correction is history-dependent, so
+  the algebraic regression alone does not prove learned recurrence stability.
+- Spatial support now follows a robust local inverse-depth slope; quantized
+  normals are normalized. Parallel-depth-edge and grazing-plane CPU regressions
+  pass, as does 24-frame flat/sloped CPU/GPU parity (maximum relative discrepancy
+  7.47e-7), full loss/gradient checks and training/reload (`slope-numerics/`).
+  With the published starting weights, the spatial change raises the 64-frame
+  score from 29.68 to 30.61 dB compared with the incoming-only decoder
+  (`incoming-original/`, `slope-original/`).
+  A conservative boundary guard requires both neighboring depths when estimating
+  a slope; a single image-edge jump must not become valid spatial support.
+  The added boundary regression and all GPU checks pass
+  (`slope-boundary-numerics/`); `slope-boundary-noise/` rechecks the same long fit
+  with the retained boundary behavior and saves full-precision outputs.
+- The controlled training and separate development scene were extended to 64
+  frames with input sample offset 256 (`data/fit-{train,dev}-long.omd`). Two
+  matched 1,000-update runs start from the published weights, seed 31, learning
+  rate 0.0003, unroll 2 and lobe loss weight 0.5. On the independent offset-128
+  diagnostic stream, incoming-only scores 33.23 dB; adding slope-aware support
+  scores 33.61 dB, versus 28.73 for the original model. The latter rises from
+  32.65 dB at frame 7 to 34.32 at frame 63; mean energy ratio is 1.00015.
+  The inspected surfaces are substantially cleaner, without the earlier
+  accumulated drift. Evidence: `incoming-long-noise/`, `slope-long-noise/`.
+  **These weights overfit one scene:** the separate development scene scores
+  only 28.01 dB at update 1,000, down from 30.30 at 250. Neither diagnostic
+  checkpoint is a publication candidate. Diverse long sequences are the next
+  targeted data change; start from the published weights, not the tiny-scene fit.
+- The original inference implementation is preserved outside tracked source.
+  An evaluation-only full-precision-output addition was built from `049a7bd`
+  (`initial-linear-build/`, `initial-linear-runtime/`). Its per-frame CSV and
+  inspected PNG hash match the original baseline exactly on independent noise
+  (`check-initial-linear/`). Before/after must use each version's own decoder,
+  not both sets of weights through the new decoder. Use separate Cargo target
+  directories when rebuilding historical worktrees: shared build artifacts can
+  otherwise leave an executable linked to the wrong library revision.
+- All 75 non-ignored Rust tests pass on the default and Rust 1.92 toolchains;
+  Clippy and formatting pass on both toolchains, and all five crop-scoring
+  Python tests pass. The three release GPU numerical tests also pass.
+  Debug Vulkan conformance still fails and has not been reclassified as success.
+- Held-out quality gains, validation repair, OIDN comparison, timings, and videos
+  remain pending. No README quality improvement is claimed by these diagnostics.
