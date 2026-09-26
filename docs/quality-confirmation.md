@@ -41,6 +41,14 @@ PNGs and all six linear f32 files from the original evaluator byte-for-byte
 (`reference-export-check/`). This avoids rendering a candidate while choosing
 regions. Keep the exact dataset order when assigning global sequence ids.
 
+The complete captures are now locked in [quality-confirmation.json](quality-confirmation.json),
+SHA-256 `06f3c023c2d94d31f8d6c765bd222a8befae868ce9408586d2c165a3817cc67a`:
+35 regions and 96 crop/frame pairs. Reference-only overlay review corrected the
+late chair-cloth rectangle before the lock; camera movement had taken its
+original lower rows off the cloth. No candidate outputs were computed or viewed
+for this selection. Minimum catalog visibility is 12.05%, over every frame;
+the sampled families are B0718ZKMW1 and B0719WQH8S, disjoint from training/dev.
+
 Select one candidate on development, recording weights, config, executable and
 source hashes before either confirmation evaluation or a new regression run.
 Report **both** the original frozen audit and confirmation outcomes. Do not use a
