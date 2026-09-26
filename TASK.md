@@ -51,7 +51,10 @@ The quality gates below remain open until the final audit and visual review pass
       The corrected model trained on 64-frame sequences is substantially cleaner
       and stable on independent noise for that scene, but overfits the scene.
       This is not a held-out quality pass. See the protocol.
-- [ ] Isolate diffuse, specular, and temporal-history contributions to the noise.
+- [x] Isolate diffuse, specular, and temporal-history contributions to the noise.
+      Component diagnostics identify diffuse blotches as well as specular noise.
+      Resetting every frame loses 4.2–5.0 dB on the tested development cases;
+      keep recurrence and improve cold-start supervision. See the protocol.
 - [x] Verify capture and supervision correctness, and address the remaining
       GPU-validation failure. Track numerical correctness and API conformance
       separately.
