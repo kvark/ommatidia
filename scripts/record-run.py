@@ -100,10 +100,11 @@ def main():
             }
         manifest["environment"] = {
             key: value for key, value in os.environ.items()
-            if key.startswith(("MEGANEURA_", "OMMATIDIA_", "VK_", "CARGO_PROFILE_"))
+            if key.startswith(("MEGANEURA_", "OMMATIDIA_", "VK_", "CARGO_PROFILE_",
+                               "RADV_", "MESA_", "ACO_", "radv_"))
             or key in ("RUSTFLAGS", "RUST_LOG", "RUSTC", "RUSTC_WRAPPER",
                        "RUSTC_WORKSPACE_WRAPPER", "RUSTUP_TOOLCHAIN", "CARGO_TARGET_DIR",
-                       "CARGO_BUILD_TARGET", "CARGO_ENCODED_RUSTFLAGS")
+                       "CARGO_BUILD_TARGET", "CARGO_ENCODED_RUSTFLAGS", "LD_LIBRARY_PATH")
         }
         manifest["status"] = "running"
         save()

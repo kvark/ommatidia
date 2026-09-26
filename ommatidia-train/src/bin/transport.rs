@@ -1,7 +1,7 @@
 //! Train and evaluate the lobe-separated recurrent reconstructor on full sequences.
 use ommatidia::{
     dataset, metrics,
-    transport::{Config, Frame, Target, cpu, graph, native},
+    transport::{Config, Frame, Target, graph, native},
 };
 use serde::Serialize;
 use std::{
@@ -11,6 +11,30 @@ use std::{
 };
 type EvaluationHistory = ([Vec<f32>; 2], Vec<f32>, Vec<ommatidia::temporal::Surface>);
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
+
+fn validate_capture(provenance: &serde_json::Value) -> Result<()> {
+    if provenance["matching_path_depth"] != true
+        || provenance["input_estimator"] != "independent-paths"
+    {
+        return Err(
+            "transport training requires verified, matched independent-path captures".into(),
+        );
+    }
+    if let Some(value) = provenance
+        .get("minimum_catalog_visible_fraction")
+        .filter(|v| !v.is_null())
+    {
+        let coverage = value
+            .as_f64()
+            .ok_or("invalid catalog coverage provenance")?;
+        if !(0.01..=1.0).contains(&coverage) {
+            return Err(
+                "catalog coverage below 1%; fix the asset, camera or driver before training".into(),
+            );
+        }
+    }
+    Ok(())
+}
 
 #[derive(Clone)]
 struct Corpus {
@@ -22,13 +46,7 @@ impl Corpus {
     fn load(path: &Path, config: Config) -> Result<Self> {
         let provenance: serde_json::Value =
             serde_json::from_slice(&std::fs::read(path.with_extension("transport.json"))?)?;
-        if provenance["matching_path_depth"] != true
-            || provenance["input_estimator"] != "independent-paths"
-        {
-            return Err(
-                "transport training requires verified, matched independent-path captures".into(),
-            );
-        }
+        validate_capture(&provenance)?;
         let mut reader = dataset::Reader::open(path)?;
         let layout = *reader.layout();
         if provenance["records"].as_u64() != Some(reader.len() as u64) {
@@ -55,7 +73,7 @@ impl Corpus {
             provenance,
         })
     }
-    fn combine(corpora: &[Self]) -> Result<Self> {
+    fn combine(corpora: &mut [Self]) -> Result<Self> {
         let first = corpora.first().ok_or("empty capture list")?;
         if corpora
             .iter()
@@ -63,10 +81,15 @@ impl Corpus {
         {
             return Err("capture sequence/extent mismatch".into());
         }
+        let length = first.length;
+        let provenance = serde_json::json!({"captures":corpora.iter().map(|c|&c.provenance).collect::<Vec<_>>()});
         Ok(Self {
-            frames: corpora.iter().flat_map(|c| c.frames.clone()).collect(),
-            length: first.length,
-            provenance: serde_json::json!({"captures":corpora.iter().map(|c|&c.provenance).collect::<Vec<_>>()}),
+            frames: corpora
+                .iter_mut()
+                .flat_map(|c| std::mem::take(&mut c.frames))
+                .collect(),
+            length,
+            provenance,
         })
     }
     fn disjoint(&self, other: &Self) -> Result<()> {
@@ -376,11 +399,11 @@ seeds/catalog families must be disjoint. Use a separate final audit split."
     if eval.is_empty() {
         return Err("--eval-data required".into());
     }
-    let held_corpora = eval
+    let mut held_corpora = eval
         .iter()
         .map(|p| Corpus::load(p, config))
         .collect::<Result<Vec<_>>>()?;
-    let holdout = Corpus::combine(&held_corpora)?;
+    let holdout = Corpus::combine(&mut held_corpora)?;
     let low = holdout.frames[0].0.low;
     let context = ommatidia::gpu::create_context(device_id, false);
     let mut learned = native::Native::new(Arc::clone(&context), config, low)?;
@@ -393,7 +416,7 @@ seeds/catalog families must be disjoint. Use a separate final audit split."
         if data.is_empty() {
             return Err("--data required".into());
         }
-        let training = data
+        let mut training = data
             .iter()
             .map(|p| Corpus::load(p, config))
             .collect::<Result<Vec<_>>>()?;
@@ -402,7 +425,7 @@ seeds/catalog families must be disjoint. Use a separate final audit split."
                 train.disjoint(held)?;
             }
         }
-        let train = Corpus::combine(&training)?;
+        let train = Corpus::combine(&mut training)?;
         if unroll > train.length || train.frames.iter().any(|(f, _)| f.low != low) {
             return Err("unroll exceeds sequence or extents differ".into());
         }
@@ -433,6 +456,7 @@ seeds/catalog families must be disjoint. Use a separate final audit split."
             serde_json::to_vec_pretty(&serde_json::json!({
                 "steps":steps, "unroll":unroll, "seed":seed, "learning_rate":rate,
                 "loss_weights":weights, "warm_start":checkpoint_input, "optimizer_resumed":false,
+                "preparation":"native GPU features/guide/history; CPU differentiable gather maps",
                 "training":train.provenance, "development":holdout.provenance,
                 "parameters":network.params.iter().map(|p|p.len).sum::<usize>()
             }))?,
@@ -449,7 +473,7 @@ seeds/catalog families must be disjoint. Use a separate final audit split."
             let start = rng.below((train.length - unroll + 1) as u32) as usize;
             let offset = sequence * train.length;
             for (frame, _) in &train.frames[offset..offset + start] {
-                learned.process(frame)?;
+                learned.advance(frame)?;
             }
             for slot in 0..unroll {
                 let (frame, target) = &train.frames[offset + start + slot];
@@ -458,10 +482,10 @@ seeds/catalog families must be disjoint. Use a separate final audit split."
                 } else {
                     learned.read_state()
                 };
-                let prepared = cpu::prepare(frame, &old, config);
+                learned.advance(frame)?;
+                let prepared = learned.read_prepared(frame, &old);
                 graph::feed(&mut session, &format!("f{slot}"), &prepared, target, slot);
                 graph::feed_rgb(&mut session, &format!("f{slot}"), frame, target, config);
-                learned.process(frame)?;
             }
             weights.feed(&mut session);
             let fraction = update as f32 / steps as f32;
@@ -527,6 +551,24 @@ seeds/catalog families must be disjoint. Use a separate final audit split."
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn capture_quality_rejects_measured_invisible_assets() {
+        let mut p =
+            serde_json::json!({"matching_path_depth":true,"input_estimator":"independent-paths"});
+        assert!(validate_capture(&p).is_ok());
+        for coverage in [
+            serde_json::json!(0),
+            serde_json::json!(-1),
+            serde_json::json!(1.1),
+            serde_json::json!("unknown"),
+        ] {
+            p["minimum_catalog_visible_fraction"] = coverage;
+            assert!(validate_capture(&p).is_err());
+        }
+        p["minimum_catalog_visible_fraction"] = serde_json::json!(0.05);
+        assert!(validate_capture(&p).is_ok());
+    }
 
     #[test]
     fn training_and_development_must_not_share_scenes_or_families() {

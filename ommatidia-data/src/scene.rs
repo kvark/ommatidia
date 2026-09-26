@@ -638,6 +638,47 @@ pub fn split_moving_geometry(geometries: Vec<Surface>, seed: u64) -> (Vec<Surfac
     (static_geometry, moving_geometry)
 }
 
+/// Place authored objects across the view and frame their conservative bounds.
+pub fn object_layout(
+    config: &SceneConfig,
+    count: usize,
+    extent: f32,
+    aspect: f32,
+    rng: &mut Rng,
+) -> (Vec<[f32; 2]>, blade_render::Camera) {
+    assert!(count > 0 && extent > 0.0 && aspect > 0.0);
+    let azimuth = if config.canopy {
+        std::f32::consts::PI + std::f32::consts::FRAC_PI_2 * rng.uniform()
+    } else {
+        std::f32::consts::TAU * rng.uniform()
+    };
+    let positions = (0..count)
+        .map(|i| {
+            let offset = (i as f32 - (count - 1) as f32 * 0.5) * extent * 1.2;
+            [-azimuth.sin() * offset, azimuth.cos() * offset]
+        })
+        .collect();
+    let fov_y = 0.65 + 0.2 * rng.uniform();
+    let half_width = 0.5 * extent * (1.2 * (count - 1) as f32 + 1.42);
+    let distance = (half_width / aspect).max(extent * 0.6) / (fov_y * 0.5).tan() + extent * 0.8;
+    let target = [0.0, extent * 0.45, 0.0];
+    let mut height = extent * (0.7 + 0.5 * rng.uniform());
+    if config.canopy {
+        height = height.min(config.spread * 0.75);
+    }
+    let position = [distance * azimuth.cos(), height, distance * azimuth.sin()];
+    (
+        positions,
+        blade_render::Camera {
+            pos: position.into(),
+            rot: look_at(position, target),
+            fov_y,
+            depth: 200.0,
+            fov: None,
+        },
+    )
+}
+
 /// A camera somewhere on a hemisphere around the scene, aimed at a point near
 /// the origin.
 pub fn camera(config: &SceneConfig, rng: &mut Rng) -> blade_render::Camera {
@@ -877,6 +918,28 @@ fn matrix_to_quaternion(columns: [[f32; 3]; 3]) -> mint::Quaternion<f32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn object_layout_separates_assets_and_looks_through_the_open_room() {
+        let config = SceneConfig {
+            canopy: true,
+            ..Default::default()
+        };
+        let mut rng = Rng::new(9);
+        for aspect in [0.75, 1.0, 1.78] {
+            for _ in 0..100 {
+                let (positions, camera) = object_layout(&config, 2, 2.0, aspect, &mut rng);
+                assert!(camera.pos.x <= 0.0 && camera.pos.z <= 0.0);
+                assert!(camera.pos.y < config.spread * 0.85);
+                let separation = ((positions[0][0] - positions[1][0]).powi(2)
+                    + (positions[0][1] - positions[1][1]).powi(2))
+                .sqrt();
+                assert!((separation - 2.4).abs() < 1e-5);
+                let along_view = positions[0][0] * camera.pos.x + positions[0][1] * camera.pos.z;
+                assert!(along_view.abs() < 1e-4);
+            }
+        }
+    }
 
     #[test]
     fn interior_cameras_stay_inside_the_room() {

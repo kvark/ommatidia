@@ -87,7 +87,8 @@ jobs:
       - name: Check quality harness syntax
         working-directory: ommatidia
         run: |
-          python3 -m py_compile scripts/record-run.py scripts/verify-results.py
+          python3 -m py_compile scripts/record-run.py scripts/verify-results.py scripts/fetch-catalog.py
+          python3 scripts/test-fetch-catalog.py
           bash -n scripts/check-cache.sh scripts/capture-catalog.sh
       - name: Check published result evidence
         working-directory: ommatidia

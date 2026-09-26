@@ -6,6 +6,10 @@ and moving cameras, objects and lights. The trainer requires a matching
 `.transport.json`, rejects entirely black/nonfinite reference frames, and
 rejects overlapping training/development scene seeds or catalog families.
 Canopy cameras stay on the open -X/-Z side, below the roof.
+For catalog objects, require measured visible coverage, not just asset ids in a
+sidecar. Current captures preflight camera trajectories and record coverage and
+driver versions; the trainer rejects measured coverage below 1%. Missing
+coverage in historical captures is not evidence that their assets were visible.
 
 Hold out scenes **and** assets. Subdivide the asset holdout into development and
 final audit before training. Development selects checkpoints; do not use final
@@ -25,6 +29,8 @@ cargo run --release -p ommatidia-train --bin transport -- \
 Repeat `--data` and `--eval-data` to combine captures with equal dimensions and
 sequence lengths. Training samples sequences uniformly across the combined
 corpus (larger captures contribute more). Evaluation can use another resolution.
+Prefer training at the target evaluation resolution: identical parameter shapes
+do not imply identical pixel-footprint or history statistics.
 `--checkpoint` during training is a weights-only warm start, **not** an Adam
 resume. The serialized config, training provenance and intermediate checkpoints
 are saved with the run. Existing final checkpoints are not overwritten.
@@ -34,6 +40,9 @@ are saved with the run. Existing final checkpoints are not overwritten.
 The control is the same multiscale/recurrent guide with a zero residual head,
 running its **own** history. Both methods receive identical observations.
 All frames are evaluated causally, with a reset at each sequence boundary.
+When updating a published result, also evaluate the previous trained checkpoint
+on exactly the same new frames. A different dataset or stronger fixed-guide
+comparison alone does not establish an improvement over the previous model.
 
 - PSNR and SSIM use fixed `x/(1+x)` compression, averaged over frames.
 - Low-frequency PSNR checks broad error after spatial averaging.

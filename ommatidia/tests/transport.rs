@@ -165,6 +165,40 @@ fn native_multiscale_recurrence_reset_and_hdr() {
         let image = cpu::reconstruct(&p);
         let (states, expected) = cpu::commit(&frame, &p, &image, config);
         let actual = native.process(&frame).unwrap();
+        let gpu_prepared = native.read_prepared(&frame, &old);
+        assert_eq!(gpu_prepared.indices, p.indices);
+        assert_eq!(gpu_prepared.coefficients, p.coefficients);
+        for (name, gpu, cpu) in [
+            ("candidates", &gpu_prepared.candidates, &p.candidates),
+            ("history", &gpu_prepared.history, &p.history),
+            ("prior", &gpu_prepared.prior, &p.prior),
+        ] {
+            for (a, b) in gpu.iter().zip(cpu) {
+                assert!(
+                    (a - b).abs() / (1.0 + b.abs()) < 0.005,
+                    "{name}: {a} vs {b}"
+                );
+            }
+        }
+        for (a, b) in gpu_prepared
+            .moments
+            .iter()
+            .flatten()
+            .zip(p.moments.iter().flatten())
+        {
+            assert!(
+                (a - b).abs() / (1.0 + b.abs()) < 0.005,
+                "moments: {a} vs {b}"
+            );
+        }
+        for (a, b) in gpu_prepared
+            .ages
+            .iter()
+            .flatten()
+            .zip(p.ages.iter().flatten())
+        {
+            assert!((a - b).abs() < 0.02, "ages: {a} vs {b}");
+        }
         assert_eq!(native.read_history_validity(), p.validity);
         for (a, b) in native.read_features().iter().zip(&p.features) {
             assert!(

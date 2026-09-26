@@ -28,7 +28,7 @@ pub enum Source {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum Kind {
-    /// Sit on the procedural ground among the usual spheres, boxes, and lights.
+    /// Frame on the procedural ground with lights; extra primitives are opt-in.
     Object,
     /// Replace the procedural room. The camera samples the interior AABB.
     Interior,
@@ -317,6 +317,13 @@ pub struct SceneRecord {
     pub families: Vec<String>,
     pub sources: Vec<Source>,
     pub kind: Kind,
+    /// Fraction of output-resolution centre rays whose first hit is a catalog
+    /// object, measured against an object-only depth pass for each frame.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub visible_fraction: Vec<f32>,
+    /// Geometry-only camera trials before committing to a captured sequence.
+    #[serde(default)]
+    pub camera_attempts: usize,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -467,6 +474,19 @@ impl Loaded {
         }
         for task in tasks {
             task.join();
+        }
+        for entry in catalog.entries.iter().filter(|e| e.kind == Kind::Object) {
+            let model = &hub.models[handles[&entry.id]];
+            if !model
+                .geometries
+                .iter()
+                .any(|g| g.triangle_count > 0 && !model.materials[g.material_index].transparent)
+            {
+                return Err(format!(
+                    "catalog object {} has no opaque triangles; the capture tracer culls non-opaque geometry, so this asset would be invisible",
+                    entry.id
+                ));
+            }
         }
         Ok(Self {
             catalog,

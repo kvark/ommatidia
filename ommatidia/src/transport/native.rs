@@ -210,6 +210,20 @@ impl Native {
         self.ready = true;
     }
     pub fn process(&mut self, frame: &Frame) -> Result<Vec<f32>, String> {
+        self.advance(frame)?;
+        // Read shared VRAM contiguously before deinterleaving on the CPU.
+        let values = unsafe {
+            std::slice::from_raw_parts(self.output.data().cast::<f32>(), frame.surfaces.len() * 4)
+                .to_vec()
+        };
+        Ok(values
+            .chunks_exact(4)
+            .flat_map(|v| v[..3].iter().copied())
+            .collect())
+    }
+    /// Offline recurrent step without reading displayed RGB back. Training
+    /// warmup and unrolls only need state and prepared network inputs.
+    pub fn advance(&mut self, frame: &Frame) -> Result<(), String> {
         frame.validate(self.config)?;
         if frame.low != self.low {
             return Err("frame extent changed; recreate the reconstructor".into());
@@ -262,15 +276,8 @@ impl Native {
         {
             return Err("resolve timeout".into());
         }
-        let values = unsafe {
-            std::slice::from_raw_parts(self.output.data().cast::<f32>(), frame.surfaces.len() * 4)
-        };
-        let rgb = values
-            .chunks_exact(4)
-            .flat_map(|v| v[..3].iter().copied())
-            .collect();
         self.context.destroy_command_encoder(&mut encoder);
-        Ok(rgb)
+        Ok(())
     }
     /// Offline readback after a completed process/resolve. These are the actual
     /// per-lobe reprojection masks fed to the predictor, not learned gate values.
@@ -281,17 +288,45 @@ impl Native {
     /// Offline parity check of the actual inputs prepared by WGSL.
     pub fn read_features(&self) -> Vec<f32> {
         let n = (self.low[0] * self.low[1] * self.config.scale.pow(2)) as usize;
+        self.read_input("f0.features", FEATURES * n)
+    }
+    fn read_input(&self, name: &str, len: usize) -> Vec<f32> {
         let buffer = self
             .session
             .plan()
             .input_buffers
             .iter()
-            .find(|(name, _)| name == "f0.features")
+            .find(|(key, _)| key == name)
             .unwrap()
             .1;
-        let mut features = vec![0.0; FEATURES * n];
-        self.session.read_buffer(buffer, &mut features);
-        features
+        let mut values = vec![0.0; len];
+        self.session.read_buffer(buffer, &mut values);
+        values
+    }
+    /// Offline training readback immediately after `advance(frame)`. `previous`
+    /// is the state before that step (empty after reset). Reuse native
+    /// preparation; only the differentiable gather maps need CPU expansion.
+    pub fn read_prepared(&self, frame: &Frame, previous: &[State]) -> cpu::Prepared {
+        assert_eq!(frame.low, self.low);
+        let n = frame.surfaces.len();
+        let features = self.read_features();
+        let validity = features[42 * n..44 * n].to_vec();
+        let (indices, coefficients) = cpu::history_maps(frame, previous, self.config);
+        cpu::Prepared {
+            features,
+            validity,
+            candidates: self.read_input("f0.candidates", SCALES * 6 * n),
+            history: self.read_input("f0.history", 6 * n),
+            prior: self.read_input("f0.prior", CANDIDATES * 2 * n),
+            moments: unsafe {
+                std::slice::from_raw_parts(self.moments.data().cast::<[f32; 4]>(), n).to_vec()
+            },
+            ages: unsafe {
+                std::slice::from_raw_parts(self.ages.data().cast::<[f32; 2]>(), n).to_vec()
+            },
+            indices,
+            coefficients,
+        }
     }
     /// Only call after waiting for the resolve submission.
     pub fn read_state(&self) -> Vec<State> {
