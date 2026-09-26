@@ -505,6 +505,12 @@ as the matched control. Fitting one image tests optimization/representation,
 not scene or noise generalization. A training-image gain without an
 independent-noise gain is not success. Never use these overfit diagnostic weights
 as a publication candidate or a warm start for broad training.
+Use a lossless extraction of record zero from the existing eight-frame
+`fit-train.omd` capture: change only the header's record count and sequence
+length, preserving all observation, jitter and target bytes. Record the source
+capture/sidecar hashes and record digest in the derived sidecar. This also avoids
+changing the sampling footprint: the capture CLI disallows projection jitter
+for a newly rendered one-frame sequence.
 
 ## Progress and evidence
 
