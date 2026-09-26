@@ -11,6 +11,14 @@ implementations are recoverable at Git commit `b838674` (also the local branch
 The GPU constructs five geometry-guided spatial scales and reprojects the
 previous diffuse/specular estimates. Each lobe has its own validity, reactive
 rejection, age and moments. History and final reconstruction remain linear HDR.
+Spatial depth weights compare against a local inverse-depth slope estimated from
+normal-compatible neighbors, using the smaller same-sign one-sided derivative
+to avoid treating depth discontinuities as slopes. Require both neighbors;
+otherwise fall back to zero slope. This preserves support on
+grazing planes. It is a local approximation for ray-distance depth, not exact
+world-space plane reconstruction. Temporal depth rejection remains strict.
+Normal agreement is normalized and clamped so quantized normal lengths cannot
+amplify filter weights.
 
 A three-level local convolutional U-Net sees the encoded spatial scales,
 reprojected history, raw diffuse/specular samples, sample offsets, surface
@@ -18,8 +26,11 @@ normal/depth/albedo/roughness, variance, age and validity. Subpixel packing keep
 convolutions at input resolution. No image-wide normalization, diffusion,
 transformer branch, generated texture, or ground-truth input.
 
-The six-channel subpixel head predicts radiance residuals:
-`max(guide + 0.1 * (guide + 1/exposure) * residual, 0)`.
+The six-channel subpixel head corrects the incoming spatial estimate `S`, then
+accumulates it with reprojected history `H` and lobe-specific history weight `h`:
+`(1-h) * max(S + 0.1 * (S + 1/exposure) * residual, 0) + h * H`.
+The correction is not applied again to retained history. This avoids magnifying
+a stationary correction by the accumulation length, as a post-blend residual did.
 A zero head exactly reproduces the fixed spatial/history guide. Unlike a convex
 candidate selector, this decoder can recover detail outside its filtered
 candidates' range. The default width is 16: 188,160 parameters at 2x scale.
@@ -33,8 +44,11 @@ The objective combines compressed displayed-RGB MSE, absolute compressed-lobe
 MSE, a small fixed-exposure linear RGB term, coarse linear structure and
 valid-history temporal changes. Direct lobe supervision prevents diffuse and
 specular errors from compensating each other in RGB while corrupting the
-recurrent state. This supervision update does not change the inference graph or
-checkpoint parameter shapes; the published results still use the older objective.
+recurrent state. Parameter shapes are unchanged, so older weights can warm-start
+training; the new recurrent decoder changes their output. The published results
+still use the older decoder and objective, with its executable retained for
+matched comparisons. Configuration version 3 denotes the residual parameter
+layout, not a guarantee that outputs are invariant across source revisions.
 There are no selector labels or target-normalized brightness weights.
 The trainer reuses native GPU preparation; the CPU only expands differentiable
 history-gather maps and supplies the numerical reference implementation.
@@ -69,8 +83,9 @@ not a frame-time benchmark. Old `Upscaler` and the old C ABI were removed.
 
 ## Correctness boundary
 
-CPU/WGSL preparation parity covers raw features, 12-frame recurrence, invalid
-history, resets and HDR. The actual two-frame training graph is checked against
+CPU/WGSL preparation parity covers raw features, 24 frames of flat/sloped
+recurrence, invalid history, resets and HDR. The actual two-frame training graph
+is checked against
 Meganeura's f64 reference for its loss and every parameter gradient, including
 fused/unfused lowerings. A training-and-reload test must reduce loss.
 

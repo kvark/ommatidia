@@ -275,6 +275,7 @@ fn compose_lobes(frame: &Frame, lobes: &[Vec<f32>; 2]) -> Vec<f32> {
 struct EvaluationOptions {
     reset_history: bool,
     save_lobes: bool,
+    save_linear: bool,
 }
 
 fn evaluate(
@@ -410,6 +411,15 @@ fn evaluate(
             ("reference", &target.rgb),
         ] {
             save_png(&out.join(format!("{prefix}-{name}.png")), image, extent)?;
+            if options.save_linear {
+                let mut file = std::io::BufWriter::new(std::fs::File::create(
+                    out.join(format!("{prefix}-{name}.rgbf32")),
+                )?);
+                for value in image {
+                    file.write_all(&value.to_le_bytes())?;
+                }
+                file.flush()?;
+            }
         }
         previous = Some((images, target.rgb.clone(), current));
     }
@@ -449,6 +459,7 @@ fn main() -> Result<()> {
   --eval-only (loads checkpoint sidecar; evaluation resolution may differ)
   --reset-history (eval-only diagnostic: reset the model before every frame)
   --save-lobes (save diffuse/specular images alongside per-frame diagnostics)
+  --save-linear (save row-major, little-endian scene-linear RGB f32 for crop scoring)
   --compressed-weight F [1] --physical-weight F [0.005]
   --low-frequency-weight F [0.01] --temporal-weight F [0.02]
   --lobe-weight F [0.5] (absolute diffuse/specular supervision)
@@ -467,6 +478,10 @@ seeds/catalog families must be disjoint. Use a separate final audit split."
         }
         if arg == "--save-lobes" {
             evaluation.save_lobes = true;
+            continue;
+        }
+        if arg == "--save-linear" {
+            evaluation.save_linear = true;
             continue;
         }
         let v = args.next().ok_or(format!("missing value for {arg}"))?;

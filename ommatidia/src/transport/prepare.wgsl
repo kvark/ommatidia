@@ -18,10 +18,39 @@ var<storage,read_write> output:array<vec4<f32>>;
 fn extent()->vec2<u32> {return vec2(params.w,params.h)*params.scale;}
 fn count()->u32 {return params.w*params.h*params.scale*params.scale;}
 fn idx(c:u32,p:vec2<u32>)->u32 {let slot=(p.y%params.scale)*params.scale+p.x%params.scale;return ((c*params.scale*params.scale+slot)*params.h+p.y/params.scale)*params.w+p.x/params.scale;}
+fn normal_similarity(a:vec3<f32>,b:vec3<f32>)->f32 {
+    return clamp(dot(a,b)/sqrt(max(dot(a,a)*dot(b,b),1e-12)),0.0,1.0);
+}
 fn geom(a:vec4<f32>,b:vec4<f32>)->f32 {
     if a.w>=60000.0 || b.w>=60000.0 {return select(0.0,1.0,a.w>=60000.0 && b.w>=60000.0);}
-    let normal=max(dot(a.xyz,b.xyz),0.0);let d=abs(a.w-b.w)/(0.01+0.02*abs(a.w));
+    let normal=normal_similarity(a.xyz,b.xyz);let d=abs(a.w-b.w)/(0.01+0.02*abs(a.w));
     return pow(normal,16.0)*exp(-d);
+}
+fn inverse_depth_gradient(p:vec2<u32>)->vec2<f32> {
+    let a=surfaces[p.y*extent().x+p.x].normal_depth;
+    if a.w<=0.0 || a.w>=60000.0 {return vec2(0.0);}
+    var gradient=vec2(0.0);
+    for(var axis=0u;axis<2u;axis++) {
+        var slopes=vec2(0.0);var valid=vec2(false);
+        for(var side=0u;side<2u;side++) {
+            let direction=2*i32(side)-1;var q=vec2<i32>(p);q[axis]+=direction;
+            if q[axis]<0 || q[axis]>=i32(extent()[axis]) {continue;}
+            let b=surfaces[u32(q.y)*extent().x+u32(q.x)].normal_depth;
+            if b.w>0.0 && b.w<60000.0 && normal_similarity(a.xyz,b.xyz)>0.95 {
+                slopes[side]=f32(direction)*(1.0/b.w-1.0/a.w);valid[side]=true;
+            }
+        }
+        if all(valid) {
+            if slopes.x*slopes.y>0.0 {gradient[axis]=select(slopes.y,slopes.x,abs(slopes.x)<abs(slopes.y));}
+        }
+    }
+    return gradient;
+}
+fn spatial_geom(a:vec4<f32>,b:vec4<f32>,gradient:vec2<f32>,delta:vec2<f32>)->f32 {
+    if a.w<=0.0 || b.w<=0.0 || a.w>=60000.0 || b.w>=60000.0 {return geom(a,b);}
+    let inverse=1.0/a.w;let expected=inverse+dot(gradient,delta);
+    let d=abs(expected-1.0/b.w)/(0.02*inverse+0.01*inverse*inverse);
+    return pow(normal_similarity(a.xyz,b.xyz),16.0)*exp(-d);
 }
 fn same(s:Surface,p:State)->bool {var expected=s.normal_depth;if s.motion.z>0.0 {expected.w=s.motion.z;}
     let d=s.albedo_roughness.xyz-p.albedo_roughness.xyz;return geom(expected,p.normal_depth)>0.1 && dot(d,d)<0.04;}
@@ -33,11 +62,12 @@ fn bounded(p:vec2<i32>)->vec2<u32> {return vec2<u32>(clamp(p,vec2(0),vec2<i32>(e
 fn seed(@builtin(global_invocation_id) id:vec3<u32>) {
     let p=id.xy;if any(p>=extent()) {return;}
     let s=surfaces[p.y*extent().x+p.x];let q=(vec2<f32>(p)+vec2(0.5))/f32(params.scale)-vec2(0.5)-params.jitter;
+    let gradient=inverse_depth_gradient(p);
     var d=vec3(0.0);var spec=vec3(0.0);var total=0.0;
     for(var y=-1;y<=1;y++) {for(var x=-1;x<=1;x++) {
         let low=vec2<u32>(clamp(vec2<i32>(floor(q+vec2(0.5)))+vec2(x,y),vec2(0),vec2<i32>(i32(params.w)-1,i32(params.h)-1)));
         let r=rays[low.y*params.w+low.x];let delta=vec2<f32>(low)-q;
-        let w=geom(s.normal_depth,r.normal_depth)*exp(-2.0*dot(delta,delta));d+=w*r.diffuse.xyz;spec+=w*r.specular.xyz;total+=w;
+        let w=spatial_geom(s.normal_depth,r.normal_depth,gradient,delta*f32(params.scale))*exp(-2.0*dot(delta,delta));d+=w*r.diffuse.xyz;spec+=w*r.specular.xyz;total+=w;
     }}
     if total<=1e-12 {let low=vec2<u32>(clamp(vec2<i32>(floor(q+vec2(0.5))),vec2(0),vec2<i32>(i32(params.w)-1,i32(params.h)-1)));let r=rays[low.y*params.w+low.x];d=r.diffuse.xyz;spec=r.specular.xyz;total=1.0;}
     for(var c=0u;c<3u;c++) {candidates[idx(c,p)]=max(d[c],0.0)/total;candidates[idx(3u+c,p)]=max(spec[c],0.0)/total;}
@@ -45,11 +75,11 @@ fn seed(@builtin(global_invocation_id) id:vec3<u32>) {
 @compute @workgroup_size(8,8)
 fn atrous(@builtin(global_invocation_id) id:vec3<u32>) {
     let p=id.xy;if any(p>=extent()) {return;}
-    let s=surfaces[p.y*extent().x+p.x];let step=1 << (params.level-1u);
+    let s=surfaces[p.y*extent().x+p.x];let step=1 << (params.level-1u);let gradient=inverse_depth_gradient(p);
     for(var l=0u;l<2u;l++) {var sum=vec3(0.0);var total=0.0;
         for(var y=-1;y<=1;y++) {for(var x=-1;x<=1;x++) {
             let q=bounded(vec2<i32>(p)+vec2(x,y)*step);let t=surfaces[q.y*extent().x+q.x];
-            var w=geom(s.normal_depth,t.normal_depth);if l==1u {w*=exp(-abs(s.albedo_roughness.w-t.albedo_roughness.w)*16.0);}
+            var w=spatial_geom(s.normal_depth,t.normal_depth,gradient,vec2<f32>(q)-vec2<f32>(p));if l==1u {w*=exp(-abs(s.albedo_roughness.w-t.albedo_roughness.w)*16.0);}
             w*=select(1.0,2.0,x==0)*select(1.0,2.0,y==0);sum+=w*read_rgb(params.level-1u,l,q);total+=w;
         }}
         for(var c=0u;c<3u;c++) {candidates[params.level*6u*count()+idx(l*3u+c,p)]=sum[c]/max(total,1e-12);}
@@ -57,7 +87,7 @@ fn atrous(@builtin(global_invocation_id) id:vec3<u32>) {
 }
 @compute @workgroup_size(8,8)
 fn pack(@builtin(global_invocation_id) id:vec3<u32>) {
-    let p=id.xy;if any(p>=extent()) {return;}let i=p.y*extent().x+p.x;let s=surfaces[i];
+    let p=id.xy;if any(p>=extent()) {return;}let i=p.y*extent().x+p.x;let s=surfaces[i];let gradient=inverse_depth_gradient(p);
     var out_moments=vec4(0.0);var out_ages=vec2(1.0);
     for(var l=0u;l<2u;l++) {
         var motion=s.motion;if l==1u && s.specular_motion.z>0.5 {motion=s.specular_motion;}
@@ -72,7 +102,7 @@ fn pack(@builtin(global_invocation_id) id:vec3<u32>) {
         }
         if coverage>1e-6 {old/=coverage;age/=coverage;m/=coverage;}
         let value=lum(read_rgb(0u,l,p));var variance=0.0;var samples=0.0;
-        for(var y=-1;y<=1;y++) {for(var x=-1;x<=1;x++) {let at=bounded(vec2<i32>(p)+vec2(x,y)*i32(params.scale));let w=geom(s.normal_depth,surfaces[at.y*extent().x+at.x].normal_depth);let delta=lum(read_rgb(0u,l,at))-value;variance+=w*delta*delta;samples+=w;}}
+        for(var y=-1;y<=1;y++) {for(var x=-1;x<=1;x++) {let at=bounded(vec2<i32>(p)+vec2(x,y)*i32(params.scale));let w=spatial_geom(s.normal_depth,surfaces[at.y*extent().x+at.x].normal_depth,gradient,vec2<f32>(at)-vec2<f32>(p));let delta=lum(read_rgb(0u,l,at))-value;variance+=w*delta*delta;samples+=w;}}
         variance/=max(samples,1e-6);let broad=lum(read_rgb(4u,l,p));let delta=broad-lum(old);
         let v=variance+max(m.y-m.x*m.x,0.0)/max(age,1.0)+0.01*(1.0+broad*broad);
         let reactive=max(clamp(s.motion.w,0.0,1.0),clamp((delta*delta/v-4.0)/16.0,0.0,1.0));

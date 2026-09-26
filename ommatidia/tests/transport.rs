@@ -179,9 +179,23 @@ fn native_multiscale_recurrence_reset_and_hdr() {
     let mut native = native::Native::new(context, config, [8, 8]).unwrap();
     let mut old = Vec::new();
     let mut worst = 0.0f32;
-    for step in 0..12 {
+    for iteration in 0..24 {
+        let step = iteration % 12;
         let (mut frame, _) = fixture(config, step, 71);
-        if step == 8 {
+        if iteration >= 12 {
+            // A sloped surface with parallel foreground/background layers.
+            // Quantized normal lengths must not amplify spatial weights.
+            for (i, s) in frame.surfaces.iter_mut().enumerate() {
+                s.normal_depth[2] = 1.005;
+                s.normal_depth[3] /= 1.0 + 0.045 * (i / 16) as f32;
+            }
+            for (i, r) in frame.rays.iter_mut().enumerate() {
+                r.normal_depth[2] = 0.995;
+                let y = (i / 8) as f32 * 2.0 + 0.5 + frame.jitter[1] * 2.0;
+                r.normal_depth[3] /= 1.0 + 0.045 * y;
+            }
+        }
+        if step == 0 || step == 8 {
             native.reset();
             old.clear();
         }
@@ -249,7 +263,7 @@ fn native_multiscale_recurrence_reset_and_hdr() {
         worst < 0.005,
         "CPU/native reconstruction discrepancy {worst}"
     );
-    println!("12-frame CPU/native discrepancy {worst}");
+    println!("24-frame flat/sloped CPU/native discrepancy {worst}");
     native.reset();
     let (mut frame, _) = fixture(config, 0, 1);
     frame.jitter = [0.0; 2];
