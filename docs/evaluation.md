@@ -72,6 +72,22 @@ Use `--save-lobes` for matched component PNGs. `--eval-only --reset-history`
 resets both models before every frame while still measuring inter-frame changes;
 it is explicitly labeled a diagnostic, not the causal production result.
 
+For frozen comparisons, save unquantized images with `--save-linear` and first
+verify the recorded dataset/benchmark hashes with `scripts/score-regions.py` as
+described in the [quality protocol](quality-week.md). On those verified outputs,
+`score-sequences --benchmark FILE --before BEFORE_OUTPUTS --after AFTER_OUTPUTS
+--out NEW_DIRECTORY` recomputes the same temporal metric for every frame and
+sequence. It reads observed capture motion and rejects differing references;
+the preceding provenance check is required, not replaced by shape checks.
+Its supplementary motion-compensated 8×8-block score distinguishes broad
+fluctuation from grain. Neither score is a perceptual video pass.
+
+`python3 scripts/render-comparisons.py --before BEFORE_OUTPUTS --after
+AFTER_OUTPUTS --out NEW_DIRECTORY --sequences 0 1 --review-sheets` renders the
+current 64-frame, 24-fps comparison format with FFmpeg. It checks identical
+references, preserves native image dimensions and only adds labels outside the
+images. Lossy video encoding is presentation-only; metrics never read the videos.
+
 The training objective now includes absolute compressed-lobe supervision
 (`--lobe-weight 0.5` by default). RGB alone cannot identify the split: diffuse and
 specular errors can cancel after material composition. Set the weight to zero
