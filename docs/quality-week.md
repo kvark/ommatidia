@@ -475,6 +475,21 @@ quality, motion, texture and brightness together. A higher mean PSNR alone is
 not enough. The original failed audit remains fixed, and confirmation data/crops
 are locked independently before any further candidate audit.
 
+The additional captures passed membership, header and full-trajectory checks.
+Training now contains 2,560 frames across 40 scenes; development remains the same
+640 frames. The four new catalog scenes sample four training families, with
+minimum visible coverage 5.46%. The two long training batches together contain
+seven distinct sampled catalog families; the 22-family pool is not a claim that
+all 22 appear in these captures. Dataset hashes and sidecars are recorded in
+`cold-coverage-training/`, which uses the immutable `7e89075` executable and saves
+full-precision development outputs at each 1,000-update checkpoint.
+
+The eight-update reset-policy smoke and serialized reload produce identical
+frame scores and all 24 PNGs, with zero Vulkan-validation errors
+(`cold-coverage-{smoke,reload}-run/`). All 81 regular workspace tests pass on
+Rust 1.92 (`cold-coverage-unit-tests/`). These correctness checks do not establish
+that the new sampling policy improves quality; that remains a development test.
+
 ## Progress and evidence
 
 - Initial validation reproduction:
