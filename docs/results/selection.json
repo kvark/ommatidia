@@ -1,0 +1,72 @@
+{
+  "schema": 1,
+  "selected_at": "2026-09-26T22:25:25+00:00",
+  "policy": "Multi-metric development selection, before any learned candidate audit; no audit-based reselection.",
+  "architecture": "recurrent lobe-separated radiance-residual U-Net",
+  "parameters": 188160,
+  "checkpoint": "runs/quality-week-2026-09-26/signed-history16-model/model.safetensors",
+  "checkpoint_sha256": "0d75f36762aedf4d0e96ecc03d7e6d8d273cfcfc5ec9ea4905d7dc9aaff8d653",
+  "config": "runs/quality-week-2026-09-26/signed-history16-model/model.transport.ron",
+  "config_sha256": "67e5f1afd1a00b8da7d266198ebfb2249887bc387171c507056385fecb1e3367",
+  "inference_source_commit": "c6eefca89fab447b541589d576f118024857946e",
+  "inference_executable_sha256": "60eeb04917927b51657802afefcb9b4922d1b2bc9a1b1d7b4484b4eb6c1797d1",
+  "build_manifest": "runs/quality-week-2026-09-26/selected-build/manifest.json",
+  "build_manifest_sha256": "e6b3a9a8a7c6b751c1610bfaf553ff630fbbbc268297b6d3f28930b03673bbee",
+  "benchmark_sha256": "28b712791d598b1d0ea444a5e11e964166391da523bac49135f3e52be997a58b",
+  "training": [
+    {
+      "run": "runs/quality-week-2026-09-26/reset-training/manifest.json",
+      "selected_update": 3000,
+      "source_commit": "ff724e3",
+      "warm_start_sha256": "5d0c7411c4581a0a8ad99cd87069e4344222dd43020bc28cc0f16a40e47d1321",
+      "checkpoint_sha256": "e9ebe05ede156366f24adfa788001783f488e46b89661e3596372ed4ee6bc2aa"
+    },
+    {
+      "run": "runs/quality-week-2026-09-26/signed-training/manifest.json",
+      "selected_update": 1000,
+      "source_commit": "6c2c862",
+      "warm_start_sha256": "e9ebe05ede156366f24adfa788001783f488e46b89661e3596372ed4ee6bc2aa",
+      "checkpoint_sha256": "0d75f36762aedf4d0e96ecc03d7e6d8d273cfcfc5ec9ea4905d7dc9aaff8d653"
+    }
+  ],
+  "development": {
+    "frames": 640,
+    "original_psnr": 28.2736103186,
+    "selected_run": "runs/quality-week-2026-09-26/dev-signed-history16-full-run/manifest.json",
+    "selected_psnr": 30.168989541784164,
+    "selected_reset_psnr": 26.102504995403887,
+    "selected_temporal_mse": 0.00036633933833616174,
+    "selected_gradient_mse": 0.0006022652837790659,
+    "selected_energy_ratio": 1.0016955305740973,
+    "improved_frames": 640,
+    "minimum_psnr_gain": 0.343428,
+    "smooth_crop_mse_ratio": 0.33033040080253645,
+    "edge_crop_mse_ratio": 0.7048513378904924,
+    "texture_crop_mse_ratio": 0.4907262845038719,
+    "crop_report": "runs/quality-week-2026-09-26/dev-full-crops-signed-history16.json",
+    "higher_psnr_alternative": {
+      "run": "runs/quality-week-2026-09-26/dev-history16-full-run/manifest.json",
+      "psnr": 30.207285573343633,
+      "reset_psnr": 26.012350766933658,
+      "temporal_mse": 0.00037738251851221634,
+      "smooth_crop_mse_ratio": 0.34824509332919124,
+      "texture_crop_mse_ratio": 0.38011436563617745
+    },
+    "reason": "Trade 0.038 dB for lower smooth-surface, temporal, gradient and rejected-history errors and better cold starts. Texture MSE is higher than the alternative, but still below half the original. Both candidates improve every development frame."
+  },
+  "publication_views": {
+    "still_sequences": [0, 2, 8],
+    "still_frame": 31,
+    "video_sequences": [0, 2, 4, 6, 8],
+    "video_frames": 64,
+    "video_fps": 24,
+    "review_sequences": [0, 1, 2, 3, 4, 5, 6, 7, 8, 9],
+    "source": "Predeclared in docs/quality-week.md at f466d19, before candidate audit."
+  },
+  "limitations_at_selection": [
+    "Low-frequency blotches and incomplete specular detail remain.",
+    "Shorter history reduces but does not eliminate illumination-response lag.",
+    "Development crops are tuning data, not the untouched audit.",
+    "No final-audit quality, general-game or end-to-end real-time claim follows from selection."
+  ]
+}
