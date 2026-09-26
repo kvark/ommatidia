@@ -490,6 +490,22 @@ frame scores and all 24 PNGs, with zero Vulkan-validation errors
 Rust 1.92 (`cold-coverage-unit-tests/`). These correctness checks do not establish
 that the new sampling policy improves quality; that remains a development test.
 
+If this four-checkpoint comparison does not materially improve cold starts, do
+not extend broad training or consume the confirmation audit. First test cold
+fitting capacity on a single frame of the existing diagnostic scene 310001,
+captured with the same 1-spp 128→256 observations and 4,096-spp reference. A
+one-frame sequence with unroll one guarantees empty history on every update
+without introducing another trainer or architecture. Start from the matched
+16/8-history parent, use 1,000 updates, learning rate 0.0003 and seed 31, and keep
+the same loss. The separate diagnostic development scene remains disjoint.
+
+Evaluate both the fitted input and the existing independent-noise stream of
+scene 310001 with history reset on every frame, using the exact parent weights
+as the matched control. Fitting one image tests optimization/representation,
+not scene or noise generalization. A training-image gain without an
+independent-noise gain is not success. Never use these overfit diagnostic weights
+as a publication candidate or a warm start for broad training.
+
 ## Progress and evidence
 
 - Initial validation reproduction:
