@@ -29,8 +29,12 @@ Known material albedo and emission are composed only at the end:
 Training uses the same recurrence, warming history with the current model's
 own predictions. Two-frame BPTT differentiates through bilinear radiance
 reprojection; geometry, rejection maps, ages and moments are detached.
-The objective combines compressed displayed-RGB MSE, a small fixed-exposure
-linear RGB term, coarse linear structure and valid-history temporal changes.
+The objective combines compressed displayed-RGB MSE, absolute compressed-lobe
+MSE, a small fixed-exposure linear RGB term, coarse linear structure and
+valid-history temporal changes. Direct lobe supervision prevents diffuse and
+specular errors from compensating each other in RGB while corrupting the
+recurrent state. This supervision update does not change the inference graph or
+checkpoint parameter shapes; the published results still use the older objective.
 There are no selector labels or target-normalized brightness weights.
 The trainer reuses native GPU preparation; the CPU only expands differentiable
 history-gather maps and supplies the numerical reference implementation.
@@ -70,9 +74,10 @@ history, resets and HDR. The actual two-frame training graph is checked against
 Meganeura's f64 reference for its loss and every parameter gradient, including
 fused/unfused lowerings. A training-and-reload test must reduce loss.
 
-Blade is pinned to `fbb4f28`, Meganeura to `0dbfcc0`, and Naga to `323acfb`.
-Sibling Cargo patches allow local development; run manifests record their actual
-revisions and dirty diffs. The current Naga SPIR-V backend still triggers
+Blade is pinned to `fbb4f28`, Meganeura to `ee3aea4`, and Naga to `323acfb`.
+A sibling Cargo patch allows local Blade development; Meganeura uses its exact
+upstream pin. Run manifests record actual revisions and dirty diffs. The current
+Naga SPIR-V backend still triggers
 `VUID-StandaloneSpirv-None-10684` for Workgroup array layout. Numerical tests
 pass on the tested adapters, but validation is not clean. The run recorder
 treats this as failure even when the child exits zero. This remains a release

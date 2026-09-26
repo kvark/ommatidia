@@ -49,6 +49,43 @@ fn shader_parses() {
 }
 
 #[test]
+fn lobe_supervision_detects_errors_that_cancel_in_rgb() {
+    use meganeura::reference::{Feeds, evaluate_outputs};
+
+    let config = Config {
+        channels: 1,
+        ..Default::default()
+    };
+    let model = graph::build(config, [4, 4], 1).unwrap();
+    let n = 64;
+    let mut feeds = Feeds::new();
+    feeds.fill_random(&model.graph, 7, 0.0);
+    feeds.set("f0.candidates", &vec![1.0; 5 * 6 * n]);
+    let mut prior = vec![0.0; 6 * 2 * n];
+    prior[..2 * n].fill(1.0);
+    feeds.set("f0.prior", &prior);
+    feeds.set("f0.rgb.albedo", &vec![0.5; 3 * n]);
+    feeds.set("f0.rgb.target", &vec![1.5; 3 * n]);
+    feeds.set("f0.target", &vec![1.0; 6 * n]);
+    let loss = |feeds: &Feeds| evaluate_outputs(&model.graph, feeds).unwrap()[0].data[0];
+    let mut weights = graph::LossWeights::default();
+    feeds.set("loss.weights", &weights.values());
+    assert!(loss(&feeds) < 1e-20);
+
+    // Both (D=1, S=1) and (D=1.5, S=0.75) compose to RGB=1.5 at albedo=0.5.
+    let mut wrong_lobes = vec![1.5; 6 * n];
+    wrong_lobes[3 * n..].fill(0.75);
+    feeds.set("f0.target", &wrong_lobes);
+    assert!(loss(&feeds) > 1e-4);
+    weights.lobes = 0.0;
+    feeds.set("loss.weights", &weights.values());
+    assert!(
+        loss(&feeds) < 1e-20,
+        "RGB-only objective should be blind to the decomposition"
+    );
+}
+
+#[test]
 #[ignore = "requires Vulkan or Metal; set MEGANEURA_DEVICE_ID to select the adapter"]
 fn two_frame_training_matches_reference() {
     use meganeura::reference::{Feeds, gpu, gradients};
@@ -70,15 +107,7 @@ fn two_frame_training_matches_reference() {
             feeds.set(&param.name, &values);
         }
         let weights = graph::LossWeights::default();
-        feeds.set(
-            "loss.weights",
-            &[
-                weights.compressed,
-                weights.physical,
-                weights.low_frequency,
-                weights.temporal,
-            ],
-        );
+        feeds.set("loss.weights", &weights.values());
         let mut previous = Vec::new();
         for step in 0..2 {
             let (frame, target) = fixture(config, step, 19);

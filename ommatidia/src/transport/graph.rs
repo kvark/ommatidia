@@ -6,13 +6,14 @@ use meganeura::{Graph, NodeId};
 use crate::neural::Builder;
 pub use crate::neural::Network;
 
-/// One objective: displayed RGB, linear energy, coarse structure, and temporal change.
+/// One objective: RGB, identifiable radiance lobes, energy, structure, and time.
 #[derive(Clone, Copy, Debug, serde::Serialize)]
 pub struct LossWeights {
     pub compressed: f32,
     pub physical: f32,
     pub low_frequency: f32,
     pub temporal: f32,
+    pub lobes: f32,
 }
 impl Default for LossWeights {
     fn default() -> Self {
@@ -21,16 +22,18 @@ impl Default for LossWeights {
             physical: 0.005,
             low_frequency: 0.01,
             temporal: 0.02,
+            lobes: 0.5,
         }
     }
 }
 impl LossWeights {
-    fn values(self) -> [f32; 4] {
+    pub fn values(self) -> [f32; 5] {
         [
             self.compressed,
             self.physical,
             self.low_frequency,
             self.temporal,
+            self.lobes,
         ]
     }
     pub fn validate(self) -> Result<(), String> {
@@ -109,9 +112,9 @@ pub fn build(config: Config, low: [u32; 2], unroll: usize) -> Result<Network, St
     let spatial = low[0] * low[1];
     let n = (slots * spatial) as usize;
     let mut b = Builder::new();
-    let objective_weights: Option<[NodeId; 4]> = (unroll > 0).then(|| {
-        let input = b.g.input("loss.weights", &[4]);
-        split(&mut b.g, input, 4, 1, 1).try_into().unwrap()
+    let objective_weights: Option<[NodeId; 5]> = (unroll > 0).then(|| {
+        let input = b.g.input("loss.weights", &[5]);
+        split(&mut b.g, input, 5, 1, 1).try_into().unwrap()
     });
     let mut previous = None;
     let mut previous_target = None;
@@ -198,9 +201,17 @@ pub fn build(config: Config, low: [u32; 2], unroll: usize) -> Result<Network, St
             physical_weight,
             low_frequency_weight,
             temporal_weight,
+            lobe_weight,
         ] = objective_weights.unwrap();
         let loss = b.g.mse_loss(encoded, encoded_target);
         let mut loss = b.g.mul(loss, compressed_weight);
+        // RGB alone cannot identify diffuse/specular energy: opposite lobe
+        // errors can cancel after material composition but pollute recurrence.
+        let encoded_lobes = compress(&mut b.g, image, config.exposure);
+        let encoded_target_lobes = compress(&mut b.g, target, config.exposure);
+        let lobe_loss = b.g.mse_loss(encoded_lobes, encoded_target_lobes);
+        let lobe_loss = b.g.mul(lobe_loss, lobe_weight);
+        loss = b.g.add(loss, lobe_loss);
         let physical = scaled_mse(&mut b.g, spatial_image, spatial_target, spatial_scale);
         let physical = b.g.mul(physical, physical_weight);
         loss = b.g.add(loss, physical);

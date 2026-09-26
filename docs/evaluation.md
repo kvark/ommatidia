@@ -48,6 +48,8 @@ comparison alone does not establish an improvement over the previous model.
 - Low-frequency PSNR checks broad error after spatial averaging.
 - Linear MSE, relative MSE and energy ratio catch brightness/energy bias.
 - Detail ratio is a gradient-magnitude diagnostic, not proof of correct texture.
+- Gradient MSE compares horizontal/vertical compressed-RGB differences against
+  the reference, penalizing both missing edges and spurious detail.
 - Temporal MSE compares motion-compensated output changes with reference changes,
   rejecting mismatched primary surfaces. It is not a perceptual video metric.
 - Reset PSNR isolates cold starts. Rejected-history MSE is pixel-weighted over
@@ -57,6 +59,19 @@ comparison alone does not establish an improvement over the previous model.
 PNGs use the same compression followed by sRGB; no per-image exposure or
 postprocessing. All frames are saved. README pictures must be copied from those
 outputs with hashes and checkpoint/data provenance, never generated or retouched.
+
+Each evaluation also writes `diagnostics.json`: per-frame diffuse illumination,
+material-weighted diffuse radiance and specular radiance errors, mean history
+ages, and the error from composing reference lobes with observed material data.
+Use `--save-lobes` for matched component PNGs. `--eval-only --reset-history`
+resets both models before every frame while still measuring inter-frame changes;
+it is explicitly labeled a diagnostic, not the causal production result.
+
+The training objective now includes absolute compressed-lobe supervision
+(`--lobe-weight 0.5` by default). RGB alone cannot identify the split: diffuse and
+specular errors can cancel after material composition. Set the weight to zero
+only for an explicit loss ablation. The currently published checkpoint predates
+this objective change; its recorded training configuration remains authoritative.
 
 ## Reference noise
 
