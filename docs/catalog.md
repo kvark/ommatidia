@@ -85,7 +85,10 @@ python3 scripts/fetch-catalog.py --out data/catalog --train 24 --holdout 8
 
 This downloads `3dmodels/metadata/3dmodels.csv.gz`, keeps compact standing
 objects, hashes ids into train/holdout, and writes `data/catalog/catalog.json`.
-`--dry-run` prints the selection without downloading GLBs.
+Objects without opaque triangles are excluded after inspecting downloaded GLBs,
+so the final counts can be below the requested upper bounds. Original assets
+are retained unmodified. `--dry-run` uses metadata only and cannot check this
+renderer-support constraint without downloading GLBs.
 
 HSSD: accept the terms for both Hugging Face repositories, authenticate `hf`,
 then fetch a bounded furnished subset:
@@ -107,6 +110,28 @@ DTC assets still require the Project Aria form. All sources use this schema.
 Object scenes keep canopy, lights, textures and gloss. Authored meshes supply
 silhouettes and materials absent from the procedural palette. Interior capture
 is supported by the generator but is not part of the current reported training.
+
+Catalog objects are placed across the camera view, which is framed around their
+bounds. Procedural spheres and boxes are omitted unless `--keep-primitives` is
+explicitly requested. With `--hr-gbuffer`, a separate object-only primary-depth
+pass measures visible catalog coverage per frame, including occlusion by the
+room. The `.catalog.json` sidecar stores `visible_fraction`; captures warn below
+5% and framed captures fail below 1%. This measures the union of catalog objects,
+not visibility of every asset. Object assets with no opaque triangles are
+rejected: the current capture tracer does not render non-opaque geometry.
+The extra renderer does not consume the input/reference RNG or camera history.
+It checks the entire camera trajectory before path tracing and retries up to
+eight camera placements when, for example, a foreground light hides the asset.
+`camera_attempts` records those trials; per-frame coverage is still checked
+again during capture. Retry randomness is separate from scene selection.
+Historical captures without this field have not been visibility-audited.
+
+Check the driver as well as the renderer revision. On the tested RX 7900 XT,
+Mesa 26.0.3 and 26.0.8 silently omitted an opaque 18,572-triangle ABO chair,
+including with a fresh asset cache and no Vulkan validation errors. Mesa 26.2.3
+with libdrm 2.4.134 restored it; its measured 17.8% primary coverage matched
+LavaPipe. This is a reproduction result, not a claim that every driver issue is
+fixed. Capture provenance now records the actual driver version and coverage.
 
 ```sh
 cargo build --release --workspace

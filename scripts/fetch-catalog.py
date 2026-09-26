@@ -13,6 +13,7 @@ import gzip
 import hashlib
 import io
 import json
+import struct
 import sys
 import urllib.request
 from pathlib import Path
@@ -97,18 +98,42 @@ def write_catalog(out: Path, rows: list[dict[str, str]]) -> None:
     print(f"wrote {catalog} ({len(entries)} entries)")
 
 
-def fetch_models(out: Path, rows: list[dict[str, str]]) -> None:
+def has_opaque_triangles(glb: bytes) -> bool:
+    magic, version, length, chunk_length, chunk_type = struct.unpack_from('<5I', glb)
+    if (magic, version, length, chunk_type) != (0x46546C67, 2, len(glb), 0x4E4F534A):
+        raise ValueError('expected a GLB 2.0 JSON chunk')
+    doc = json.loads(glb[20:20 + chunk_length])
+    for mesh in doc.get('meshes', []):
+        for primitive in mesh['primitives']:
+            if primitive.get('mode', 4) != 4:
+                continue
+            if ('material' in primitive and
+                    doc['materials'][primitive['material']].get('alphaMode', 'OPAQUE') != 'OPAQUE'):
+                continue
+            accessor = primitive.get('indices', primitive.get('attributes', {}).get('POSITION'))
+            if accessor is not None and doc['accessors'][accessor]['count'] >= 3:
+                return True
+    return False
+
+
+def fetch_models(out: Path, rows: list[dict[str, str]]) -> list[dict[str, str]]:
     dest = out / "abo"
     dest.mkdir(parents=True, exist_ok=True)
+    supported = []
     for row in rows:
         model_id = row["3dmodel_id"]
         target = dest / f"{model_id}.glb"
         if target.exists() and target.stat().st_size > 0:
             print(f"keep {target}")
-            continue
-        url = f"{ORIGINAL}/{row['path']}"
-        print(f"get  {url}")
-        target.write_bytes(download(url))
+        else:
+            url = f"{ORIGINAL}/{row['path']}"
+            print(f"get  {url}")
+            target.write_bytes(download(url))
+        if has_opaque_triangles(target.read_bytes()):
+            supported.append(row)
+        else:
+            print(f"exclude {model_id}: no opaque triangles (unsupported by capture tracer)")
+    return supported
 
 
 def main() -> None:
@@ -124,15 +149,16 @@ def main() -> None:
     args = parser.parse_args()
     print("loading ABO 3d model metadata", file=sys.stderr)
     rows = select(load_rows(), args.train, args.holdout)
-    write_catalog(args.out, rows)
     for row in rows:
         print(
             f"{bucket(row['3dmodel_id']):7} {row['3dmodel_id']}  "
             f"v={row['vertices']}  y={float(row['extent_y']):.2f}  {row['path']}"
         )
     if args.dry_run:
+        write_catalog(args.out, rows)
+        print("metadata-only catalog; opaque-geometry support has not been checked")
         return
-    fetch_models(args.out, rows)
+    write_catalog(args.out, fetch_models(args.out, rows))
 
 
 if __name__ == "__main__":

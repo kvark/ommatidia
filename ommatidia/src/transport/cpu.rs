@@ -45,6 +45,81 @@ pub fn matches(s: &Surface, p: &State) -> bool {
             < 0.04
 }
 
+fn history_taps(
+    surface: &Surface,
+    previous: &[State],
+    extent: [usize; 2],
+    pixel: [usize; 2],
+    lobe: usize,
+) -> ([usize; 4], [f32; 4]) {
+    let motion = if lobe == 1 && surface.specular_motion[2] > 0.5 {
+        surface.specular_motion
+    } else {
+        surface.motion
+    };
+    let q = [pixel[0] as f32 + motion[0], pixel[1] as f32 + motion[1]];
+    let mut ids = [0; 4];
+    let mut weights = [0.0; 4];
+    if !previous.is_empty()
+        && q[0] >= 0.0
+        && q[1] >= 0.0
+        && q[0] <= (extent[0] - 1) as f32
+        && q[1] <= (extent[1] - 1) as f32
+    {
+        let tx = q[0] - q[0].floor();
+        let ty = q[1] - q[1].floor();
+        for k in 0..4 {
+            let sx = (q[0].floor() as usize + k % 2).min(extent[0] - 1);
+            let sy = (q[1].floor() as usize + k / 2).min(extent[1] - 1);
+            let old = previous[sy * extent[0] + sx];
+            let h = if lobe == 0 { old.diffuse } else { old.specular };
+            if h[3] > 0.0 && matches(surface, &old) {
+                ids[k] = sy * extent[0] + sx;
+                weights[k] =
+                    if k % 2 == 0 { 1.0 - tx } else { tx } * if k / 2 == 0 { 1.0 - ty } else { ty };
+            }
+        }
+    }
+    (ids, weights)
+}
+
+pub(crate) fn history_maps(
+    frame: &Frame,
+    previous: &[State],
+    config: Config,
+) -> ([Vec<u32>; 4], [Vec<f32>; 4]) {
+    let width = (frame.low[0] * config.scale) as usize;
+    let height = (frame.low[1] * config.scale) as usize;
+    let n = width * height;
+    assert!(previous.is_empty() || previous.len() == n);
+    let mut indices = std::array::from_fn(|_| vec![0; 6 * n]);
+    let mut coefficients = std::array::from_fn(|_| vec![0.0; 6 * n]);
+    for y in 0..height {
+        for x in 0..width {
+            for lobe in 0..2 {
+                let (ids, weights) = history_taps(
+                    &frame.surfaces[y * width + x],
+                    previous,
+                    [width, height],
+                    [x, y],
+                    lobe,
+                );
+                let coverage = weights.iter().sum::<f32>().max(1e-6);
+                for c in 0..3 {
+                    let j = config.index(frame.low, lobe * 3 + c, x, y);
+                    for k in 0..4 {
+                        indices[k][j] =
+                            config.index(frame.low, lobe * 3 + c, ids[k] % width, ids[k] / width)
+                                as u32;
+                        coefficients[k][j] = weights[k] / coverage;
+                    }
+                }
+            }
+        }
+    }
+    (indices, coefficients)
+}
+
 pub fn prepare(frame: &Frame, previous: &[State], config: Config) -> Prepared {
     frame.validate(config).expect("invalid transport frame");
     let low = frame.low;
@@ -142,38 +217,16 @@ pub fn prepare(frame: &Frame, previous: &[State], config: Config) -> Prepared {
             let i = y * width + x;
             let s = frame.surfaces[i];
             for lobe in 0..2 {
-                let motion = if lobe == 1 && s.specular_motion[2] > 0.5 {
-                    s.specular_motion
-                } else {
-                    s.motion
-                };
-                let q = [x as f32 + motion[0], y as f32 + motion[1]];
                 let mut history = [0.0; 3];
                 let mut age = 0.0;
                 let mut moments = [0.0; 2];
                 let mut coverage = 0.0;
-                let mut weights = [0.0; 4];
-                let mut ids = [0usize; 4];
-                if !previous.is_empty()
-                    && q[0] >= 0.0
-                    && q[1] >= 0.0
-                    && q[0] <= (width - 1) as f32
-                    && q[1] <= (height - 1) as f32
-                {
-                    let tx = q[0] - q[0].floor();
-                    let ty = q[1] - q[1].floor();
+                let (ids, weights) = history_taps(&s, previous, [width, height], [x, y], lobe);
+                if !previous.is_empty() {
                     for k in 0..4 {
-                        let sx = (q[0].floor() as usize + k % 2).min(width - 1);
-                        let sy = (q[1].floor() as usize + k / 2).min(height - 1);
-                        let old = previous[sy * width + sx];
+                        let old = previous[ids[k]];
                         let h = if lobe == 0 { old.diffuse } else { old.specular };
-                        if h[3] <= 0.0 || !matches(&s, &old) {
-                            continue;
-                        }
-                        let w = if k % 2 == 0 { 1.0 - tx } else { tx }
-                            * if k / 2 == 0 { 1.0 - ty } else { ty };
-                        weights[k] = w;
-                        ids[k] = sy * width + sx;
+                        let w = weights[k];
                         coverage += w;
                         age += w * h[3];
                         for c in 0..3 {

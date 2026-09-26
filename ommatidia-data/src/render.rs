@@ -233,6 +233,53 @@ pub struct Frame {
     pub radiance: Option<Vec<f32>>,
 }
 
+/// Independent geometry pass: does not consume either capture's stochastic
+/// sequence or previous-camera state.
+#[allow(clippy::too_many_arguments)]
+pub fn capture_geometry(
+    renderer: &mut blade_render::RayTracer,
+    context: &gpu::Context,
+    encoder: &mut gpu::CommandEncoder,
+    asset_hub: &blade_render::AssetHub,
+    objects: &mut [blade_render::Object],
+    camera: &blade_render::Camera,
+    probe: &crate::gbuffer::Probe,
+) -> Vec<f32> {
+    let mut temp = blade_render::FrameResources::default();
+    encoder.start();
+    asset_hub.flush(encoder, &mut temp.buffers);
+    renderer.build_scene(encoder, objects, None, asset_hub, context, &mut temp);
+    renderer.prepare(encoder, camera, blade_render::FrameConfig::default());
+    renderer.fill_gbuffer(encoder, blade_render::DebugConfig::default());
+    probe.record(encoder, &renderer.view_gbuffer());
+    let sync = context.submit(encoder);
+    assert!(
+        context.wait_for(&sync, 30_000).unwrap(),
+        "visibility pass timed out"
+    );
+    let planes = probe.read();
+    for buffer in temp.buffers {
+        context.destroy_buffer(buffer);
+    }
+    for structure in temp.acceleration_structures {
+        context.destroy_acceleration_structure(structure);
+    }
+    planes
+}
+
+pub fn visible_fraction(scene_depth: &[f32], object_depth: &[f32]) -> f32 {
+    assert_eq!(scene_depth.len(), object_depth.len());
+    assert!(!scene_depth.is_empty());
+    let visible = scene_depth
+        .iter()
+        .zip(object_depth)
+        .filter(|&(scene, object)| {
+            *object > 0.0 && *object < 60000.0 && (scene - object).abs() <= 1e-4 * object.max(1.0)
+        })
+        .count();
+    visible as f32 / scene_depth.len() as f32
+}
+
 /// Render one frame of one scene and read back the linear radiance.
 ///
 /// `objects` and `camera` are shared between the two passes, so the pair lines
@@ -390,6 +437,13 @@ pub fn capture(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn catalog_visibility_excludes_sky_and_occluded_objects() {
+        let scene = [2.0, 1.0, 1e6, 4.00001, 3.0, 1e6];
+        let objects = [2.0, 3.0, 1e6, 4.0, 1e6, 2.0];
+        assert_eq!(visible_fraction(&scene, &objects), 2.0 / 6.0);
+    }
 
     #[test]
     fn sparse_and_reference_paths_match_transport_not_sample_count() {

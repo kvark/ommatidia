@@ -181,9 +181,8 @@ usage: ommatidia-data [options]
   --catalog-target-extent F longest axis of a placed object, world units [1.2]
   --catalog-interior-extent F
                             longest axis of a loaded interior, world units [12]
-  --keep-primitives         keep the default sphere/box counts when a catalog
-                            is present; the default thins them so authored
-                            assets are visible
+  --keep-primitives         keep procedural spheres/boxes with catalog objects;
+                            by default only the room, lights and assets remain
   -h, --help                this message
 ";
 
@@ -420,6 +419,7 @@ struct ActiveSequence {
     base_camera: blade_render::Camera,
     motion_seed: u64,
     moving_start: usize,
+    catalog_start: Option<usize>,
     light_indices: Vec<usize>,
     base_transforms: Vec<gpu::Transform>,
 }
@@ -442,6 +442,15 @@ fn projection_jitter(frame: usize, scale: u32) -> [f32; 2] {
 }
 
 impl ActiveSequence {
+    fn camera(&self, frame: usize, step: f32, random_step: f32) -> blade_render::Camera {
+        let mut camera = self.base_camera;
+        let offset = scene::camera_motion(self.motion_seed, frame, random_step);
+        camera.pos.x += step * frame as f32 + offset[0];
+        camera.pos.y += offset[1];
+        camera.pos.z += offset[2];
+        camera
+    }
+
     fn animate_objects(&mut self, frame: usize, step: f32, light_step: f32) {
         for (index, object) in self.objects.iter_mut().enumerate() {
             let light = self.light_indices.contains(&index);
@@ -512,7 +521,7 @@ impl Harness {
                 .contains(gpu::ShaderVisibility::COMPUTE),
             "the generator needs ray queries in compute shaders"
         );
-        log::info!("device: {}", context.device_information().device_name);
+        log::info!("device: {:?}", context.device_information());
 
         let choir = choir::Choir::new();
         let workers = (0..num_workers())
@@ -966,6 +975,11 @@ fn main() {
     let need_hr_render =
         args.reference_from.is_none() || (args.hr_gbuffer && (!reference_has_hr_gbuffer));
     let mut hr_renderer = need_hr_render.then(|| make_renderer(&harness, &mut encoder, hr_size));
+    let mut visibility_renderer = (args.catalog.is_some() && args.hr_gbuffer)
+        .then(|| make_renderer(&harness, &mut encoder, hr_size));
+    let visibility_probe = visibility_renderer
+        .as_ref()
+        .map(|_| gbuffer::Probe::new(&context, hr_size, false));
     let lr_target = render::Target::new(&context, lr_size);
     let hr_target = need_hr_render.then(|| render::Target::new(&context, hr_size));
     let lr_probe = args
@@ -993,8 +1007,8 @@ fn main() {
         ..scene::SceneConfig::default()
     };
     if args.catalog.is_some() && !args.keep_primitives {
-        scene_config.sphere_count = 3;
-        scene_config.box_count = 2;
+        scene_config.sphere_count = 0;
+        scene_config.box_count = 0;
     }
     let catalog = args.catalog.as_ref().map(|path| {
         let mut loaded = catalog::Catalog::load(path).unwrap_or_else(|error| panic!("{error}"));
@@ -1093,9 +1107,12 @@ fn main() {
                 families: Vec::new(),
                 sources: Vec::new(),
                 kind: catalog::Kind::Object,
+                visible_fraction: Vec::new(),
+                camera_attempts: 0,
             };
             let base_camera;
             let moving_start;
+            let mut catalog_start = None;
             let mut light_indices = Vec::new();
             if use_interior {
                 let loaded = catalog.as_ref().expect("interior scenes need a catalog");
@@ -1180,16 +1197,28 @@ fn main() {
                     )));
                 }
                 if let (Some(loaded), Some(pool)) = (catalog.as_ref(), object_pool.as_mut()) {
-                    for entry in pool.take(args.catalog_objects, &mut rng) {
+                    let entries = pool.take(args.catalog_objects, &mut rng);
+                    let (positions, camera) = scene::object_layout(
+                        &scene_config,
+                        entries.len(),
+                        args.catalog_target_extent,
+                        lr_size.width as f32 / lr_size.height as f32,
+                        &mut rng,
+                    );
+                    base_camera = camera;
+                    catalog_start = Some(objects.len());
+                    for (entry, position) in entries.into_iter().zip(positions) {
                         let (min, max) = loaded.aabb(&entry.id);
-                        let angle = std::f32::consts::TAU * rng.uniform();
-                        let distance = scene_config.spread * rng.uniform().sqrt();
                         let transform = catalog::object_transform(
                             min,
                             max,
                             args.catalog_target_extent,
-                            [distance * angle.cos(), distance * angle.sin()],
+                            position,
                             std::f32::consts::TAU * rng.uniform(),
+                        );
+                        log::debug!(
+                            "placing {}: bounds {min:?}..{max:?}, transform {transform:?}, camera {camera:?}",
+                            entry.id
                         );
                         let mut object = blade_render::Object::from(loaded.handle(&entry.id));
                         object.transform = transform;
@@ -1199,33 +1228,93 @@ fn main() {
                         record.families.push(entry.family);
                         record.sources.push(entry.source);
                     }
+                } else {
+                    base_camera = scene::camera(&scene_config, &mut rng);
                 }
-                base_camera = scene::camera(&scene_config, &mut rng);
             }
-            if catalog.is_some() {
-                scene_records.push(record);
-            }
-            active_sequence = Some(ActiveSequence {
+            let mut sequence = ActiveSequence {
                 base_transforms: objects.iter().map(|o| o.transform).collect(),
                 light_indices,
                 objects,
                 base_camera,
                 motion_seed: args.seed ^ (scene_index as u64).wrapping_mul(0xD1B5_4A32_D192_ED03),
                 moving_start,
-            });
+                catalog_start,
+            };
+            if let (Some(start), Some(renderer), Some(probe)) = (
+                catalog_start.filter(|_| !args.keep_primitives),
+                visibility_renderer.as_mut(),
+                visibility_probe.as_ref(),
+            ) {
+                // Reject occluded trajectories before spending path samples on
+                // them. This independent renderer and RNG leave both captures'
+                // stochastic sequences and later scene choices untouched.
+                let mut camera_rng = Rng::new(sequence.motion_seed ^ 0xCA4E_2A00);
+                let mut minimum = 0.0f32;
+                for attempt in 1..=8 {
+                    record.camera_attempts = attempt;
+                    minimum = 1.0;
+                    for frame in 0..args.sequence_frames {
+                        sequence.animate_objects(frame, args.object_motion, args.light_motion);
+                        let camera =
+                            sequence.camera(frame, args.camera_motion, args.random_camera_motion);
+                        let full = render::capture_geometry(
+                            renderer,
+                            &context,
+                            &mut encoder,
+                            &harness.asset_hub,
+                            &mut sequence.objects,
+                            &camera,
+                            probe,
+                        );
+                        let isolated = render::capture_geometry(
+                            renderer,
+                            &context,
+                            &mut encoder,
+                            &harness.asset_hub,
+                            &mut sequence.objects[start..],
+                            &camera,
+                            probe,
+                        );
+                        let n = layout.hr_texels();
+                        minimum = minimum.min(render::visible_fraction(&full[..n], &isolated[..n]));
+                        if minimum < 0.01 {
+                            break;
+                        }
+                    }
+                    if minimum >= 0.01 {
+                        break;
+                    }
+                    eprintln!(
+                        "scene {scene_index}: camera trial {attempt} obscures catalog objects; retrying"
+                    );
+                    sequence.base_camera = scene::object_layout(
+                        &scene_config,
+                        record.ids.len(),
+                        args.catalog_target_extent,
+                        lr_size.width as f32 / lr_size.height as f32,
+                        &mut camera_rng,
+                    )
+                    .1;
+                }
+                assert!(
+                    minimum >= 0.01,
+                    "scene {scene_index}: no visible camera trajectory for {:?} after 8 trials; inspect assets and Vulkan driver",
+                    record.ids
+                );
+            }
+            if catalog.is_some() {
+                scene_records.push(record);
+            }
+            active_sequence = Some(sequence);
         }
         let sequence = active_sequence.as_mut().expect("sequence was initialized");
         sequence.animate_objects(sequence_frame, args.object_motion, args.light_motion);
-        let mut camera = sequence.base_camera;
-        camera.pos.x += args.camera_motion * sequence_frame as f32;
-        let random_offset = scene::camera_motion(
-            sequence.motion_seed,
+        let camera = sequence.camera(
             sequence_frame,
+            args.camera_motion,
             args.random_camera_motion,
         );
-        camera.pos.x += random_offset[0];
-        camera.pos.y += random_offset[1];
-        camera.pos.z += random_offset[2];
         let jitter = if args.projection_jitter {
             projection_jitter(sequence_frame, args.scale)
         } else {
@@ -1376,6 +1465,55 @@ fn main() {
             report_lobe_reconstruction("reference", &hr, layout.hr_texels());
         }
 
+        if let (Some(start), Some(renderer), Some(probe), Some(full)) = (
+            sequence.catalog_start,
+            visibility_renderer.as_mut(),
+            visibility_probe.as_ref(),
+            hr.gbuffer.as_ref(),
+        ) {
+            let isolated = render::capture_geometry(
+                renderer,
+                &context,
+                &mut encoder,
+                &harness.asset_hub,
+                &mut sequence.objects[start..],
+                &camera,
+                probe,
+            );
+            let n = layout.hr_texels();
+            let fraction = render::visible_fraction(&full[..n], &isolated[..n]);
+            log::debug!(
+                "catalog primary hits: {} isolated, {:.2}% visible",
+                isolated[..n].iter().filter(|&&d| d < 60000.0).count(),
+                fraction * 100.0
+            );
+            scene_records
+                .last_mut()
+                .unwrap()
+                .visible_fraction
+                .push(fraction);
+            if !args.keep_primitives && fraction < 0.01 {
+                let path = args.out.with_extension("invisible.png");
+                write_preview(&path, &hr.color, hr_size.width, hr_size.height);
+                eprintln!(
+                    "invisible catalog ids {:?}; diagnostic {}",
+                    scene_records.last().unwrap().ids,
+                    path.display()
+                );
+            }
+            assert!(
+                args.keep_primitives || fraction >= 0.01,
+                "scene {scene_index} frame {sequence_frame}: framed catalog coverage {:.2}% is below 1%; inspect the asset, camera and Vulkan driver before training",
+                fraction * 100.0
+            );
+            if fraction < 0.05 {
+                eprintln!(
+                    "warning: scene {scene_index} frame {sequence_frame}: catalog objects cover only {:.2}% of output pixels",
+                    fraction * 100.0
+                );
+            }
+        }
+
         if args.hr_gbuffer && has_motion && sequence_frame != 0 {
             let planes = hr
                 .gbuffer
@@ -1457,6 +1595,13 @@ fn main() {
     let matched = input_depth.zip(reference_depth).map(|(a, b)| a == b);
     let transport = serde_json::json!({
         "schema": 1,
+        "device": {
+            "name": context.device_information().device_name,
+            "driver": context.device_information().driver_name,
+            "driver_info": context.device_information().driver_info,
+            "software": context.device_information().is_software_emulated,
+            "validation": cfg!(debug_assertions)
+        },
         "records": count,
         "capture_seed": args.seed,
         "input_sample_offset": args.input_sample_offset,
@@ -1466,6 +1611,8 @@ fn main() {
         "input_rng_schedule": "blade-frame-index; prefix-discard-once; retained [offset+1,offset+records*input_frames]",
         "scene_seeds": (0..args.samples).map(|i|args.seed ^ (i as u64).wrapping_mul(0x9E37_79B9)).collect::<Vec<_>>(),
         "family_ids": scene_records.iter().flat_map(|s|s.families.iter().cloned()).collect::<Vec<_>>(),
+        "catalog_layout": args.catalog.as_ref().map(|_| "camera-framed-v2-visibility-preflight"),
+        "minimum_catalog_visible_fraction": scene_records.iter().flat_map(|s|s.visible_fraction.iter().copied()).reduce(f32::min),
         "light_motion": args.light_motion,
         "input_estimator": if args.svgf_input { "restir-svgf" } else if args.restir_input { "restir" } else { "independent-paths" },
         "input_max_bounces": input_depth,
@@ -1531,6 +1678,9 @@ fn main() {
     if let Some(probe) = hr_probe {
         probe.destroy(&context);
     }
+    if let Some(probe) = visibility_probe {
+        probe.destroy(&context);
+    }
     if let Some(probe) = lr_radiance_probe {
         probe.destroy(&context);
     }
@@ -1543,6 +1693,9 @@ fn main() {
     }
     lr_renderer.destroy(&context);
     if let Some(mut renderer) = hr_renderer {
+        renderer.destroy(&context);
+    }
+    if let Some(mut renderer) = visibility_renderer {
         renderer.destroy(&context);
     }
     context.destroy_command_encoder(&mut encoder);
