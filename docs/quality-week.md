@@ -382,6 +382,54 @@ backends with zero validation errors (`selected-numerics-{radv,lavapipe}/`).
 All 80 regular tests, Clippy and formatting pass on Rust 1.92; the eight Python
 crop/catalog tests also pass.
 
+### First frozen audit: improvement, but not a quality-gate pass
+
+Selection was frozen and pushed at `d7ffd8d`, before the learned audit began
+at 2026-09-26 22:26:39 UTC. The immutable inference build is `c6eefca` and the
+checkpoint hash is `0d75f36762aedf4d0e96ecc03d7e6d8d273cfcfc5ec9ea4905d7dc9aaff8d653`.
+`audit-selected-run/` evaluates all 640 frames with each implementation's own
+history. PSNR rises from 29.62718 to 31.36767 dB; SSIM from 0.81985 to 0.87846.
+Temporal MSE falls 35.3%, rejected-history MSE 48.8%, and gradient MSE 34.3%.
+638/640 frames improve; the worst regression is 0.142 dB on the first catalog
+frame. Mean energy ratio improves from 0.99180 to 0.99898, but scene-linear MSE
+rises 1.8%. Do not claim every diagnostic improves.
+
+The strict crop report (`audit-selected-crops.json`) has smooth/edge/texture MSE
+ratios **0.552 / 0.774 / 0.797**; reference-gradient ratios are
+**0.731 / 0.829 / 0.861**. Smooth-crop error decreases 44.8%, missing the
+predeclared ratio-at-most-0.5 gate. Lighting-case smooth crops regress in
+aggregate (ratio 1.106), despite better whole-frame scores. This result is not
+promoted as completion of the quality sprint. Do not round 44.8% into a pass,
+change crop weights, omit cold starts, or select another checkpoint on this audit.
+
+`score-sequences` reuses the existing temporal metric on saved full-precision
+outputs and observed capture motion. It reproduces both evaluator averages to
+floating-point precision and exposes all ten sequence scores. Every sequence's
+temporal error decreases (ratios 0.585–0.820). An additional 8×8-block diagnostic
+also decreases in every sequence (0.557–0.753); this is a supplementary diagnostic,
+not a new predeclared pass criterion. `audit-videos/` contains all ten matched
+64-frame clips and chronological review sheets. Visible blotches, specular
+sparkle and illumination bias remain. No perceptual-video-study claim is made.
+
+The uncontended `selected-performance-run/` measures 192 frames after 128 warmup
+frames on RX 7900 XT: GPU pass-span mean 1.178 ms, p50 1.183 ms, p95 1.207 ms.
+This excludes host upload/readback, compilation and submission gaps; it is not
+end-to-end throughput. It is timing evidence for this candidate, not a quality pass.
+
+### Bounded follow-up: train with the retained history configuration
+
+The selected weights were trained with a 32-frame diffuse limit and evaluated
+with 16. Test that remaining training/inference mismatch explicitly: start from
+the frozen weights and their 16/8 configuration, retain the same training and
+development corpus, reset-balanced sampling, losses and two-frame unroll, and
+run 1,000 updates at learning rate 0.0001, seed 31, evaluating at 500 and 1,000.
+This changes no model architecture. Judge the run on development spatial,
+temporal, brightness and cold-start evidence; it is not an audit-driven checkpoint
+search. The first audit is now a regression/diagnostic set, not an untouched
+holdout for any subsequent model. A newly frozen confirmation audit is required
+before promoting a later candidate. The original crop/data lock and failed
+selection record remain unchanged.
+
 ## Progress and evidence
 
 - Initial validation reproduction:
