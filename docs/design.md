@@ -11,6 +11,9 @@ implementations are recoverable at Git commit `b838674` (also the local branch
 The GPU constructs five geometry-guided spatial scales and reprojects the
 previous diffuse/specular estimates. Each lobe has its own validity, reactive
 rejection, age and moments. History and final reconstruction remain linear HDR.
+The default history-age limits are 16 diffuse frames and eight specular frames.
+The diffuse limit balances stationary noise against response to illumination
+changes; it was selected on development sequences, not the final audit.
 Spatial depth weights compare against a local inverse-depth slope estimated from
 normal-compatible neighbors, using the smaller same-sign one-sided derivative
 to avoid treating depth discontinuities as slopes. Require both neighbors;
@@ -91,7 +94,9 @@ not a frame-time benchmark. Old `Upscaler` and the old C ABI were removed.
 ## Correctness boundary
 
 CPU/WGSL preparation parity covers raw features, 24 frames of flat/sloped
-recurrence, invalid history, resets and HDR. The actual two-frame training graph
+recurrence, invalid history, resets and HDR. A separate uninterrupted 40-frame
+check crosses the 16- and 32-frame diffuse limits and verifies state ages.
+The actual two-frame training graph
 is checked against
 Meganeura's f64 reference for its loss and every parameter gradient, including
 fused/unfused lowerings. A training-and-reload test must reduce loss.

@@ -340,6 +340,48 @@ seed 31, learning rate 0.0001, two-frame unroll and 1,000 updates, evaluating at
 500 and 1,000. Check illumination response and static noise together before
 selecting any final candidate. The learned final audit remains unseen.
 
+### Development selection
+
+The signed follow-up completed 1,000 updates. With the original 32-frame diffuse
+limit it reaches 29.99799 dB, reset PSNR 26.10267 and temporal MSE 0.00036002.
+Reducing the diffuse limit to 16 frames, with the specular limit unchanged at
+eight, improves the response/noise trade-off on development. The full 640-frame
+comparison uses unchanged weights and the signed decoder for both candidates:
+
+| Development candidate | PSNR | Reset PSNR | Temporal MSE | Smooth-crop error ratio |
+|---|---:|---:|---:|---:|
+| Reset-balanced update 3,000, diffuse limit 16 | 30.20729 | 26.01235 | 0.00037738 | 0.348 |
+| Plus 1,000 signed-decoder updates, diffuse limit 16 | 30.16899 | 26.10250 | 0.00036634 | 0.330 |
+
+Both improve all 640 frames over the original published runtime (28.27361 dB).
+The crop ratios now use full-precision radiance with the same reference-inspected
+development rectangles, not PNGs (`dev-full-crops-{signed-,}history16.json`).
+The refined candidate has edge/texture MSE ratios 0.705 / 0.491 and corresponding
+reference-gradient ratios 0.767 / 0.529 versus the original implementation.
+Its lowest frame gain is +0.343 dB. Mean energy ratio is 1.00170. The previously
+failing final lighting frame reaches 29.63875 dB versus 26.72249 originally.
+Brightness lag is reduced, not eliminated; do not call that frame reference-clean.
+
+Select the refined weights with diffuse/specular limits 16/8: the 0.038 dB mean
+PSNR trade-off buys lower smooth-surface error, better cold starts and lower
+temporal/gradient/rejected-history errors. Texture MSE is higher than the other
+candidate but remains less than half the original model's on the development
+texture crop. This is a multi-metric development selection, not highest-PSNR
+selection. Keep the single architecture and make 16/8 its default configuration.
+
+Fixed-geometry development block-change diagnostics also improve on both static
+scenes (ratios 0.607 / 0.576) and both lighting scenes (0.596 / 0.475), with all
+64 frames included (`dev-flicker-signed-history16.json`). These are quantized
+tuning diagnostics, not a substitute for the frozen temporal audit. The new
+40-frame continuous CPU/native test verifies output and exact history-age
+saturation at both diffuse limits, on RADV and LavaPipe with zero validation
+errors (`history-cap-numerics{,-lavapipe}/`). Freeze checkpoint, config and source
+provenance before evaluating the final audit; no audit result informed this choice.
+After adopting the 16-frame default, all five debug GPU tests pass on both
+backends with zero validation errors (`selected-numerics-{radv,lavapipe}/`).
+All 80 regular tests, Clippy and formatting pass on Rust 1.92; the eight Python
+crop/catalog tests also pass.
+
 ## Progress and evidence
 
 - Initial validation reproduction:

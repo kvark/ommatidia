@@ -31,7 +31,7 @@ impl Default for Config {
             scale: 2,
             channels: 16,
             exposure: 1.0,
-            diffuse_frames: 32.0,
+            diffuse_frames: 16.0,
             specular_frames: 8.0,
         }
     }
