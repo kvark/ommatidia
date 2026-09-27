@@ -29,8 +29,12 @@ Checks (full commands and tool/source snapshots in `runs/v4-phase0/`):
   exclude five tool-version-only sidecar changes from the patch.
 - All three changed shader snapshots assemble and pass Vulkan SPIR-V validation.
 - Full `cargo xtask test` initially could not run without `cargo-nextest`;
-  an isolated, SHA-verified binary has been supplied for a rerun. See the ledger
-  for its outcome. No CTS pass or upstream CI pass is claimed.
+  with an isolated SHA-verified binary, 1,915 tests pass, nine fail and 19 are
+  skipped. Eight failures require the absent `dxc`; one OpenGL expected-failure
+  test unexpectedly succeeds. A matched rerun of those families on the
+  unmodified PR head reproduces all nine failures (27 pass). The port does not
+  introduce those failures, but the full suite is **not green**. No CTS pass or
+  upstream CI pass is claimed.
 
 The upstream [contribution policy](https://github.com/gfx-rs/wgpu/blob/731fd87244c891f19c53b77826731fe809a32f9b/CONTRIBUTING.md#pull-requests)
 requires a human contributor to understand and vouch for changes; fully agentic
