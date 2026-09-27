@@ -1,6 +1,6 @@
 # Plan: one end-to-end reconstruction model (config v4)
 
-Status: adopted, 2026-09-27; Phase 0 complete, Phase 1 in progress. Owner: kvark.
+Status: adopted, 2026-09-27; Phases 0–1 complete, Phase 2 next. Owner: kvark.
 Read all of §0–§3 before starting. Open decisions for the owner are in §12.
 
 Implementation started from `origin/main` at `232a278`, after the owner merged
@@ -256,7 +256,7 @@ Goal: know where training time goes, and have the metrics that will decide v4.
   coverage limits (frames 0/31, five of ten sequences) are in `docs/dev-crops.json`.
   Owner approved an early extension: reference-only inspection adds frame 3 to
   the sixteen unchanged rectangles, before the complete protocol evaluations.
-- [ ] **v3 control.**
+- [x] **v3 control.**
   - Build and archive the v3 release runtime (`runs/archive/v3-runtime/`, with a recorded
     build manifest).
   - Evaluate `89e81df0…` on development, causal and `--reset-every 16`, with `--save-linear`.
@@ -266,6 +266,14 @@ Goal: know where training time goes, and have the metrics that will decide v4.
 Done when: the profile table exists, and the development protocol produces cold, early
 and warm PSNR, ꟻLIP, temporal MSE, energy, crop ratios and confidence intervals for the
 v3 control.
+
+Completed 2026-09-27: [measurements and coverage](docs/phase1-results.md),
+[full-precision results and CIs](docs/phase1-results.json). The 200-update profile
+does not trigger R1. Both development protocols cover all 640 frames; 40 crop/frame
+selections include the owner-approved reference-only early extension. The control
+runtime, source and unchanged `89e81df0…` weights are archived. Exact reproduction,
+reference identity, reset strata, intervals and crop coverage passed the recorded
+artifact audit. Confirmation was not evaluated. No v4 training or promotion yet.
 
 ## 6. Phase 2: the v4 model (3 days)
 
