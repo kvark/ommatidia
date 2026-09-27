@@ -608,6 +608,18 @@ Do not extend the budget or consume the confirmation audit unless development
 evidence justifies freezing a new candidate. The single architecture and frozen
 audit/confirmation contracts remain unchanged.
 
+Before changing capacity or training duration, compare cold-start fitting on
+the training scenes with development generalization. A lossless diagnostic
+keeps frame zero of every existing training/development sequence (40 training,
+10 development frames), each reset independently. The frame choice is fixed by
+sequence boundaries, not model errors. Preserve jitter, observations, surfaces
+and targets byte-for-byte; record source hashes and record indices. Compare
+the broad parent and the completed all-cold checkpoint with the same runtime.
+Report case-level RGB and lobe errors, not just the pooled mean. Training targets
+have 1,024 samples and development targets 4,096, so this is a diagnostic gap,
+not an exactly matched reference-noise experiment. These derived records never
+enter training or the locked audits.
+
 ## Progress and evidence
 
 - Initial validation reproduction:
