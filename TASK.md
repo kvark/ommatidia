@@ -6,6 +6,12 @@ Deliver one demonstrably useful denoiser at the current **1-spp 128×128 input �
 256×256 reconstruction** setting: visibly cleaner surfaces and reflections,
 stable in motion, with one architecture and a reproducible checkpoint.
 
+The week's deliverable is an updated README with matched before/after/reference
+images, measured quality numbers, and short motion comparisons, backed by that
+checkpoint and reproducible commands. Publication depends on passing the gates
+below. If they remain unmet, keep the published checkpoint and deliver the
+measured shortfall and a specific diagnosis instead.
+
 Keep the existing recurrent, lobe-separated residual U-Net as the single model
 family. Improve the implementation where diagnosis supports it; do not accumulate
 alternative architectures or historical result galleries in the repository.
@@ -85,12 +91,12 @@ pause scaling training and resolve the bottleneck first.
       scenes, covering static lighting, camera/object/light motion and assets.
       All-cold supervision gave only a small fitting gain and damaged causal
       quality; it was rejected. A matched learning-rate control also failed.
-      The next bounded test checks capacity within the same U-Net, conditional
-      on function-preserving initialization. Explicit FP32, unfused inference
-      passes the full GPU parity probes at the unchanged tolerance, and the
-      adapter-specific correctness/reload checks pass. Keep precision-policy
-      effects separate from training gains in the bounded trial. The 4,000-update
-      width-32 control is running; it is not a selected result. See the protocol.
+      A function-preserving width-32 control also failed to resolve the
+      fitting/recurrence trade-off; retain width 16. Explicit FP32, unfused
+      inference passes the full initialization parity probes at the unchanged
+      tolerance. Adapter-specific correctness/reload and production-resolution
+      directional-gradient checks pass. Precision-policy effects were measured
+      separately from training gains. See the protocol.
 - [x] Run bounded, hypothesis-driven experiments, selecting checkpoints on the
       development set rather than the final audit.
       Selected the reset-balanced model plus the signed-decoder follow-up, with

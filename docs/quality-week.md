@@ -823,14 +823,60 @@ and repeat the fixed fitting probe. Preserve all cold/mature/texture/lighting
 checks; no confirmation evaluation or publication follows from a fitting gain
 alone. Experimental assets remain outside tracked source and result galleries.
 
-The bounded run is now live (`wide-cold-training/`, output `wide-cold-fit/`),
+The bounded run completed (`wide-cold-training/`, output `wide-cold-fit/`),
 using that clean release runtime and the checked 685,056-parameter conversion,
 not either smoke-test checkpoint. Its metadata confirms fresh Adam, seed 31,
 2,560 training / 640 development frames, unroll/reset interval 1, and the fixed
-4,000-update budget. The initial sampled sequence/start/reset triples match the
-width-16 control exactly. No width-32 quality selection, audit, confirmation or
-publication claim has been made; assess the completed development evaluations
-and fixed cold-fitting probe before choosing a follow-up.
+4,000-update budget. All 4,000 sampled sequence/start/reset triples match the
+width-16 control exactly. The last 1,000 updates' mean training loss is 4.5%
+lower, but the completed capacity control is **rejected**:
+
+| Update | Causal dev PSNR | Cold-start PSNR | Middle smooth MSE ratio | Cold smooth MSE ratio |
+|---|---:|---:|---:|---:|
+| 1,000 | 29.76918 | 26.20288 | 0.38359 | 0.95963 |
+| 2,000 | 29.72870 | 26.43858 | 0.35540 | 0.77569 |
+| 3,000 | 29.30267 | 26.41260 | 0.36572 | 0.83518 |
+| 4,000 | 29.38472 | 26.47105 | 0.32724 | 0.82024 |
+
+Final causal PSNR is 0.886 dB below the matched f32 parent; only 20/640 frames
+improve over it. Against the original published implementation, 560/640 improve
+and the worst regression is 1.804 dB (sequence 1, frame 62). The last lighting
+frame scores 26.60589 dB versus the parent's 29.42. Temporal MSE is 0.000364736
+and energy ratio 1.02036, both worse than the parent. Native-resolution cold
+images still show colored outliers and blotches.
+
+The fixed cold fitting probe gives 26.95409 → 27.38040 dB on 40 training
+observations and 26.26739 → 26.47105 on ten development observations. All training
+observations improve, but two development cold starts regress. References and
+fixed guides are byte-identical, and the extracted development predictions
+match causal frame zero exactly. Evidence: `wide-cold-probe-report.json` and
+`dev-widecold*-{middle,cold}.json`. Final checkpoint SHA-256 is
+`3db20d99401b5d251c0b5c3e4fb828b4c2ae56e2f72da1909eb56df1b74e3850`.
+This small fitting gain does not justify the extra capacity or overcome the
+all-cold recurrence regression. Retain width 16; no confirmation predictions or
+new result gallery were generated.
+
+An additional correctness diagnostic checks the scalar training objective at
+the actual 128×128 input extent. Compare GPU backward gradients with forward-only
+GPU finite differences in two directions per parameter tensor, using nonzero
+head weights and fixed inputs. Run widths 16 and 32 on the explicitly selected
+RX 7900 XT. Fixed central steps are 0.02, 0.01 and 0.005 with Richardson
+extrapolation; require step-size convergence within 1% of the directional
+derivative plus 1e-7 and agreement within 2% plus 1e-7. Nonconverged or zero-signal
+probes are failures, not passes. This probes production-size backward kernels,
+not every gradient coordinate, and supplements the independent small f64 oracle.
+It does not change the active experiment or establish a training bottleneck by
+itself. If it exposes a real gradient failure, stop quality interpretation and
+diagnose it before another training run.
+
+All 24 directional probes pass at each width on the selected RX 7900 XT, and
+all 24 width-16 probes pass on LavaPipe, with zero Vulkan-validation errors.
+Largest relative gradient discrepancies are 0.105%, 0.104% and 0.144%,
+respectively (`production-gradient-directions{16,32,-lavapipe}/`). The software
+check takes 43.71 seconds. All 83 regular Rust tests, Rust 1.92 Clippy and
+formatting also pass. These synthetic-input probes find no backward-kernel
+failure; they do not prove correctness for all captured inputs or identify the
+remaining quality bottleneck.
 
 ## Progress and evidence
 

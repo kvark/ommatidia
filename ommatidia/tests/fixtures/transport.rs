@@ -1,7 +1,11 @@
 use ommatidia::transport::{Config, Frame, Ray, Surface, Target};
 
 fn fixture(config: Config, step: usize, seed: u64) -> (Frame, Target) {
-    let low = [8, 8];
+    fixture_at_extent(config, [8, 8], step, seed)
+}
+
+fn fixture_at_extent(config: Config, low: [u32; 2], step: usize, seed: u64) -> (Frame, Target) {
+    assert_eq!(low[0], low[1]);
     let width = (low[0] * config.scale) as usize;
     let n = width * width;
     let jitter = if step.is_multiple_of(2) {
