@@ -25,14 +25,16 @@ fn fixture_at_extent(config: Config, low: [u32; 2], step: usize, seed: u64) -> (
             ..Surface::default()
         };
         s.motion[0] = if foreground { -1.0 } else { 0.0 };
-        s.specular_motion = [-0.5, 0.0, 1.0, 0.0];
+        s.motion[0] -= 0.25;
+        s.motion[1] = 0.5;
+        s.specular_f0 = [0.04, 0.05, 0.06, 0.0];
         s.emission = [0.02, 0.03, 0.01, 0.0];
         let diffuse = 0.3 + 0.6 * x / width as f32 + 0.1 * (step as f32 * 0.2).sin();
         let spec = 0.8
             * (-((x - 11.0 - step as f32 * 0.5).powi(2) + (y - 8.0).powi(2)) / 8.0).exp();
         (s, [diffuse, 0.9 * diffuse, 1.1 * diffuse], [spec, 0.8 * spec, 0.5 * spec])
     };
-    let mut frame = Frame { low, jitter, rays: Vec::new(), surfaces: Vec::new() };
+    let mut frame = Frame { low, jitter, exposure: 1.0, rays: Vec::new(), surfaces: Vec::new() };
     let mut target = Target { lobes: vec![0.0; 6 * n], rgb: vec![0.0; 3 * n] };
     for y in 0..width {
         for x in 0..width {
@@ -58,7 +60,6 @@ fn fixture_at_extent(config: Config, low: [u32; 2], step: usize, seed: u64) -> (
                 diffuse: [d[0] * noise, d[1] * noise, d[2] * noise, 0.0],
                 specular: [sp[0] * noise2, sp[1] * noise2, sp[2] * noise2, 0.0],
                 normal_depth: s.normal_depth,
-                albedo_roughness: s.albedo_roughness,
             });
         }
     }

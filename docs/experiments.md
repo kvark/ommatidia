@@ -8,6 +8,33 @@ Only development selects models. Confirmation is reserved for Phase 6.
 |---|---|---|---|
 | 1, control | `v4-phase1/v3-control-causal-complete` | Frozen `89e81df0…`, 640 development frames; 40 predeclared crop selections | 30.270709 dB; 10 resets, 630 temporal pairs. All PNGs/float outputs reproduce the first run exactly. |
 | 1, control | `v4-phase1/v3-control-reset16-complete` | Same control/data; reset every 16 frames | 29.607780 dB; 40 resets, 600 temporal pairs. All PNGs/float outputs reproduce the first run exactly. |
+| 2 | `v4-phase2/initial-check` | Workspace/all-target compile after v4 replacement | Pass; initial library-only compile also passed before recording. |
+| 2 | `v4-phase2/initial-unit` | First v4 unit run | Two fixture failures: missing U32 feeds and Blade-assigned shader bindings. Fixed without changing the model. |
+| 2 | `v4-phase2/unit` | Workspace unit suite | 91 pass; 132 stem channels, 174,576 parameters, 1.62949 GFLOP/frame. |
+| 2 | `v4-phase2/radv-recurrence` | Independent CPU/f64 vs GPU, 24 recurrent frames | Pass including reset/HDR and packed warp maps; zero validation errors. |
+| 2 | `v4-phase2/clippy` | Warnings denied | One iterator-style error; fixed. |
+| 2 | `v4-phase2/clippy-fixed` | Workspace/all targets | Pass. |
+| 2 | `v4-phase2/radv-gpu` | Seven debug GPU gates | Four inference gates pass; three training gates expose inference-only Clamp in pinned Meganeura. |
+| 2 | `v4-phase2/lavapipe-gpu` | Same seven debug GPU gates | Same Clamp limitation; zero validation errors. |
+| 2 | `v4-phase2/radv-gpu-differentiable-clamp` | ReLU clamp, gradient and reload gates | Five pass; f64 helper's error bounds overflow, and small production probes hit f32 loss resolution. No training run started. |
+| 2 | `v4-phase2/lavapipe-gpu-differentiable-clamp` | Same checks on software Vulkan | Same two failures; learning/reload passes, zero validation errors. |
+| 2 | `v4-phase2/radv-f64-finite-bounds` | Exact piecewise clamp; fixed finite f64 tolerances | Every parameter gradient and all carried outputs pass, fused/unfused; finite differences pass; zero validation errors. |
+| 2 | `v4-phase2/radv-production-resolved-probes` | Production-size probes with loss-ULP-aware step sizes | All tensors pass two probes; convergence/agreement tolerances unchanged. |
+| 2 | `v4-phase2/lavapipe-finite-bounds` | Full GPU suite with finite tolerances | Seven pass, including every parameter gradient and carried output; zero validation errors. |
+| 2 | `v4-phase2/radv-final-gpu` | Full GPU suite, RX 7900 XT | Seven pass; zero validation errors. |
+| 2 | `v4-phase2/build-debug` | Debug workspace | Pass. |
+| 2 | `v4-phase2/build-release` | Release workspace | Pass. |
+| 2 | `v4-phase2/verified-reload-build` | Debug workspace with final live/loaded parameter check | Pass. |
+| 2 | `v4-phase2/verified-reload-release-build` | Release workspace with final live/loaded parameter check | Pass; executable used by the 2,000-update diagnostic. |
+| 2 | `v4-phase2/final-unit` | Workspace unit suite including clamp derivative/extreme logits | 92 pass. |
+| 2 | `v4-phase2/final-clippy` | Workspace/all targets, warnings denied | Pass. |
+| 2 | `v4-phase2/capture-train` | Fresh two-frame 16→32 debug LavaPipe capture, scene 7 | Pass; F0 and split radiance present, zero validation errors. |
+| 2 | `v4-phase2/capture-dev` | Independent capture, scene 700 | Pass; zero validation errors. |
+| 2 | `v4-phase2/lavapipe-evaluation-smoke` | Fresh captures: train, periodic/final metrics, reload, saved control and cuts | Pass; exact reload, zero self-control deltas, mismatch rejection; zero validation errors. |
+| 2 | `v4-phase2/python-checks` | Catalog/crop/bootstrap/render tests and gallery verifier | 21 pass; historical gallery, crop selection and confirmation hashes unchanged. |
+| 2 | `v4-phase2/flip-reference-tests` | Official FLIP fixtures | Four pass; mean within the fixed 1e-4 tolerance. |
+| 2 | `v4-phase2/flip-without-baseline` | v4 learned-only evaluation with saved self-control | Pass; learned/control FLIP identical, no baseline files required. |
+| 2 | `v4-phase2/single-scene-2000` | From scratch, default width/latent/levels, four-frame BPTT, batch one | Running on the single-scene diagnostic; not a selection or confirmation run. |
 | 0, historical | `quality-week-2026-09-26/wide-cold-training` | 4,000 updates, width-32 v3 | Complete, rejected: development 29.385 dB vs parent 30.271; cold smooth ratio 0.820 vs original. |
 | 0, historical | `quality-week-2026-09-26/balanced-exposure-training` | 16,000 planned; 9,277 recorded | Interrupted, not resumed. Last complete eval at 8,000: 30.061 dB, cold/middle smooth ratios 0.941/0.468 vs original; not promoted. |
 | 0 | `v4-phase0/fmt` | Rust 1.92 formatting | Pass. |

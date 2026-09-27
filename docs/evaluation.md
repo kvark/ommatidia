@@ -20,7 +20,7 @@ scores, and include resets, rejected history and longer-than-training rollouts.
 cargo build --release --workspace
 cargo run --release -p ommatidia-train --bin transport -- \
   --data data/train.omd --eval-data data/dev.omd --out runs/model \
-  --steps 4000 --channels 16 --unroll 2 --lr 0.0003
+  --steps 4000 --channels 16 --unroll 4 --lr 0.0003
 cargo run --release -p ommatidia-train --bin transport -- \
   --checkpoint runs/model/model.safetensors --eval-only \
   --eval-data data/audit.omd --out runs/audit
@@ -41,14 +41,16 @@ separate evaluation-only diagnostic (equivalent to `--reset-every 1`). Test accu
 starts before retaining weights trained without warm history.
 Prefer training at the target evaluation resolution: identical parameter shapes
 do not imply identical pixel-footprint or history statistics.
-`--checkpoint` during training is a weights-only warm start, **not** an Adam
-resume. The serialized config, training provenance and intermediate checkpoints
+Training starts from scratch; `--checkpoint` is currently evaluation-only.
+Phase 3 will add optimizer/cursor resume, never weights-only warm starts.
+The serialized config, training provenance and intermediate checkpoints
 are saved with the run. Existing final checkpoints are not overwritten.
 
 ## What the numbers mean
 
-The `baseline` is the same multiscale/recurrent guide with a zero residual head,
-running its **own** history. Both methods receive identical observations.
+v4 evaluates one live model (`learned`). The v3 guide and zero-head baseline
+have been removed. Compare against archived v3 float outputs via `--control-run`;
+historical reports retain their original `baseline` fields for reproduction.
 By default frames are evaluated causally, with a reset at each sequence boundary.
 The standard development protocol also runs `--eval-only --reset-every 16`,
 simulating periodic cuts within each sequence. `frames.csv` records sequence,
@@ -75,8 +77,9 @@ comparison alone does not establish an improvement over the previous model.
 - Temporal MSE compares motion-compensated output changes with reference changes,
   rejecting mismatched primary surfaces. It is not a perceptual video metric.
 - Reset PSNR isolates cold starts. Rejected-history MSE is pixel-weighted over
-  non-reset pixels with no accepted reprojection in either lobe; empty regions
-  are null, never perfect zeros. Reactivity suppression is not disocclusion.
+  non-reset pixels with no in-frame geometric warp tap; empty regions are null,
+  never perfect zeros. This v4 coverage mask is not a learned rejection or
+  disocclusion measure and differs from v3's geometry/material-tested mask.
 
 PNGs use the same compression followed by sRGB; no per-image exposure or
 postprocessing. Candidate evaluation saves every frame unless `--no-images` is
@@ -87,10 +90,10 @@ README pictures must be copied from those
 outputs with hashes and checkpoint/data provenance, never generated or retouched.
 
 Each evaluation also writes `diagnostics.json`: per-frame diffuse illumination,
-material-weighted diffuse radiance and specular radiance errors, mean history
-ages, and the error from composing reference lobes with observed material data.
+material-weighted diffuse radiance and specular radiance errors, and the error
+from composing reference lobes with observed material data. v4 has no history ages.
 Use `--save-lobes` for matched component PNGs. `--eval-only --reset-history`
-resets both models before every frame; all temporal pairs are excluded. It is a
+resets the model before every frame; all temporal pairs are excluded. It is a
 spatial diagnostic, not the causal production result.
 
 For frozen comparisons, save unquantized images with `--save-linear` and first

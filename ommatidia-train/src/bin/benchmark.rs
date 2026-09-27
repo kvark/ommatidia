@@ -49,7 +49,7 @@ fn main() -> Result<()> {
     let checkpoint = checkpoint.ok_or("--checkpoint required")?;
     let data = data.ok_or("--data required")?;
     let out = out.ok_or("--out required")?;
-    let config: Config = ron::from_str(&std::fs::read_to_string(
+    let config = Config::parse(&std::fs::read_to_string(
         checkpoint
             .parent()
             .ok_or("checkpoint has no parent")?

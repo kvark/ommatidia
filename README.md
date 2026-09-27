@@ -6,9 +6,10 @@ Neural reconstruction of sparse path-traced frames, in Rust on
 [Meganeura](https://github.com/kvark/meganeura) and
 [Blade](https://github.com/kvark/blade).
 
-One model: a **recurrent, lobe-separated radiance-residual U-Net**. It reconstructs
+One model: a **recurrent, direct-radiance U-Net (v4)**. It reconstructs
 diffuse illumination and specular radiance, then applies observed material albedo
-and emission. At 2x scale it has 188,160 parameters. Inputs include 1-spp
+and emission, learning history blending and a latent recurrent state. At 2x scale
+it has 174,576 parameters and 1.63 GFLOP/frame at 128×128 → 256×256. Inputs include 1-spp
 low-resolution radiance, motion/jitter and output-resolution primary surfaces.
 
 ## Measured results
@@ -16,8 +17,9 @@ low-resolution radiance, motion/jitter and output-resolution primary surfaces.
 These retained pictures and numbers use the **pre-fix v3 decoder**, not today's
 runtime or a trained v4 model. The checkpoint is unchanged; see the
 [runtime archive and reproduction notes](docs/archive/README.md).
-The [adopted v4 plan](PLAN.md) replaces this model only after correctness and
-quality evaluation; implementation progress is in [the run ledger](docs/experiments.md).
+The [adopted v4 plan](PLAN.md) replaces the runtime; these archived results will
+be replaced only after v4 quality evaluation. Implementation progress and
+outstanding checks are in [the run ledger](docs/experiments.md).
 
 Fresh-scene audit: **256 frames**, 1-spp 128×128 input → 256×256 output,
 16-frame causal sequences, 4,096-spp references. The same model was fine-tuned
@@ -65,7 +67,7 @@ cargo +1.92.0 test --workspace --locked
 cargo build --release --workspace
 cargo run --release -p ommatidia-train --bin transport -- \
   --data data/train.omd --eval-data data/dev.omd --out runs/model \
-  --steps 4000 --channels 16 --unroll 2 --lr 0.0003
+  --steps 4000 --channels 16 --unroll 4 --lr 0.0003
 ```
 
 [Architecture and runtime](docs/design.md) ·
@@ -82,10 +84,12 @@ The old diffusion, kernel-selector, field/relighting, C ABI, trainers and result
 galleries were removed. They remain at tag `archive/experiments-2026-09-25`
 (`e0922c6`). There are no hidden
 architecture switches or compatibility interpretations of their weights.
-The retained runtime is `ommatidia::transport::native::Native`, config version 3.
+The retained runtime is `ommatidia::transport::native::Native`, config version 4.
+It rejects v3 weights; use the archived executable to reproduce the gallery.
 
-Numerical CPU/GPU, gradient, recurrence and reload checks pass on the tested
-adapters. With the pinned compiler correction, debug GPU checks pass on RADV and
-LavaPipe with zero validation errors; debug capture/train/reload also pass.
-This fixes the reproduced Workgroup-array layout failure, not all possible
-compiler bugs. [Closed quality-sprint evidence](docs/archive/quality-week.md).
+v4 passes 92 regular tests and seven GPU gates on both RADV and LavaPipe with
+zero validation errors, including recurrent HDR/reset parity, f64 gradients,
+production-size directional gradients and exact reload. Fresh LavaPipe captures
+also pass the trainer/evaluator integration smoke. [Recorded runs](docs/experiments.md).
+The pinned compiler correction addresses a reproduced Workgroup-array layout
+failure, not all possible compiler bugs.

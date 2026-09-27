@@ -1,4 +1,4 @@
-//! Multiscale, lobe-separated reconstruction. Linear state; bounded features.
+//! One direct-radiance recurrent model. Linear lobes and learned latent state.
 //!
 //! `Frame` contains observations only. `Target` is a separate training type.
 //! No ground-truth geometry, light or radiance can enter through the target API.
@@ -9,9 +9,10 @@ pub mod native;
 use crate::dataset::{Layout, Plane, Sample};
 use serde::{Deserialize, Serialize};
 
-pub const SCALES: usize = 5;
-pub const CANDIDATES: usize = SCALES + 1;
-pub const FEATURES: usize = 52;
+/// LR samples (6), LR normal/depth (4), and projection jitter (2).
+pub const LR_FEATURES: usize = 12;
+/// HR normal/depth (4), albedo/roughness (4), F0 (3), motion (2), sample offsets (2).
+pub const SURFACE_FEATURES: usize = 15;
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -19,38 +20,66 @@ pub struct Config {
     pub version: u32,
     pub scale: u32,
     pub channels: u32,
-    /// Fixed feature/loss exposure. State and output remain scene-linear.
-    pub exposure: f32,
-    pub diffuse_frames: f32,
-    pub specular_frames: f32,
+    pub latent_channels: u32,
+    pub levels: u32,
 }
 impl Default for Config {
     fn default() -> Self {
         Self {
-            version: 3,
+            version: 4,
             scale: 2,
             channels: 16,
-            exposure: 1.0,
-            diffuse_frames: 16.0,
-            specular_frames: 8.0,
+            latent_channels: 4,
+            levels: 3,
         }
     }
 }
 impl Config {
     pub fn validate(self, low: [u32; 2]) -> Result<(), String> {
-        if self.version != 3
+        if self.version != 4 {
+            return Err("config v4 is required; v3 guide/residual weights are archived and cannot be loaded by this runtime".into());
+        }
+        if !(1..=5).contains(&self.levels)
             || !(1..=4).contains(&self.scale)
             || self.channels == 0
-            || !self.exposure.is_finite()
-            || self.exposure <= 0.0
-            || [self.diffuse_frames, self.specular_frames]
-                .iter()
-                .any(|v| !v.is_finite() || *v < 1.0)
-            || low.iter().any(|v| *v < 4 || v % 4 != 0)
+            || self.latent_channels == 0
         {
-            return Err("transport requires residual model version 3, positive exposure/history, scale 1..4, and LR dimensions divisible by four".into());
+            return Err(
+                "v4 requires scale 1..4, levels 1..5, and nonzero width and latent channels".into(),
+            );
+        }
+        let divisor = (1 << (self.levels - 1)).max(4);
+        if low.iter().any(|v| *v < divisor || v % divisor != 0) {
+            return Err(format!(
+                "LR dimensions must be divisible by {divisor} (pyramid and loss grid)"
+            ));
         }
         Ok(())
+    }
+    /// Packed recurrent tensor: six lobes, C latent, four normal/depth, three albedo.
+    pub fn state_channels(self) -> usize {
+        13 + self.latent_channels as usize
+    }
+    pub fn observation_channels(self) -> usize {
+        LR_FEATURES + SURFACE_FEATURES * self.scale.pow(2) as usize
+    }
+    pub fn input_channels(self) -> usize {
+        self.observation_channels()
+            + (11 + self.latent_channels as usize) * self.scale.pow(2) as usize
+    }
+    pub fn parse(text: &str) -> Result<Self, String> {
+        // Read only the version first, so old fields do not obscure the migration error.
+        #[derive(Deserialize)]
+        struct Version {
+            version: u32,
+        }
+        let version: Version = ron::from_str(text).map_err(|e| e.to_string())?;
+        if version.version != 4 {
+            return Err(
+                "config v4 is required; v3 guide/residual checkpoints are not compatible".into(),
+            );
+        }
+        ron::from_str(text).map_err(|e| e.to_string())
     }
     pub fn index(self, low: [u32; 2], channel: usize, x: usize, y: usize) -> usize {
         let s = self.scale as usize;
@@ -65,33 +94,29 @@ pub struct Ray {
     pub diffuse: [f32; 4],
     pub specular: [f32; 4],
     pub normal_depth: [f32; 4],
-    pub albedo_roughness: [f32; 4],
 }
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct Surface {
     pub normal_depth: [f32; 4],
     pub albedo_roughness: [f32; 4],
-    /// Output-pixel motion, expected previous-view depth (0 = unavailable), reactive mask.
+    /// Output-pixel motion xy; zw are padding, not rejection or reactive controls.
     pub motion: [f32; 4],
-    /// Optional reflected-surface motion: xy and availability in z.
-    pub specular_motion: [f32; 4],
+    pub specular_f0: [f32; 4],
     /// Exact directly visible emission: a primary-surface material property.
     pub emission: [f32; 4],
 }
-#[repr(C)]
-#[derive(Clone, Copy, Debug, Default, bytemuck::Pod, bytemuck::Zeroable)]
+#[derive(Clone, Debug, Default)]
 pub struct State {
-    pub diffuse: [f32; 4], // rgb, age
-    pub specular: [f32; 4],
-    pub moments: [f32; 4], // diffuse mean, second moment, specular mean, second moment
-    pub normal_depth: [f32; 4],
-    pub albedo_roughness: [f32; 4],
+    /// Config::state_channels() subpixel-packed, channel-major planes.
+    pub values: Vec<f32>,
 }
 #[derive(Clone)]
 pub struct Frame {
     pub low: [u32; 2],
     pub jitter: [f32; 2],
+    /// Positive host-provided normalization; never changes scene-linear output units.
+    pub exposure: f32,
     pub rays: Vec<Ray>,
     pub surfaces: Vec<Surface>,
 }
@@ -113,8 +138,6 @@ impl Frame {
             Plane::SpecularRadiance,
             Plane::Depth,
             Plane::Normal,
-            Plane::DiffuseAlbedo,
-            Plane::Roughness,
         ] {
             if !layout.lr_planes.contains(p) {
                 return Err(format!("missing observed LR {p:?}"));
@@ -126,6 +149,7 @@ impl Frame {
             Plane::DiffuseAlbedo,
             Plane::Roughness,
             Plane::EmissiveRadiance,
+            Plane::SpecularF0,
         ] {
             if !layout.hr_planes.contains(p) {
                 return Err(format!("missing observed HR {p:?}"));
@@ -148,10 +172,8 @@ impl Frame {
                 r.diffuse[c] = lr(Plane::DiffuseIllumination, c, i);
                 r.specular[c] = lr(Plane::SpecularRadiance, c, i);
                 r.normal_depth[c] = lr(Plane::Normal, c, i);
-                r.albedo_roughness[c] = lr(Plane::DiffuseAlbedo, c, i);
             }
             r.normal_depth[3] = lr(Plane::Depth, 0, i);
-            r.albedo_roughness[3] = lr(Plane::Roughness, 0, i);
             rays.push(r);
         }
         let mut surfaces = Vec::with_capacity(layout.hr_texels());
@@ -162,6 +184,7 @@ impl Frame {
                 s.normal_depth[c] = hr(Plane::Normal, c, i);
                 s.albedo_roughness[c] = hr(Plane::DiffuseAlbedo, c, i);
                 s.emission[c] = hr(Plane::EmissiveRadiance, c, i);
+                s.specular_f0[c] = hr(Plane::SpecularF0, c, i);
             }
             s.normal_depth[3] = hr(Plane::Depth, 0, i);
             s.albedo_roughness[3] = hr(Plane::Roughness, 0, i);
@@ -181,6 +204,7 @@ impl Frame {
             rays,
             surfaces,
             jitter: [lr(Plane::Jitter, 0, 0), lr(Plane::Jitter, 1, 0)],
+            exposure: 1.0,
         };
         result.validate(config)?;
         Ok(result)
@@ -189,6 +213,8 @@ impl Frame {
         config.validate(self.low)?;
         let n = (self.low[0] * self.low[1]) as usize;
         if self.rays.len() != n
+            || !self.exposure.is_finite()
+            || self.exposure <= 0.0
             || self.surfaces.len() != n * config.scale.pow(2) as usize
             || !self.jitter.iter().all(|v| v.is_finite())
             || bytemuck::cast_slice::<Ray, f32>(&self.rays)
@@ -199,6 +225,19 @@ impl Frame {
                 .any(|v| !v.is_finite())
         {
             return Err("invalid observation dimensions or non-finite input".into());
+        }
+        if self.rays.iter().any(|r| {
+            r.diffuse[..3]
+                .iter()
+                .chain(&r.specular[..3])
+                .any(|v| *v < 0.0)
+        }) {
+            return Err("observed radiance must be nonnegative".into());
+        }
+        if self.rays.iter().any(|r| r.normal_depth[3] < 0.0)
+            || self.surfaces.iter().any(|s| s.normal_depth[3] < 0.0)
+        {
+            return Err("observed depth must be nonnegative".into());
         }
         Ok(())
     }

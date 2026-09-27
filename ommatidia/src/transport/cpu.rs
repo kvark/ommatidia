@@ -1,552 +1,227 @@
-//! Scalar reference for native preparation, state update and supervision.
+//! Scalar observation packing, geometric warp and physical composition oracle.
 use super::*;
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct Prepared {
     pub features: Vec<f32>,
-    pub candidates: Vec<f32>, // scale-major, then six lobe/RGB planes
     pub history: Vec<f32>,
-    pub prior: Vec<f32>, // candidate-major, then two lobe planes
     pub validity: Vec<f32>,
-    pub moments: Vec<[f32; 4]>,
-    pub ages: Vec<[f32; 2]>,
-    /// Four accepted bilinear maps. Reused by differentiable short unrolls.
+    pub metadata: Vec<f32>,
+    pub exposure: f32,
     pub indices: [Vec<u32>; 4],
     pub coefficients: [Vec<f32>; 4],
 }
-pub fn luminance(v: [f32; 3]) -> f32 {
-    0.2126 * v[0] + 0.7152 * v[1] + 0.0722 * v[2]
-}
-pub fn encode(v: f32, exposure: f32) -> f32 {
-    let v = v.max(0.0) * exposure;
+
+pub fn encode(value: f32, exposure: f32) -> f32 {
+    let v = value * exposure;
     v / (1.0 + v)
 }
-fn normal_similarity(a: [f32; 4], b: [f32; 4]) -> f32 {
-    let dot = a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
-    let aa = a[0] * a[0] + a[1] * a[1] + a[2] * a[2];
-    let bb = b[0] * b[0] + b[1] * b[1] + b[2] * b[2];
-    (dot / (aa * bb).max(1e-12).sqrt()).clamp(0.0, 1.0)
-}
-pub fn geometry(a: [f32; 4], b: [f32; 4]) -> f32 {
-    if a[3] >= 60000.0 || b[3] >= 60000.0 {
-        return if a[3] >= 60000.0 && b[3] >= 60000.0 {
-            1.0
-        } else {
-            0.0
-        };
-    }
-    let d = (a[3] - b[3]).abs() / (0.01 + 0.02 * a[3].abs());
-    normal_similarity(a, b).powi(16) * (-d).exp()
-}
 
-fn inverse_depth_gradient(frame: &Frame, width: usize, x: usize, y: usize) -> [f32; 2] {
-    let a = frame.surfaces[y * width + x].normal_depth;
-    if a[3] <= 0.0 || a[3] >= 60000.0 {
-        return [0.0; 2];
-    }
-    let mut gradient = [0.0; 2];
-    for (axis, size) in [width, frame.surfaces.len() / width]
-        .into_iter()
-        .enumerate()
-    {
-        let coordinate = [x, y][axis];
-        let mut slopes = [0.0; 2];
-        let mut valid = [false; 2];
-        for (side, sign) in [-1isize, 1].into_iter().enumerate() {
-            let q = coordinate as isize + sign;
-            if q < 0 || q >= size as isize {
-                continue;
-            }
-            let mut p = [x, y];
-            p[axis] = q as usize;
-            let b = frame.surfaces[p[1] * width + p[0]].normal_depth;
-            if b[3] > 0.0 && b[3] < 60000.0 && normal_similarity(a, b) > 0.95 {
-                slopes[side] = sign as f32 * (b[3].recip() - a[3].recip());
-                valid[side] = true;
-            }
-        }
-        // Minmod avoids interpreting a foreground/background jump as a slope.
-        gradient[axis] = match valid {
-            [true, true] if slopes[0] * slopes[1] > 0.0 => {
-                if slopes[0].abs() < slopes[1].abs() {
-                    slopes[0]
-                } else {
-                    slopes[1]
-                }
-            }
-            _ => 0.0,
-        };
-    }
-    gradient
-}
-
-fn spatial_geometry(a: [f32; 4], b: [f32; 4], gradient: [f32; 2], delta: [f32; 2]) -> f32 {
-    if a[3] <= 0.0 || b[3] <= 0.0 || a[3] >= 60000.0 || b[3] >= 60000.0 {
-        return geometry(a, b);
-    }
-    let inverse = a[3].recip();
-    let expected = inverse + gradient[0] * delta[0] + gradient[1] * delta[1];
-    let d = (expected - b[3].recip()).abs() / (0.02 * inverse + 0.01 * inverse * inverse);
-    normal_similarity(a, b).powi(16) * (-d).exp()
-}
-pub fn matches(s: &Surface, p: &State) -> bool {
-    let mut expected = s.normal_depth;
-    if s.motion[2] > 0.0 {
-        expected[3] = s.motion[2];
-    }
-    geometry(expected, p.normal_depth) > 0.1
-        && (0..3)
-            .map(|c| (s.albedo_roughness[c] - p.albedo_roughness[c]).powi(2))
-            .sum::<f32>()
-            < 0.04
-}
-
-fn history_taps(
-    surface: &Surface,
-    previous: &[State],
+/// Motion is current-to-previous in HR pixels. No appearance-based rejection.
+pub fn taps(
+    motion: [f32; 2],
     extent: [usize; 2],
     pixel: [usize; 2],
-    lobe: usize,
+    ready: bool,
 ) -> ([usize; 4], [f32; 4]) {
-    let motion = if lobe == 1 && surface.specular_motion[2] > 0.5 {
-        surface.specular_motion
-    } else {
-        surface.motion
-    };
-    let q = [pixel[0] as f32 + motion[0], pixel[1] as f32 + motion[1]];
     let mut ids = [0; 4];
     let mut weights = [0.0; 4];
-    if !previous.is_empty()
-        && q[0] >= 0.0
-        && q[1] >= 0.0
-        && q[0] <= (extent[0] - 1) as f32
-        && q[1] <= (extent[1] - 1) as f32
-    {
-        let tx = q[0] - q[0].floor();
-        let ty = q[1] - q[1].floor();
-        for k in 0..4 {
-            let sx = (q[0].floor() as usize + k % 2).min(extent[0] - 1);
-            let sy = (q[1].floor() as usize + k / 2).min(extent[1] - 1);
-            let old = previous[sy * extent[0] + sx];
-            let h = if lobe == 0 { old.diffuse } else { old.specular };
-            if h[3] > 0.0 && matches(surface, &old) {
-                ids[k] = sy * extent[0] + sx;
-                weights[k] =
-                    if k % 2 == 0 { 1.0 - tx } else { tx } * if k / 2 == 0 { 1.0 - ty } else { ty };
-            }
+    let q = [pixel[0] as f32 + motion[0], pixel[1] as f32 + motion[1]];
+    if !ready || (0..2).any(|c| !q[c].is_finite() || q[c] <= -1.0 || q[c] >= extent[c] as f32) {
+        return (ids, weights);
+    }
+    let base = [q[0].floor() as i32, q[1].floor() as i32];
+    let f = [q[0] - base[0] as f32, q[1] - base[1] as f32];
+    for k in 0..4 {
+        let dx = k % 2;
+        let dy = k / 2;
+        let x = base[0] + dx as i32;
+        let y = base[1] + dy as i32;
+        if x >= 0 && y >= 0 && x < extent[0] as i32 && y < extent[1] as i32 {
+            ids[k] = y as usize * extent[0] + x as usize;
+            weights[k] = (if dx == 0 { 1.0 - f[0] } else { f[0] })
+                * (if dy == 0 { 1.0 - f[1] } else { f[1] });
+        }
+    }
+    let sum: f32 = weights.iter().sum();
+    if sum > 0.0 {
+        for w in &mut weights {
+            *w /= sum;
         }
     }
     (ids, weights)
 }
 
-pub(crate) fn history_maps(
-    frame: &Frame,
-    previous: &[State],
-    config: Config,
-) -> ([Vec<u32>; 4], [Vec<f32>; 4]) {
+pub fn prepare(frame: &Frame, previous: &State, config: Config) -> Prepared {
+    frame.validate(config).unwrap();
+    let n = frame.surfaces.len();
+    let lr = frame.rays.len();
     let width = (frame.low[0] * config.scale) as usize;
     let height = (frame.low[1] * config.scale) as usize;
-    let n = width * height;
-    assert!(previous.is_empty() || previous.len() == n);
-    let mut indices = std::array::from_fn(|_| vec![0; 6 * n]);
-    let mut coefficients = std::array::from_fn(|_| vec![0.0; 6 * n]);
-    for y in 0..height {
-        for x in 0..width {
-            for lobe in 0..2 {
-                let (ids, weights) = history_taps(
-                    &frame.surfaces[y * width + x],
-                    previous,
-                    [width, height],
-                    [x, y],
-                    lobe,
-                );
-                let coverage = weights.iter().sum::<f32>().max(1e-6);
-                for c in 0..3 {
-                    let j = config.index(frame.low, lobe * 3 + c, x, y);
-                    for k in 0..4 {
-                        indices[k][j] =
-                            config.index(frame.low, lobe * 3 + c, ids[k] % width, ids[k] / width)
-                                as u32;
-                        coefficients[k][j] = weights[k] / coverage;
-                    }
-                }
-            }
-        }
-    }
-    (indices, coefficients)
-}
-
-pub fn prepare(frame: &Frame, previous: &[State], config: Config) -> Prepared {
-    frame.validate(config).expect("invalid transport frame");
-    let low = frame.low;
-    let width = (low[0] * config.scale) as usize;
-    let height = (low[1] * config.scale) as usize;
-    let n = width * height;
-    assert!(previous.is_empty() || previous.len() == n);
-    let index = |c, x, y| config.index(low, c, x, y);
-    let gradients: Vec<_> = (0..n)
-        .map(|i| inverse_depth_gradient(frame, width, i % width, i / width))
-        .collect();
+    let count = config.state_channels() * n;
+    let ready = !previous.values.is_empty();
+    assert!(!ready || previous.values.len() == count);
     let mut p = Prepared {
-        features: vec![0.0; FEATURES * n],
-        candidates: vec![0.0; SCALES * 6 * n],
-        history: vec![0.0; 6 * n],
-        prior: vec![0.0; CANDIDATES * 2 * n],
-        validity: vec![0.0; 2 * n],
-        moments: vec![[0.0; 4]; n],
-        ages: vec![[1.0; 2]; n],
-        indices: std::array::from_fn(|_| vec![0; 6 * n]),
-        coefficients: std::array::from_fn(|_| vec![0.0; 6 * n]),
+        features: vec![0.0; config.observation_channels() * lr],
+        history: if ready {
+            previous.values.clone()
+        } else {
+            vec![0.0; count]
+        },
+        validity: vec![0.0; n],
+        metadata: vec![0.0; 7 * n],
+        exposure: frame.exposure,
+        indices: std::array::from_fn(|_| vec![0; count]),
+        coefficients: std::array::from_fn(|_| vec![0.0; count]),
     };
-    // Geometry-guided reconstruction of the exact jittered low-resolution taps.
-    for y in 0..height {
-        for x in 0..width {
-            let s = frame.surfaces[y * width + x];
-            let qx = (x as f32 + 0.5) / config.scale as f32 - 0.5 - frame.jitter[0];
-            let qy = (y as f32 + 0.5) / config.scale as f32 - 0.5 - frame.jitter[1];
-            let mut sum = [0.0; 6];
-            let mut total = 0.0;
-            for dy in -1..=1 {
-                for dx in -1..=1 {
-                    let sx = ((qx + 0.5).floor() as i32 + dx).clamp(0, low[0] as i32 - 1) as usize;
-                    let sy = ((qy + 0.5).floor() as i32 + dy).clamp(0, low[1] as i32 - 1) as usize;
-                    let r = frame.rays[sy * low[0] as usize + sx];
-                    let distance = (sx as f32 - qx).powi(2) + (sy as f32 - qy).powi(2);
-                    let delta = [
-                        (sx as f32 - qx) * config.scale as f32,
-                        (sy as f32 - qy) * config.scale as f32,
-                    ];
-                    let w = spatial_geometry(
-                        s.normal_depth,
-                        r.normal_depth,
-                        gradients[y * width + x],
-                        delta,
-                    ) * (-2.0 * distance).exp();
-                    for c in 0..3 {
-                        sum[c] += w * r.diffuse[c];
-                        sum[3 + c] += w * r.specular[c];
-                    }
-                    total += w;
-                }
-            }
-            if total <= 1e-12 {
-                // Missing support is explicit in the design; nearest finite ray is a reset fallback.
-                let sx = ((qx + 0.5).floor() as i32).clamp(0, low[0] as i32 - 1) as usize;
-                let sy = ((qy + 0.5).floor() as i32).clamp(0, low[1] as i32 - 1) as usize;
-                let r = frame.rays[sy * low[0] as usize + sx];
-                sum[..3].copy_from_slice(&r.diffuse[..3]);
-                sum[3..].copy_from_slice(&r.specular[..3]);
-                total = 1.0;
-            }
-            for (c, v) in sum.into_iter().enumerate() {
-                p.candidates[index(c, x, y)] = v.max(0.0) / total;
-            }
+    for (i, ray) in frame.rays.iter().enumerate() {
+        for c in 0..3 {
+            p.features[c * lr + i] = encode(ray.diffuse[c], frame.exposure);
+            p.features[(c + 3) * lr + i] = encode(ray.specular[c], frame.exposure);
+            p.features[(c + 6) * lr + i] = ray.normal_depth[c];
         }
+        p.features[9 * lr + i] = encode(ray.normal_depth[3], 1.0);
+        p.features[10 * lr + i] = frame.jitter[0];
+        p.features[11 * lr + i] = frame.jitter[1];
     }
-    // Fixed multiscale support is separate from the predictor's receptive field.
-    for level in 1..SCALES {
-        let step = 1i32 << (level - 1);
-        for y in 0..height {
-            for x in 0..width {
-                let s = frame.surfaces[y * width + x];
-                for lobe in 0..2 {
-                    let mut sum = [0.0; 3];
-                    let mut total = 0.0;
-                    for dy in -1..=1 {
-                        for dx in -1..=1 {
-                            let sx = (x as i32 + dx * step).clamp(0, width as i32 - 1) as usize;
-                            let sy = (y as i32 + dy * step).clamp(0, height as i32 - 1) as usize;
-                            let t = frame.surfaces[sy * width + sx];
-                            let mut w = spatial_geometry(
-                                s.normal_depth,
-                                t.normal_depth,
-                                gradients[y * width + x],
-                                [sx as f32 - x as f32, sy as f32 - y as f32],
-                            );
-                            if lobe == 1 {
-                                w *= (-(s.albedo_roughness[3] - t.albedo_roughness[3]).abs()
-                                    * 16.0)
-                                    .exp();
-                            }
-                            w *= if dx == 0 { 2.0 } else { 1.0 };
-                            w *= if dy == 0 { 2.0 } else { 1.0 };
-                            for (c, v) in sum.iter_mut().enumerate() {
-                                *v += w * p.candidates
-                                    [(level - 1) * 6 * n + index(lobe * 3 + c, sx, sy)];
-                            }
-                            total += w;
-                        }
-                    }
-                    for (c, v) in sum.into_iter().enumerate() {
-                        p.candidates[level * 6 * n + index(lobe * 3 + c, x, y)] =
-                            v / total.max(1e-12);
-                    }
-                }
-            }
+    for (i, s) in frame.surfaces.iter().enumerate() {
+        let (x, y) = (i % width, i / width);
+        let index = |c| config.index(frame.low, c, x, y);
+        let mut observation = [0.0; SURFACE_FEATURES];
+        observation[..4].copy_from_slice(&s.normal_depth);
+        observation[3] = encode(s.normal_depth[3], 1.0);
+        observation[4..8].copy_from_slice(&s.albedo_roughness);
+        observation[8..11].copy_from_slice(&s.specular_f0[..3]);
+        observation[11..13].copy_from_slice(&s.motion[..2]);
+        let scale = config.scale as usize;
+        observation[13] =
+            (x % scale) as f32 / scale as f32 + 0.5 / scale as f32 - 0.5 - frame.jitter[0];
+        observation[14] =
+            (y % scale) as f32 / scale as f32 + 0.5 / scale as f32 - 0.5 - frame.jitter[1];
+        for (c, value) in observation.into_iter().enumerate() {
+            p.features[LR_FEATURES * lr + index(c)] = value;
         }
-    }
-    for y in 0..height {
-        for x in 0..width {
-            let i = y * width + x;
-            let s = frame.surfaces[i];
-            for lobe in 0..2 {
-                let mut history = [0.0; 3];
-                let mut age = 0.0;
-                let mut moments = [0.0; 2];
-                let mut coverage = 0.0;
-                let (ids, weights) = history_taps(&s, previous, [width, height], [x, y], lobe);
-                if !previous.is_empty() {
-                    for k in 0..4 {
-                        let old = previous[ids[k]];
-                        let h = if lobe == 0 { old.diffuse } else { old.specular };
-                        let w = weights[k];
-                        coverage += w;
-                        age += w * h[3];
-                        for c in 0..3 {
-                            history[c] += w * h[c];
-                        }
-                        for (c, v) in moments.iter_mut().enumerate() {
-                            *v += w * old.moments[2 * lobe + c];
-                        }
-                    }
-                }
-                if coverage > 1e-6 {
-                    for v in &mut history {
-                        *v /= coverage;
-                    }
-                    age /= coverage;
-                    for v in &mut moments {
-                        *v /= coverage;
-                    }
-                }
-                let rgb: [f32; 3] =
-                    std::array::from_fn(|c| p.candidates[index(lobe * 3 + c, x, y)]);
-                let lum = luminance(rgb);
-                let mut spatial_var = 0.0;
-                let mut count = 0.0;
-                for dy in -1..=1 {
-                    for dx in -1..=1 {
-                        let sx = (x as i32 + dx * config.scale as i32).clamp(0, width as i32 - 1)
-                            as usize;
-                        let sy = (y as i32 + dy * config.scale as i32).clamp(0, height as i32 - 1)
-                            as usize;
-                        let w = spatial_geometry(
-                            s.normal_depth,
-                            frame.surfaces[sy * width + sx].normal_depth,
-                            gradients[i],
-                            [sx as f32 - x as f32, sy as f32 - y as f32],
-                        );
-                        let v = luminance(std::array::from_fn(|c| {
-                            p.candidates[index(lobe * 3 + c, sx, sy)]
-                        }));
-                        spatial_var += w * (v - lum).powi(2);
-                        count += w;
-                    }
-                }
-                spatial_var /= count.max(1e-6);
-                let broad = luminance(std::array::from_fn(|c| {
-                    p.candidates[(SCALES - 1) * 6 * n + index(lobe * 3 + c, x, y)]
-                }));
-                let delta = (broad - luminance(history)).powi(2);
-                let variance = spatial_var
-                    + (moments[1] - moments[0] * moments[0]).max(0.0) / age.max(1.0)
-                    + 0.01 * (1.0 + broad * broad);
-                let reactive = s.motion[3]
-                    .clamp(0.0, 1.0)
-                    .max(((delta / variance - 4.0) / 16.0).clamp(0.0, 1.0));
-                let max_age = if lobe == 0 {
-                    config.diffuse_frames
-                } else {
-                    config.specular_frames
-                };
-                let retained = age.min(max_age - 1.0) * coverage * (1.0 - reactive);
-                let h = retained / (1.0 + retained);
-                p.ages[i][lobe] = 1.0 + retained;
-                p.moments[i][2 * lobe] = (1.0 - h) * lum + h * moments[0];
-                p.moments[i][2 * lobe + 1] = (1.0 - h) * lum * lum + h * moments[1];
-                p.validity[index(lobe, x, y)] = if coverage > 1e-6 { 1.0 } else { 0.0 };
-                for (c, v) in history.iter().enumerate() {
-                    let j = index(lobe * 3 + c, x, y);
-                    p.history[j] = *v;
-                    for k in 0..4 {
-                        p.indices[k][j] =
-                            index(lobe * 3 + c, ids[k] % width, ids[k] / width) as u32;
-                        p.coefficients[k][j] = weights[k] / coverage.max(1e-6);
-                    }
-                }
-                let mut prior = [0.0; SCALES];
-                let mut total = 0.0;
-                for (k, v) in prior.iter_mut().enumerate() {
-                    *v = [0.02, 0.06, 0.12, 0.3, 0.5][k];
-                    if lobe == 1 {
-                        *v *= (-(k as f32) * (1.0 - s.albedo_roughness[3]) * 2.0).exp();
-                    }
-                    total += *v;
-                }
-                for (k, v) in prior.iter().enumerate() {
-                    p.prior[k * 2 * n + index(lobe, x, y)] = (1.0 - h) * v / total;
-                }
-                p.prior[SCALES * 2 * n + index(lobe, x, y)] = h;
-                p.features[index(38 + lobe, x, y)] = encode(spatial_var.sqrt(), config.exposure);
-                p.features[index(40 + lobe, x, y)] = p.ages[i][lobe] / max_age;
-                p.features[index(42 + lobe, x, y)] = p.validity[index(lobe, x, y)];
+        for (c, &value) in observation[..4].iter().enumerate() {
+            p.metadata[index(c)] = value;
+        }
+        for c in 0..3 {
+            p.metadata[index(c + 4)] = s.albedo_roughness[c];
+        }
+        let (ids, weights) = taps([s.motion[0], s.motion[1]], [width, height], [x, y], ready);
+        p.validity[index(0)] = f32::from(weights.iter().any(|w| *w > 0.0));
+        for c in 0..config.state_channels() {
+            for k in 0..4 {
+                p.indices[k][index(c)] =
+                    config.index(frame.low, c, ids[k] % width, ids[k] / width) as u32;
+                p.coefficients[k][index(c)] = weights[k];
             }
-            for k in 0..SCALES {
-                for c in 0..6 {
-                    p.features[index(k * 6 + c, x, y)] =
-                        encode(p.candidates[k * 6 * n + index(c, x, y)], config.exposure);
-                }
-            }
-            for c in 0..3 {
-                p.features[index(30 + c, x, y)] = s.normal_depth[c];
-                p.features[index(34 + c, x, y)] = s.albedo_roughness[c];
-            }
-            p.features[index(33, x, y)] = 1.0 / (1.0 + s.normal_depth[3].max(0.0));
-            p.features[index(37, x, y)] = s.albedo_roughness[3];
-            let qx = (x as f32 + 0.5) / config.scale as f32 - 0.5 - frame.jitter[0];
-            let qy = (y as f32 + 0.5) / config.scale as f32 - 0.5 - frame.jitter[1];
-            let sx = ((qx + 0.5).floor() as i32).clamp(0, low[0] as i32 - 1) as usize;
-            let sy = ((qy + 0.5).floor() as i32).clamp(0, low[1] as i32 - 1) as usize;
-            let raw = frame.rays[sy * low[0] as usize + sx];
-            for c in 0..3 {
-                p.features[index(44 + c, x, y)] = encode(raw.diffuse[c], config.exposure);
-                p.features[index(47 + c, x, y)] = encode(raw.specular[c], config.exposure);
-            }
-            p.features[index(50, x, y)] = sx as f32 - qx;
-            p.features[index(51, x, y)] = sy as f32 - qy;
         }
     }
     p
 }
 
-/// Deterministic guide used by zero-initialized inference and the quality control.
-pub fn reconstruct(p: &Prepared) -> Vec<f32> {
-    let n = p.history.len() / 6;
-    let mut image = vec![0.0; 6 * n];
-    for k in 0..CANDIDATES {
-        for c in 0..6 {
-            for i in 0..n {
-                let j = c * n + i;
-                let value = if k == SCALES {
-                    p.history[j]
-                } else {
-                    p.candidates[k * 6 * n + j]
-                };
-                image[j] += p.prior[k * 2 * n + c / 3 * n + i] * value;
-            }
-        }
-    }
-    image
+pub fn warp(p: &Prepared) -> Vec<f32> {
+    (0..p.history.len())
+        .map(|i| {
+            (0..4)
+                .map(|k| p.history[p.indices[k][i] as usize] * p.coefficients[k][i])
+                .sum()
+        })
+        .collect()
 }
-pub fn commit(
-    frame: &Frame,
-    p: &Prepared,
-    image: &[f32],
-    config: Config,
-) -> (Vec<State>, Vec<f32>) {
-    let width = (frame.low[0] * config.scale) as usize;
+
+pub fn decode(
+    z: &[f32],
+    gates: &[f32],
+    history: &[f32],
+    valid: &[f32],
+    exposure: f32,
+) -> (Vec<f32>, Vec<f32>) {
+    let n = valid.len();
+    assert_eq!(z.len(), 6 * n);
+    assert_eq!(history.len(), 6 * n);
+    assert_eq!(gates.len(), 2 * n);
+    let alpha: Vec<_> = gates
+        .iter()
+        .enumerate()
+        .map(|(i, a)| valid[i % n] / (1.0 + (-a).exp()))
+        .collect();
+    let image = z
+        .iter()
+        .enumerate()
+        .map(|(i, z)| {
+            let a = alpha[i / (3 * n) * n + i % n];
+            let spatial = z.clamp(-16.0, 11.0).exp() / exposure;
+            a * history[i] + (1.0 - a) * spatial
+        })
+        .collect();
+    (image, alpha)
+}
+
+pub fn commit(frame: &Frame, lobes: &[f32], latent: &[f32], config: Config) -> (State, Vec<f32>) {
     let n = frame.surfaces.len();
-    assert_eq!(image.len(), 6 * n);
-    let mut states = Vec::with_capacity(n);
+    assert_eq!(lobes.len(), 6 * n);
+    assert_eq!(latent.len(), config.latent_channels as usize * n);
+    let mut values = Vec::with_capacity(config.state_channels() * n);
+    values.extend_from_slice(lobes);
+    values.extend_from_slice(latent);
+    values.resize(config.state_channels() * n, 0.0);
+    let offset = (6 + config.latent_channels as usize) * n;
+    let width = (frame.low[0] * config.scale) as usize;
     let mut rgb = vec![0.0; 3 * n];
-    for i in 0..n {
-        let s = frame.surfaces[i];
-        let mut state = State {
-            moments: p.moments[i],
-            normal_depth: s.normal_depth,
-            albedo_roughness: s.albedo_roughness,
-            ..State::default()
-        };
-        for c in 0..3 {
-            state.diffuse[c] = image[config.index(frame.low, c, i % width, i / width)];
-            state.specular[c] = image[config.index(frame.low, 3 + c, i % width, i / width)];
-            rgb[3 * i + c] =
-                state.diffuse[c] * s.albedo_roughness[c] + state.specular[c] + s.emission[c];
+    for (i, s) in frame.surfaces.iter().enumerate() {
+        let index = |c| config.index(frame.low, c, i % width, i / width);
+        for c in 0..4 {
+            values[offset + index(c)] = if c == 3 {
+                encode(s.normal_depth[c], 1.0)
+            } else {
+                s.normal_depth[c]
+            };
         }
-        state.diffuse[3] = p.ages[i][0];
-        state.specular[3] = p.ages[i][1];
-        states.push(state);
+        for c in 0..3 {
+            values[offset + index(c + 4)] = s.albedo_roughness[c];
+            rgb[3 * i + c] =
+                s.albedo_roughness[c] * lobes[index(c)] + lobes[index(c + 3)] + s.emission[c];
+        }
     }
-    (states, rgb)
+    (State { values }, rgb)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn surface_grid(depth: impl Fn(usize, usize) -> f32) -> Frame {
-        Frame {
-            low: [16, 16],
-            jitter: [0.0; 2],
-            rays: Vec::new(),
-            surfaces: (0..32 * 32)
-                .map(|i| Surface {
-                    normal_depth: [0.0, -1.005, 0.0, depth(i % 32, i / 32)],
-                    ..Surface::default()
-                })
-                .collect(),
+    #[test]
+    fn warp_renormalizes_partial_border_and_rejects_only_no_coverage_or_reset() {
+        let (ids, weights) = taps([-0.25, 0.5], [8, 8], [0, 2], true);
+        assert_eq!(weights, [0.0, 0.5, 0.0, 0.5]);
+        assert_eq!((ids[1], ids[3]), (16, 24));
+        for (motion, ready) in [
+            ([-1.0, 0.0], true),
+            ([f32::MAX, 0.0], true),
+            ([0.0, 0.0], false),
+        ] {
+            assert_eq!(taps(motion, [8, 8], [0, 0], ready).1, [0.0; 4]);
         }
     }
-
     #[test]
-    fn quantized_normals_do_not_amplify_geometry_weights() {
-        let a = [0.0, -1.005, 0.0, 7.0];
-        let b = [0.0, -0.995, 0.0, 7.0];
-        assert!((geometry(a, a) - 1.0).abs() < 1e-6);
-        assert!((geometry(a, b) - 1.0).abs() < 1e-6);
-        assert_eq!(geometry(a, [0.0, 1.0, 0.0, 7.0]), 0.0);
-    }
-
-    #[test]
-    fn spatial_support_follows_sloped_surfaces_but_history_stays_strict() {
-        let frame = surface_grid(|x, y| 1.0 / (0.3 + x as f32 * 0.001 - y as f32 * 0.007));
-        let a = frame.surfaces[12 * 32 + 12].normal_depth;
-        let gradient = inverse_depth_gradient(&frame, 32, 12, 12);
-        for (x, y) in [(4, 12), (20, 12), (12, 4), (12, 20)] {
-            let b = frame.surfaces[y * 32 + x].normal_depth;
-            assert!(spatial_geometry(a, b, gradient, [x as f32 - 12.0, y as f32 - 12.0]) > 0.999);
-        }
-        let far = frame.surfaces[20 * 32 + 12].normal_depth;
-        assert!(
-            geometry(a, far) < 1e-6,
-            "temporal depth test must not inherit the slope allowance"
+    fn zero_alpha_is_spatial_and_invalid_history_is_ignored() {
+        let z = [0.25; 6];
+        let spatial = vec![0.25_f32.exp() / 2.0; 6];
+        assert_eq!(
+            decode(&z, &[-1000.0; 2], &[999.0; 6], &[1.0], 2.0).0,
+            spatial
+        );
+        assert_eq!(
+            decode(&z, &[1000.0; 2], &[999.0; 6], &[0.0], 2.0).0,
+            spatial
         );
     }
-
     #[test]
-    fn slope_estimate_does_not_bridge_parallel_depth_edges() {
-        for thin in [false, true] {
-            let frame = surface_grid(|x, _| {
-                if x == 15 || (!thin && x > 15) {
-                    2.0
-                } else {
-                    8.0
-                }
-            });
-            for x in [14, 15] {
-                let gradient = inverse_depth_gradient(&frame, 32, x, 16);
-                assert_eq!(gradient, [0.0; 2]);
-                let a = frame.surfaces[16 * 32 + x].normal_depth;
-                let b = frame.surfaces[16 * 32 + 29 - x].normal_depth;
-                assert!(spatial_geometry(a, b, gradient, [29.0 - 2.0 * x as f32, 0.0]) < 1e-10);
-            }
-        }
-        for x in [0, 31] {
-            let frame = surface_grid(|sx, _| if sx == x { 2.0 } else { 8.0 });
-            let gradient = inverse_depth_gradient(&frame, 32, x, 16);
-            assert_eq!(
-                gradient, [0.0; 2],
-                "an image boundary must not turn a depth edge into a slope"
-            );
-            let q = if x == 0 { 1 } else { 30 };
-            assert!(
-                spatial_geometry(
-                    frame.surfaces[16 * 32 + x].normal_depth,
-                    frame.surfaces[16 * 32 + q].normal_depth,
-                    gradient,
-                    [q as f32 - x as f32, 0.0]
-                ) < 1e-10
-            );
+    fn exposure_compensates_radiance_units() {
+        let (a, _) = decode(&[0.25; 6], &[1.0; 2], &[3.0; 6], &[1.0], 2.0);
+        let (b, _) = decode(&[0.25; 6], &[1.0; 2], &[24.0; 6], &[1.0], 0.25);
+        for (a, b) in a.into_iter().zip(b) {
+            assert!((8.0 * a - b).abs() < 1e-5);
         }
     }
 }

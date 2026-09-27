@@ -133,7 +133,7 @@ jobs:
       - name: Check capture independence from cached textures
         working-directory: ommatidia
         run: bash scripts/check-cache.sh
-      - name: Capture, train and reload the residual model
+      - name: Capture, train and reload the v4 direct-radiance model
         working-directory: ommatidia
         run: |
           for split in train dev; do
@@ -148,7 +148,7 @@ jobs:
           python3 scripts/record-run.py target/ci-train -- \
             cargo +1.92.0 run -p ommatidia-train --bin transport --locked -- \
             --data target/train.omd --eval-data target/dev.omd --out target/smoke \
-            --steps 8 --channels 4 --eval-every 0
+            --steps 8 --channels 4 --unroll 2 --eval-every 0
           python3 scripts/record-run.py target/ci-reload -- \
             cargo +1.92.0 run -p ommatidia-train --bin transport --locked -- \
             --eval-data target/dev.omd --out target/reload --eval-only \

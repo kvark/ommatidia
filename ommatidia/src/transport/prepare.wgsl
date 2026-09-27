@@ -1,134 +1,99 @@
-struct Params { w:u32, h:u32, scale:u32, level:u32, ready:u32, exposure:f32, diffuse_frames:f32, specular_frames:f32, jitter:vec2<f32>, pad:vec2<u32> }
-struct Ray { diffuse:vec4<f32>, specular:vec4<f32>, normal_depth:vec4<f32>, albedo_roughness:vec4<f32> }
-struct Surface { normal_depth:vec4<f32>, albedo_roughness:vec4<f32>, motion:vec4<f32>, specular_motion:vec4<f32>, emission:vec4<f32> }
-struct State { diffuse:vec4<f32>, specular:vec4<f32>, moments:vec4<f32>, normal_depth:vec4<f32>, albedo_roughness:vec4<f32> }
+// Only layout conversion, geometric bilinear tap construction and physical RGB.
+// All denoising, history selection and latent recurrence live in the graph.
+struct Params { w:u32, h:u32, scale:u32, state_channels:u32, ready:u32, exposure:f32, jitter:vec2<f32> }
+struct Ray { diffuse:vec4<f32>, specular:vec4<f32>, normal_depth:vec4<f32> }
+struct Surface { normal_depth:vec4<f32>, albedo_roughness:vec4<f32>, motion:vec4<f32>, specular_f0:vec4<f32>, emission:vec4<f32> }
 var<uniform> params:Params;
 var<storage> rays:array<Ray>;
 var<storage> surfaces:array<Surface>;
-var<storage> previous:array<State>;
-var<storage,read_write> candidates:array<f32>;
+var<storage> previous:array<f32>;
 var<storage,read_write> features:array<f32>;
 var<storage,read_write> history:array<f32>;
-var<storage,read_write> prior:array<f32>;
-var<storage,read_write> moments:array<vec4<f32>>;
-var<storage,read_write> ages:array<vec2<f32>>;
+var<storage,read_write> metadata:array<f32>;
+var<storage,read_write> valid:array<f32>;
+var<storage,read_write> exposure:array<f32>;
+var<storage,read_write> warp0:array<u32>;
+var<storage,read_write> warp1:array<u32>;
+var<storage,read_write> warp2:array<u32>;
+var<storage,read_write> warp3:array<u32>;
+var<storage,read_write> coeff0:array<f32>;
+var<storage,read_write> coeff1:array<f32>;
+var<storage,read_write> coeff2:array<f32>;
+var<storage,read_write> coeff3:array<f32>;
 var<storage> image:array<f32>;
-var<storage,read_write> next:array<State>;
+var<storage,read_write> next:array<f32>;
 var<storage,read_write> output:array<vec4<f32>>;
 fn extent()->vec2<u32> {return vec2(params.w,params.h)*params.scale;}
-fn count()->u32 {return params.w*params.h*params.scale*params.scale;}
-fn idx(c:u32,p:vec2<u32>)->u32 {let slot=(p.y%params.scale)*params.scale+p.x%params.scale;return ((c*params.scale*params.scale+slot)*params.h+p.y/params.scale)*params.w+p.x/params.scale;}
-fn normal_similarity(a:vec3<f32>,b:vec3<f32>)->f32 {
-    return clamp(dot(a,b)/sqrt(max(dot(a,a)*dot(b,b),1e-12)),0.0,1.0);
+fn idx(c:u32,p:vec2<u32>)->u32 {
+    let slot=(p.y%params.scale)*params.scale+p.x%params.scale;
+    return ((c*params.scale*params.scale+slot)*params.h+p.y/params.scale)*params.w+p.x/params.scale;
 }
-fn geom(a:vec4<f32>,b:vec4<f32>)->f32 {
-    if a.w>=60000.0 || b.w>=60000.0 {return select(0.0,1.0,a.w>=60000.0 && b.w>=60000.0);}
-    let normal=normal_similarity(a.xyz,b.xyz);let d=abs(a.w-b.w)/(0.01+0.02*abs(a.w));
-    return pow(normal,16.0)*exp(-d);
-}
-fn inverse_depth_gradient(p:vec2<u32>)->vec2<f32> {
-    let a=surfaces[p.y*extent().x+p.x].normal_depth;
-    if a.w<=0.0 || a.w>=60000.0 {return vec2(0.0);}
-    var gradient=vec2(0.0);
-    for(var axis=0u;axis<2u;axis++) {
-        var slopes=vec2(0.0);var valid=vec2(false);
-        for(var side=0u;side<2u;side++) {
-            let direction=2*i32(side)-1;var q=vec2<i32>(p);q[axis]+=direction;
-            if q[axis]<0 || q[axis]>=i32(extent()[axis]) {continue;}
-            let b=surfaces[u32(q.y)*extent().x+u32(q.x)].normal_depth;
-            if b.w>0.0 && b.w<60000.0 && normal_similarity(a.xyz,b.xyz)>0.95 {
-                slopes[side]=f32(direction)*(1.0/b.w-1.0/a.w);valid[side]=true;
-            }
-        }
-        if all(valid) {
-            if slopes.x*slopes.y>0.0 {gradient[axis]=select(slopes.y,slopes.x,abs(slopes.x)<abs(slopes.y));}
-        }
-    }
-    return gradient;
-}
-fn spatial_geom(a:vec4<f32>,b:vec4<f32>,gradient:vec2<f32>,delta:vec2<f32>)->f32 {
-    if a.w<=0.0 || b.w<=0.0 || a.w>=60000.0 || b.w>=60000.0 {return geom(a,b);}
-    let inverse=1.0/a.w;let expected=inverse+dot(gradient,delta);
-    let d=abs(expected-1.0/b.w)/(0.02*inverse+0.01*inverse*inverse);
-    return pow(normal_similarity(a.xyz,b.xyz),16.0)*exp(-d);
-}
-fn same(s:Surface,p:State)->bool {var expected=s.normal_depth;if s.motion.z>0.0 {expected.w=s.motion.z;}
-    let d=s.albedo_roughness.xyz-p.albedo_roughness.xyz;return geom(expected,p.normal_depth)>0.1 && dot(d,d)<0.04;}
-fn enc(v:f32)->f32 {let x=max(v,0.0)*params.exposure;return x/(1.0+x);}
-fn read_rgb(level:u32,lobe:u32,p:vec2<u32>)->vec3<f32> {let o=level*6u*count();return vec3(candidates[o+idx(lobe*3u,p)],candidates[o+idx(lobe*3u+1u,p)],candidates[o+idx(lobe*3u+2u,p)]);}
-fn lum(v:vec3<f32>)->f32 {return dot(v,vec3(0.2126,0.7152,0.0722));}
-fn bounded(p:vec2<i32>)->vec2<u32> {return vec2<u32>(clamp(p,vec2(0),vec2<i32>(extent())-vec2(1)));}
-@compute @workgroup_size(8,8)
-fn seed(@builtin(global_invocation_id) id:vec3<u32>) {
-    let p=id.xy;if any(p>=extent()) {return;}
-    let s=surfaces[p.y*extent().x+p.x];let q=(vec2<f32>(p)+vec2(0.5))/f32(params.scale)-vec2(0.5)-params.jitter;
-    let gradient=inverse_depth_gradient(p);
-    var d=vec3(0.0);var spec=vec3(0.0);var total=0.0;
-    for(var y=-1;y<=1;y++) {for(var x=-1;x<=1;x++) {
-        let low=vec2<u32>(clamp(vec2<i32>(floor(q+vec2(0.5)))+vec2(x,y),vec2(0),vec2<i32>(i32(params.w)-1,i32(params.h)-1)));
-        let r=rays[low.y*params.w+low.x];let delta=vec2<f32>(low)-q;
-        let w=spatial_geom(s.normal_depth,r.normal_depth,gradient,delta*f32(params.scale))*exp(-2.0*dot(delta,delta));d+=w*r.diffuse.xyz;spec+=w*r.specular.xyz;total+=w;
-    }}
-    if total<=1e-12 {let low=vec2<u32>(clamp(vec2<i32>(floor(q+vec2(0.5))),vec2(0),vec2<i32>(i32(params.w)-1,i32(params.h)-1)));let r=rays[low.y*params.w+low.x];d=r.diffuse.xyz;spec=r.specular.xyz;total=1.0;}
-    for(var c=0u;c<3u;c++) {candidates[idx(c,p)]=max(d[c],0.0)/total;candidates[idx(3u+c,p)]=max(spec[c],0.0)/total;}
-}
-@compute @workgroup_size(8,8)
-fn atrous(@builtin(global_invocation_id) id:vec3<u32>) {
-    let p=id.xy;if any(p>=extent()) {return;}
-    let s=surfaces[p.y*extent().x+p.x];let step=1 << (params.level-1u);let gradient=inverse_depth_gradient(p);
-    for(var l=0u;l<2u;l++) {var sum=vec3(0.0);var total=0.0;
-        for(var y=-1;y<=1;y++) {for(var x=-1;x<=1;x++) {
-            let q=bounded(vec2<i32>(p)+vec2(x,y)*step);let t=surfaces[q.y*extent().x+q.x];
-            var w=spatial_geom(s.normal_depth,t.normal_depth,gradient,vec2<f32>(q)-vec2<f32>(p));if l==1u {w*=exp(-abs(s.albedo_roughness.w-t.albedo_roughness.w)*16.0);}
-            w*=select(1.0,2.0,x==0)*select(1.0,2.0,y==0);sum+=w*read_rgb(params.level-1u,l,q);total+=w;
-        }}
-        for(var c=0u;c<3u;c++) {candidates[params.level*6u*count()+idx(l*3u+c,p)]=sum[c]/max(total,1e-12);}
-    }
-}
+fn enc(v:f32,e:f32)->f32 {let x=v*e;return x/(1.0+x);}
+
 @compute @workgroup_size(8,8)
 fn pack(@builtin(global_invocation_id) id:vec3<u32>) {
-    let p=id.xy;if any(p>=extent()) {return;}let i=p.y*extent().x+p.x;let s=surfaces[i];let gradient=inverse_depth_gradient(p);
-    var out_moments=vec4(0.0);var out_ages=vec2(1.0);
-    for(var l=0u;l<2u;l++) {
-        var motion=s.motion;if l==1u && s.specular_motion.z>0.5 {motion=s.specular_motion;}
-        let q=vec2<f32>(p)+motion.xy;var old=vec3(0.0);var age=0.0;var m=vec2(0.0);var coverage=0.0;
-        if params.ready!=0u && all(q>=vec2(0.0)) && all(q<=vec2<f32>(extent()-vec2(1u))) {
-            let t=fract(q);
-            for(var k=0u;k<4u;k++) {let at=min(vec2<u32>(floor(q))+vec2(k%2u,k/2u),extent()-vec2(1u));let st=previous[at.y*extent().x+at.x];
-                var h=st.diffuse;var mm=st.moments.xy;if l==1u {h=st.specular;mm=st.moments.zw;}
-                if h.w<=0.0 || !same(s,st) {continue;}
-                let w=select(t.x,1.0-t.x,k%2u==0u)*select(t.y,1.0-t.y,k/2u==0u);old+=w*h.xyz;age+=w*h.w;m+=w*mm;coverage+=w;
+    let p=id.xy;if any(p>=extent()) {return;}
+    let lr=params.w*params.h;
+    let s=surfaces[p.y*extent().x+p.x];
+    if all(p==vec2(0u)) {exposure[0]=params.exposure;}
+    if all(p%vec2(params.scale)==vec2(0u)) {
+        let i=(p.y/params.scale)*params.w+p.x/params.scale;
+        let r=rays[i];
+        for(var c=0u;c<3u;c++) {
+            features[c*lr+i]=enc(r.diffuse[c],params.exposure);
+            features[(c+3u)*lr+i]=enc(r.specular[c],params.exposure);
+            features[(c+6u)*lr+i]=r.normal_depth[c];
+        }
+        features[9u*lr+i]=enc(r.normal_depth.w,1.0);
+        features[10u*lr+i]=params.jitter.x;
+        features[11u*lr+i]=params.jitter.y;
+    }
+    for(var c=0u;c<4u;c++) {
+        var nd=s.normal_depth[c];if c==3u {nd=enc(nd,1.0);}
+        features[12u*lr+idx(c,p)]=nd;
+        metadata[idx(c,p)]=nd;
+        features[12u*lr+idx(c+4u,p)]=s.albedo_roughness[c];
+    }
+    for(var c=0u;c<3u;c++) {
+        features[12u*lr+idx(c+8u,p)]=s.specular_f0[c];
+        metadata[idx(c+4u,p)]=s.albedo_roughness[c];
+    }
+    for(var c=0u;c<2u;c++) {
+        features[12u*lr+idx(c+11u,p)]=s.motion[c];
+        features[12u*lr+idx(c+13u,p)]=f32(p[c]%params.scale)/f32(params.scale)+0.5/f32(params.scale)-0.5-params.jitter[c];
+    }
+    let q=vec2<f32>(p)+s.motion.xy;
+    var positions:array<vec2<u32>,4>;
+    var weights=vec4(0.0);
+    if params.ready!=0u && all(q>vec2(-1.0)) && all(q<vec2<f32>(extent())) {
+        let base=vec2<i32>(floor(q));let f=q-vec2<f32>(base);
+        for(var k=0u;k<4u;k++) {
+            let at=base+vec2<i32>(i32(k%2u),i32(k/2u));
+            if all(at>=vec2(0)) && all(at<vec2<i32>(extent())) {
+                positions[k]=vec2<u32>(at);
+                weights[k]=select(f.x,1.0-f.x,k%2u==0u)*select(f.y,1.0-f.y,k/2u==0u);
             }
         }
-        if coverage>1e-6 {old/=coverage;age/=coverage;m/=coverage;}
-        let value=lum(read_rgb(0u,l,p));var variance=0.0;var samples=0.0;
-        for(var y=-1;y<=1;y++) {for(var x=-1;x<=1;x++) {let at=bounded(vec2<i32>(p)+vec2(x,y)*i32(params.scale));let w=spatial_geom(s.normal_depth,surfaces[at.y*extent().x+at.x].normal_depth,gradient,vec2<f32>(at)-vec2<f32>(p));let delta=lum(read_rgb(0u,l,at))-value;variance+=w*delta*delta;samples+=w;}}
-        variance/=max(samples,1e-6);let broad=lum(read_rgb(4u,l,p));let delta=broad-lum(old);
-        let v=variance+max(m.y-m.x*m.x,0.0)/max(age,1.0)+0.01*(1.0+broad*broad);
-        let reactive=max(clamp(s.motion.w,0.0,1.0),clamp((delta*delta/v-4.0)/16.0,0.0,1.0));
-        let max_age=select(params.diffuse_frames,params.specular_frames,l==1u);let retained=min(age,max_age-1.0)*coverage*(1.0-reactive);let h=retained/(1.0+retained);
-        out_ages[l]=1.0+retained;out_moments[2u*l]=(1.0-h)*value+h*m.x;out_moments[2u*l+1u]=(1.0-h)*value*value+h*m.y;
-        for(var c=0u;c<3u;c++) {history[idx(l*3u+c,p)]=old[c];}
-        var weights=array<f32,5>(0.02,0.06,0.12,0.3,0.5);var total=0.0;
-        for(var k=0u;k<5u;k++) {if l==1u {weights[k]*=exp(-f32(k)*(1.0-s.albedo_roughness.w)*2.0);}total+=weights[k];}
-        for(var k=0u;k<5u;k++) {prior[k*2u*count()+idx(l,p)]=(1.0-h)*weights[k]/total;}
-        prior[5u*2u*count()+idx(l,p)]=h;
-        features[idx(38u+l,p)]=enc(sqrt(variance));features[idx(40u+l,p)]=out_ages[l]/max_age;features[idx(42u+l,p)]=select(0.0,1.0,coverage>1e-6);
     }
-    let q=(vec2<f32>(p)+vec2(0.5))/f32(params.scale)-vec2(0.5)-params.jitter;
-    let low=vec2<u32>(clamp(vec2<i32>(floor(q+vec2(0.5))),vec2(0),vec2<i32>(i32(params.w)-1,i32(params.h)-1)));
-    let raw=rays[low.y*params.w+low.x];
-    for(var c=0u;c<3u;c++) {features[idx(44u+c,p)]=enc(raw.diffuse[c]);features[idx(47u+c,p)]=enc(raw.specular[c]);}
-    features[idx(50u,p)]=f32(low.x)-q.x;features[idx(51u,p)]=f32(low.y)-q.y;
-    ages[i]=out_ages;moments[i]=out_moments;
-    for(var k=0u;k<5u;k++) {for(var c=0u;c<6u;c++) {features[idx(k*6u+c,p)]=enc(candidates[k*6u*count()+idx(c,p)]);}}
-    for(var c=0u;c<3u;c++) {features[idx(30u+c,p)]=s.normal_depth[c];features[idx(34u+c,p)]=s.albedo_roughness[c];}
-    features[idx(33u,p)]=1.0/(1.0+max(s.normal_depth.w,0.0));features[idx(37u,p)]=s.albedo_roughness.w;
+    let total=weights.x+weights.y+weights.z+weights.w;
+    if total>0.0 {weights/=total;}
+    valid[idx(0u,p)]=select(0.0,1.0,total>0.0);
+    for(var c=0u;c<params.state_channels;c++) {
+        let i=idx(c,p);
+        // Avoid even reading undefined device memory on the first frame/reset.
+        history[i]=0.0;if params.ready!=0u {history[i]=previous[i];}
+        warp0[i]=idx(c,positions[0]);warp1[i]=idx(c,positions[1]);
+        warp2[i]=idx(c,positions[2]);warp3[i]=idx(c,positions[3]);
+        coeff0[i]=weights.x;coeff1[i]=weights.y;coeff2[i]=weights.z;coeff3[i]=weights.w;
+    }
 }
+
 @compute @workgroup_size(8,8)
 fn resolve(@builtin(global_invocation_id) id:vec3<u32>) {
-    let p=id.xy;if any(p>=extent()) {return;}let i=p.y*extent().x+p.x;let s=surfaces[i];
-    let d=vec3(image[idx(0u,p)],image[idx(1u,p)],image[idx(2u,p)]);let sp=vec3(image[idx(3u,p)],image[idx(4u,p)],image[idx(5u,p)]);
-    next[i]=State(vec4(d,ages[i].x),vec4(sp,ages[i].y),moments[i],s.normal_depth,s.albedo_roughness);
+    let p=id.xy;if any(p>=extent()) {return;}
+    let i=p.y*extent().x+p.x;let s=surfaces[i];
+    let d=vec3(image[idx(0u,p)],image[idx(1u,p)],image[idx(2u,p)]);
+    let sp=vec3(image[idx(3u,p)],image[idx(4u,p)],image[idx(5u,p)]);
+    for(var c=0u;c<params.state_channels;c++) {let j=idx(c,p);next[j]=image[j];}
     output[i]=vec4(d*s.albedo_roughness.xyz+sp+s.emission.xyz,1.0);
 }

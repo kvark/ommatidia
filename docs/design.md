@@ -1,122 +1,62 @@
-# One recurrent reconstruction model
+# One recurrent reconstruction model (v4)
 
-The maintained model is a lobe-separated radiance-residual U-Net. There is one
-graph builder, one trainer, and one GPU runtime. Config version 3 rejects the
-retired selector versions. Earlier diffusion, kernel, field/relighting and C ABI
-implementations are recoverable at tag `archive/experiments-2026-09-25`
-(`e0922c6`); they are not compatibility modes. The adopted [v4 plan](../PLAN.md)
-will replace v3, not add a second selectable architecture.
+The only maintained model is a biased, three-level U-Net: width 16, four latent
+channels, 2× output scale. It predicts six spatial radiance channels, two history
+gates and four latent channels per output pixel. Config v3 and its weights are
+rejected; the last v3 source is tagged locally `archive/v3-guide-residual`,
+and its [built control runtime](archive/README.md) remains usable offline.
 
-## Architecture
+Each frame supplies LR diffuse illumination/specular radiance, LR normal/depth,
+projection jitter, and HR normal/depth, diffuse albedo, F0, roughness and motion.
+HR signals are subpixel-packed onto the LR grid. Sample offsets describe each
+output pixel relative to its jittered input sample. Radiance is encoded as
+`c(exposure * radiance)`, where `c(x) = x/(1+x)`; nonnegative depth uses `c(depth)`.
+The host supplies positive per-frame exposure, which never changes output units.
+Targets have a separate API and cannot enter observation packing.
 
-The GPU constructs five geometry-guided spatial scales and reprojects the
-previous diffuse/specular estimates. Each lobe has its own validity, reactive
-rejection, age and moments. History and final reconstruction remain linear HDR.
-The default history-age limits are 16 diffuse frames and eight specular frames.
-The diffuse limit balances stationary noise against response to illumination
-changes; it was selected on development sequences, not the final audit.
-Spatial depth weights compare against a local inverse-depth slope estimated from
-normal-compatible neighbors, using the smaller same-sign one-sided derivative
-to avoid treating depth discontinuities as slopes. Require both neighbors;
-otherwise fall back to zero slope. This preserves support on
-grazing planes. It is a local approximation for ray-distance depth, not exact
-world-space plane reconstruction. Temporal depth rejection remains strict.
-Normal agreement is normalized and clamped so quantized normal lengths cannot
-amplify filter weights.
+Previous linear lobes, latent and normal/depth are bilinearly warped **inside
+the graph**. The GPU constructs taps; out-of-frame taps are dropped and the rest
+renormalized. No taps, or a camera cut, means invalid history. There are no fixed
+filters, ages, moments, material/depth rejection thresholds or reactive weights.
 
-A three-level local convolutional U-Net sees the encoded spatial scales,
-reprojected history, raw diffuse/specular samples, sample offsets, surface
-normal/depth/albedo/roughness, variance, age and validity. Subpixel packing keeps
-convolutions at input resolution. No image-wide normalization, diffusion,
-transformer branch, generated texture, or ground-truth input.
+```text
+features = U-Net(observations, c(exposure * warped_lobes),
+                 warped_latent, warped_normal_depth, valid)
+z, a, s  = three biased 1×1 heads(features)
+spatial  = exp(clamp(z, -16, 11)) / exposure
+alpha    = sigmoid(a) * valid
+lobes    = alpha * warped_lobes + (1 - alpha) * spatial
+latent   = tanh(s)
+RGB      = albedo * diffuse + specular + emission
+next     = lobes, latent, current_normal_depth, current_albedo
+```
 
-The six-channel subpixel head supplies a signed correction to the incoming
-spatial estimate `S`, then accumulates it with reprojected history `H` and
-lobe-specific history weight `h`:
-`max((1-h) * (S + 0.1 * (S + 1/exposure) * residual) + h * H, 0)`.
-The correction is not applied again to retained history. This avoids magnifying
-a stationary correction by the accumulation length, as a post-blend residual did.
-Clamp only the accumulated result: clamping the incoming correction first would
-prevent subtracting obsolete illumination, imposing the lower bound `h * H`.
-Final lobe radiance stays nonnegative; the internal correction need not be.
-A zero head exactly reproduces the fixed spatial/history guide. Unlike a convex
-candidate selector, this decoder can recover detail outside its filtered
-candidates' range. The default width is 16: 188,160 parameters at 2x scale.
-Known material albedo and emission are composed only at the end:
-`RGB = albedo * diffuse + specular + emission`.
+The radiance bias is the log of each training-corpus mean normalized lobe,
+restricted to the decoder's representable log range. Gate bias is logit(0.8).
+Head weights and latent bias start at zero; encoder kernels use Kaiming
+initialization and zero biases. No v3 checkpoint initializes v4.
 
-Training uses the same recurrence, warming history with the current model's
-own predictions. Two-frame BPTT differentiates through bilinear radiance
-reprojection; geometry, rejection maps, ages and moments are detached.
-Every other training window starts with empty history at a uniformly sampled
-frame, simulating a cut. The other windows retain full causal warmup; long clips
-must not starve reset supervision.
-The objective combines compressed displayed-RGB MSE, absolute compressed-lobe
-MSE, a small fixed-exposure linear RGB term, coarse linear structure and
-valid-history temporal changes. Direct lobe supervision prevents diffuse and
-specular errors from compensating each other in RGB while corrupting the
-recurrent state. Parameter shapes are unchanged, so older weights can warm-start
-training; the new recurrent decoder changes their output. The published results
-still use the older decoder and objective, with its executable retained for
-matched comparisons. Configuration version 3 denotes the residual parameter
-layout, not a guarantee that outputs are invariant across source revisions.
-There are no selector labels or target-normalized brightness weights.
-The trainer reuses native GPU preparation; the CPU only expands differentiable
-history-gather maps and supplies the numerical reference implementation.
-Warmup advances the native state without downloading unused displayed RGB.
+Four-frame tied-weight BPTT differentiates through both lobes and latent.
+The objective retains compressed RGB and lobe MSE, exposure-normalized linear
+RGB, coarse linear structure and valid-history temporal change error. Outputs
+are `[lobes, latent, state]` in inference and `[loss, lobes, latent, state]` in
+training; optional final alpha is diagnostic only. Meganeura differentiates the
+first, scalar training output while preserving carried outputs.
+The temporary full-frame/batch-one trainer still warms causal prefixes and
+downloads prepared inputs; Phase 3 replaces this loop and adds optimizer/cursor
+resume. It rejects weights-only warm starts.
 
-## Why this scope
+At 128×128 → 256×256: **132 input channels, 174,576 parameters, 814,743,552
+convolution MACs = 1.62949 GFLOP/frame = 24,864 FLOPs/output pixel**.
+These are dense forward-convolution counts, not timing measurements; they omit
+activations, warps and backward. The archived v3 count was 2.08876 GFLOP/frame.
 
-[REGEN](https://github.com/stefanos50/REGEN) uses paired supervision to train a
-lightweight photorealism-enhancement model. Its appearance-translation objective
-is different from recovering a particular path-traced scene.
-
-[OpenDLSS-NR](https://github.com/maanHimself/OpenDLSS-NR) documents a same-resolution
-generative renderer, not DLSS super-resolution or ray reconstruction. Useful
-lessons here are residual decoding, reprojected feedback, and independent
-numerical parity checks. Copying its large transformer or style/noise inputs
-would not establish reconstruction quality on our data.
-
-Our choice is an engineering judgment based on the old selector's bounded
-output and observed loss of detail, not a claim to reproduce either project.
-Capacity changes must earn their place in this one implementation.
-
-## Runtime
-
-`ommatidia::transport::native::Native::new(context, config, low_extent)` accepts
-the host's existing Blade context. Input `Ray` and `Surface` buffers contain only
-renderer observations; `Target` is a separate training type.
-
-Submit `record_prepare`, then the Meganeura session, then `record_resolve` in
-queue order. Output is linear RGBA f32. Reset on camera cuts; recreate on extent
-changes. `process` is the synchronous CPU-upload/readback evaluation helper,
-not a frame-time benchmark. Old `Upscaler` and the old C ABI were removed.
-
-Inference explicitly requests f32 operands and disables dispatch fusion to keep
-the capacity control numerically consistent; graph rewrites remain enabled.
-Meganeura's automatic policy can otherwise select f16-input kernels by shape.
-Training's full-precision derivative policy is unchanged. This is a runtime
-precision choice, not a new architecture or a demonstrated quality gain;
-performance must be measured again before publication.
-
-## Correctness boundary
-
-CPU/WGSL preparation parity covers raw features, 24 frames of flat/sloped
-recurrence, invalid history, resets and HDR. A separate uninterrupted 40-frame
-check crosses the 16- and 32-frame diffuse limits and verifies state ages.
-The two-frame training graph at 8×8 input is checked against Meganeura's f64
-reference for its loss and every parameter gradient, including fused/unfused
-lowerings. At the production 128×128 extent, two directional probes per tensor
-compare backward gradients with converged forward finite differences. The latter
-uses a one-frame loss and synthetic inputs, not an exhaustive gradient check on
-captured data. A training-and-reload test must reduce loss.
-
-Blade is pinned to `fbb4f28`, Meganeura to `ee3aea4`, and Naga to `323acfb` plus
-the tracked [workgroup-layout correction](../patches/README.md).
-A sibling Cargo patch allows local Blade development; Meganeura uses its exact
-upstream pin. Run manifests record actual revisions and dirty diffs. The patched
-SPIR-V backend resolves the reproduced `VUID-StandaloneSpirv-None-10684` failure:
-debug GPU checks pass on RADV and LavaPipe with zero validation errors, as do
-debug capture/train/reload. The run recorder still treats validation errors as
-failure even when the child exits zero. This targeted conformance result does
-not establish full wgpu/CTS coverage; see the [archived evidence](archive/quality-week.md).
+The renderer submits `Native::record_prepare(..., jitter, exposure)`, the shared
+Meganeura inference session, then `record_resolve`, in queue order. Only packing
+and RGB/state resolve remain in WGSL. Reset on cuts; recreate on extent changes.
+`process` is an offline upload/readback convenience, not a latency benchmark.
+Inference keeps the verified f32/unfused policy and pinned Naga layout fix.
+Tests independently check CPU/WGSL packing and taps, 24-frame recurrent HDR/reset
+parity, exposure equivariance, f64 loss/every-parameter gradients under both
+lowerings, production-size directional gradients and bit-exact reload.
+Current evidence and outstanding gates are in [the run ledger](experiments.md).

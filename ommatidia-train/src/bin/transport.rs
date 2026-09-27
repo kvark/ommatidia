@@ -261,13 +261,13 @@ impl Score {
 fn rejected_history_mask(validity: &[f32], low: [u32; 2], config: Config) -> Vec<bool> {
     let width = (low[0] * config.scale) as usize;
     let n = (low[0] * low[1] * config.scale.pow(2)) as usize;
-    assert_eq!(validity.len(), 2 * n);
+    assert_eq!(validity.len(), n);
     assert!(
         validity.iter().all(|&v| v == 0.0 || v == 1.0),
         "invalid reprojection mask"
     );
     (0..n)
-        .map(|i| (0..2).any(|lobe| validity[config.index(low, lobe, i % width, i / width)] == 0.0))
+        .map(|i| validity[config.index(low, 0, i % width, i / width)] == 0.0)
         .collect()
 }
 fn surfaces(frame: &Frame) -> Vec<ommatidia::temporal::Surface> {
@@ -329,7 +329,6 @@ fn evaluate(
     corpus: &Corpus,
     config: Config,
     learned: &mut native::Native,
-    baseline: &mut native::Native,
     out: &Path,
     options: &EvaluationOptions,
 ) -> Result<serde_json::Value> {
@@ -342,7 +341,7 @@ fn evaluate(
         "history_mode":if options.reset_every.is_some() { "periodic-cuts" } else { "causal" },
         "metric_space":"PSNR/SSIM/gradient/lobe MSE: x/(1+x); energy: scene-linear; PNG: same compression then sRGB",
         "temporal_scope":"motion-compensated change residual; pairs crossing resets are excluded; undefined metrics are null",
-        "rejected_history_space":"pixel-weighted compressed RGB MSE on non-reset pixels with unavailable reprojection in either lobe; includes disocclusions and out-of-frame motion, excludes reactive/learned gate suppression; empty regions are null",
+        "rejected_history_space":"pixel-weighted compressed RGB MSE on non-reset pixels with no in-frame geometric warp tap; excludes learned alpha suppression; empty regions are null",
         "bucket_definitions":{"cold":"0","early":"1-7","settling":"8-15","warm":">=16"},
         "speed_claim":false,
     });
@@ -352,9 +351,9 @@ fn evaluate(
         .map(|dir| ControlRun::open(dir, &report))
         .transpose()?;
     let roles: &[&str] = if control.is_some() {
-        &["baseline", "learned", "control"]
+        &["learned", "control"]
     } else {
-        &["baseline", "learned"]
+        &["learned"]
     };
     let mut scores = vec![Score::default(); roles.len()];
     let mut buckets = std::collections::BTreeMap::from(
@@ -395,10 +394,9 @@ fn evaluate(
         }
         if reset {
             learned.reset();
-            baseline.reset();
         }
         let prefix = format!("{:03}-{:03}", index / corpus.length, index % corpus.length);
-        let mut images = vec![baseline.process(frame)?, learned.process(frame)?];
+        let mut images = vec![learned.process(frame)?];
         if let Some(control) = &control {
             images.push(control.load(&prefix, &target.rgb)?);
         }
@@ -417,10 +415,8 @@ fn evaluate(
             score.add(image, &target.rgb, extent, reset);
         }
         if !reset {
-            for (k, model) in [&*baseline, &*learned].into_iter().enumerate() {
-                let mask = rejected_history_mask(&model.read_history_validity(), frame.low, config);
-                frame_scores[k].add_rejected_history(&images[k], &target.rgb, &mask);
-            }
+            let mask = rejected_history_mask(&learned.read_history_validity(), frame.low, config);
+            frame_scores[0].add_rejected_history(&images[0], &target.rgb, &mask);
         }
         if let Some((old, reference, old_surfaces)) = &previous {
             let warp = ommatidia::temporal::Reprojection {
@@ -452,7 +448,7 @@ fn evaluate(
         let mut cells: Vec<_> = frame_scores.iter().map(Score::cells).collect();
         if control.is_some() {
             cells.push(std::array::from_fn(|i| {
-                cells[1][i].zip(cells[2][i]).map(|(new, old)| new - old)
+                cells[0][i].zip(cells[1][i]).map(|(new, old)| new - old)
             }));
         }
         for value in cells.into_iter().flatten() {
@@ -475,18 +471,19 @@ fn evaluate(
             "frame": index % corpus.length,
             "reference_composition_mse": metrics::error(&composition, &target.rgb),
         });
-        for (name, model) in [("baseline", &*baseline), ("learned", &*learned)] {
+        for (name, model) in [("learned", &*learned)] {
             let state = model.read_state();
-            let lobes: [Vec<f32>; 2] = [
-                state
-                    .iter()
-                    .flat_map(|s| s.diffuse[..3].iter().copied())
-                    .collect(),
-                state
-                    .iter()
-                    .flat_map(|s| s.specular[..3].iter().copied())
-                    .collect(),
-            ];
+            let width = extent[0] as usize;
+            let lobes: [Vec<f32>; 2] = std::array::from_fn(|lobe| {
+                (0..frame.surfaces.len())
+                    .flat_map(|i| {
+                        let values = &state.values;
+                        (0..3).map(move |c| {
+                            values[config.index(frame.low, 3 * lobe + c, i % width, i / width)]
+                        })
+                    })
+                    .collect()
+            });
             let shaded = |values: &[f32]| -> Vec<f32> {
                 values
                     .iter()
@@ -498,8 +495,6 @@ fn evaluate(
                 "diffuse_illumination_mse": metrics::error(&lobes[0], &truth[0]),
                 "diffuse_radiance_mse": metrics::error(&shaded(&lobes[0]), &shaded(&truth[0])),
                 "specular_radiance_mse": metrics::error(&lobes[1], &truth[1]),
-                "mean_diffuse_age": state.iter().map(|s| f64::from(s.diffuse[3])).sum::<f64>() / state.len() as f64,
-                "mean_specular_age": state.iter().map(|s| f64::from(s.specular[3])).sum::<f64>() / state.len() as f64,
             });
             if options.save_lobes {
                 for (lobe, values) in ["diffuse", "specular"].into_iter().zip(&lobes) {
@@ -521,11 +516,7 @@ fn evaluate(
             }
         }
         diagnostics.push(diagnostic);
-        for (name, image) in [
-            ("base", &images[0]),
-            ("learned", &images[1]),
-            ("reference", &target.rgb),
-        ] {
+        for (name, image) in [("learned", &images[0]), ("reference", &target.rgb)] {
             if !options.no_images {
                 save_png(&out.join(format!("{prefix}-{name}.png")), image, extent)?;
             }
@@ -567,7 +558,7 @@ fn main() -> Result<()> {
     let mut eval = Vec::new();
     let mut out = PathBuf::from("runs/transport");
     let mut steps = 4000usize;
-    let mut unroll = 2usize;
+    let mut unroll = 4usize;
     let mut channels = 16;
     let mut seed = 7u64;
     let mut rate = 0.0003f32;
@@ -584,11 +575,11 @@ fn main() -> Result<()> {
         if arg == "--help" {
             println!(
                 "transport --data TRAIN.omd --eval-data DEV.omd --out DIR
-  --steps N [4000] --unroll N [2] --channels N [16] --seed N [7]
+  --steps N [4000] --unroll N [4] --channels N [16] --seed N [7]
   --lr F [0.0003] --eval-every N [10000] (causal metrics, no images) --device-id ID
   --train-reset-every N [2] (training: empty history each Nth window)
   --reset-every N [off] (evaluation: simulated cut each N frames, within each sequence)
-  --checkpoint FILE (weights-only warm start, or evaluation input)
+  --checkpoint FILE (evaluation input; optimizer-resume belongs to Phase 3)
   --eval-only (loads checkpoint sidecar; evaluation resolution may differ)
   --profile-only (training-loop measurement; save checkpoint/timings, skip evaluation)
   --reset-history (eval-only diagnostic: reset the model before every frame)
@@ -663,6 +654,12 @@ seeds/catalog families must be disjoint. Use a separate final audit split."
         }
     }
     weights.validate()?;
+    if checkpoint_input.is_some() && !eval_only {
+        return Err(
+            "training starts from scratch; optimizer/cursor resume is not available until Phase 3"
+                .into(),
+        );
+    }
     if profile_only && eval_only {
         return Err("--profile-only and --eval-only are mutually exclusive".into());
     }
@@ -696,7 +693,7 @@ seeds/catalog families must be disjoint. Use a separate final audit split."
         checkpoint_input = Some(checkpoint.clone());
     }
     let config = if let Some(path) = &checkpoint_input {
-        ron::from_str(&std::fs::read_to_string(
+        Config::parse(&std::fs::read_to_string(
             path.parent().unwrap().join("model.transport.ron"),
         )?)?
     } else {
@@ -721,7 +718,6 @@ seeds/catalog families must be disjoint. Use a separate final audit split."
     );
     let context = ommatidia::gpu::create_context(device_id, false);
     let mut learned = native::Native::new(Arc::clone(&context), config, low)?;
-    let mut baseline = native::Native::new(Arc::clone(&context), config, low)?;
     if eval_only {
         learned
             .session
@@ -752,15 +748,33 @@ seeds/catalog families must be disjoint. Use a separate final audit split."
         );
         let mut session = ommatidia::gpu::training_session(&network.graph, Arc::clone(&context));
         network.initialize(&mut session, seed);
-        if let Some(path) = &checkpoint_input {
-            // A training-session load also restores Adam moments and its step.
-            // Use inference to validate the asset, then copy parameters only.
-            learned.session.load_checkpoint(path)?;
-            let names: Vec<_> = network.params.iter().map(|p| p.name.as_str()).collect();
-            for (name, values) in names.iter().zip(learned.session.read_params(&names)) {
-                session.set_parameter(name, &values);
+        // Training targets only, never development/audit images, set the radiance prior.
+        let mut means = [0.0_f64; 6];
+        let mut mean_pixels = 0usize;
+        for record in &train.frames {
+            let (frame, target) = record.decode(config)?;
+            let n = frame.surfaces.len();
+            mean_pixels += n;
+            for (c, sum) in means.iter_mut().enumerate() {
+                *sum += target.lobes[c * n..(c + 1) * n]
+                    .iter()
+                    .map(|v| f64::from(*v) * f64::from(frame.exposure))
+                    .sum::<f64>();
             }
         }
+        for v in &mut means {
+            *v /= mean_pixels as f64;
+        }
+        let bias: Vec<_> = means
+            .iter()
+            .flat_map(|v| {
+                std::iter::repeat_n(
+                    v.ln().clamp(-16.0, 11.0) as f32,
+                    config.scale.pow(2) as usize,
+                )
+            })
+            .collect();
+        session.set_parameter("head.radiance.bias", &bias);
         std::fs::write(
             out.join("model.transport.ron"),
             ron::ser::to_string_pretty(&config, ron::ser::PrettyConfig::default())?,
@@ -773,8 +787,9 @@ seeds/catalog families must be disjoint. Use a separate final audit split."
                 "macs_scope":"dense forward convolutions per frame, padded taps included; excludes activations, warp, preparation and backward",
                 "profile_only":profile_only,
                 "evaluation":{"every":eval_every,"history_mode":"causal","pngs":false},
-                "loss_weights":weights, "warm_start":checkpoint_input, "optimizer_resumed":false,
-                "preparation":"native GPU features/guide/history; CPU differentiable gather maps",
+                "loss_weights":weights, "optimizer_resumed":false, "corpus_mean_normalized_lobes":means,
+                "reload_check":"bitwise equality of every trained parameter before final evaluation",
+                "preparation":"native GPU observation packing and geometric warp maps; graph radiance/latent recurrence",
                 "cpu_corpus":"original f16 capture records; per-frame f32 expansion with no requantization",
                 "window_sampling":{
                     "sequence":"uniform", "start":"uniform among complete unrolls",
@@ -820,17 +835,10 @@ seeds/catalog families must be disjoint. Use a separate final audit split."
                 timing.record(Stage::FrameDecode, stage);
                 let (frame, target) = (&frame, &target);
                 let stage = Instant::now();
-                let old = if warmup + slot == 0 {
-                    Vec::new()
-                } else {
-                    learned.read_state()
-                };
-                timing.record(Stage::ReadPrepared, stage);
-                let stage = Instant::now();
                 learned.advance(frame)?;
                 timing.record(Stage::SlotAdvance, stage);
                 let stage = Instant::now();
-                let prepared = learned.read_prepared(frame, &old);
+                let prepared = learned.read_prepared(frame);
                 timing.record(Stage::ReadPrepared, stage);
                 let stage = Instant::now();
                 graph::feed(&mut session, &format!("f{slot}"), &prepared, target, slot);
@@ -881,7 +889,6 @@ seeds/catalog families must be disjoint. Use a separate final audit split."
                     &holdout,
                     config,
                     &mut learned,
-                    &mut baseline,
                     &dir,
                     &EvaluationOptions::training(),
                 )?;
@@ -898,7 +905,7 @@ seeds/catalog families must be disjoint. Use a separate final audit split."
         }
         let profile_report = serde_json::json!({
             "scope":"non-overlapping host wall time; excludes corpus loading, session setup, checkpoints, evaluation and profile CSV writes; advance and step include their GPU waits",
-            "read_prepared_scope":"previous state readback, prepared-input readback and CPU history_maps",
+            "read_prepared_scope":"prepared-input and GPU-generated warp-map readback",
             "device":context.device_information().device_name,
             "low_extent":low, "unroll":unroll,
             "training_frames":train.frames.len(), "training_sequences":train.frames.len() / train.length,
@@ -913,17 +920,33 @@ seeds/catalog families must be disjoint. Use a separate final audit split."
             serde_json::to_string(&profile_report)?
         );
         session.save_checkpoint(&checkpoint)?;
+        // Verify the actual final training state, not two loads of the same file.
+        learned.session.load_checkpoint(&checkpoint)?;
+        let names: Vec<_> = network.params.iter().map(|p| p.name.as_str()).collect();
+        for ((name, live), loaded) in names
+            .iter()
+            .zip(session.read_params(&names))
+            .zip(learned.session.read_params(&names))
+        {
+            if live.len() != loaded.len()
+                || live
+                    .iter()
+                    .zip(&loaded)
+                    .any(|(a, b)| !a.is_finite() || a.to_bits() != b.to_bits())
+            {
+                return Err(format!("final checkpoint did not reload {name} bit-exactly").into());
+            }
+        }
+        println!("final checkpoint: all parameters finite and bit-exact after reload");
         if profile_only {
             return Ok(());
         }
         // Score serialized weights, not the still-live training session.
-        learned.session.load_checkpoint(&checkpoint)?;
     }
     let mut report = evaluate(
         &holdout,
         config,
         &mut learned,
-        &mut baseline,
         &out,
         &if eval_only {
             evaluation
@@ -1032,6 +1055,7 @@ mod tests {
         let frame = Frame {
             low,
             jitter: [0.0; 2],
+            exposure: 1.0,
             rays: Vec::new(),
             surfaces: vec![
                 ommatidia::transport::Surface {
@@ -1082,13 +1106,13 @@ mod tests {
     }
 
     #[test]
-    fn rejected_history_preserves_lobe_and_subpixel_layout() {
+    fn geometric_validity_preserves_subpixel_layout() {
         let config = Config::default();
         let low = [4, 8];
-        let mut validity = vec![1.0; 2 * 8 * 16];
+        let mut validity = vec![1.0; 8 * 16];
         assert!(!rejected_history_mask(&validity, low, config).contains(&true));
         validity[config.index(low, 0, 3, 0)] = 0.0;
-        validity[config.index(low, 1, 0, 15)] = 0.0;
+        validity[config.index(low, 0, 0, 15)] = 0.0;
         let mask = rejected_history_mask(&validity, low, config);
         assert_eq!(mask.iter().filter(|&&v| v).count(), 2);
         assert!(mask[3] && mask[120]);

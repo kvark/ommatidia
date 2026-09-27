@@ -46,7 +46,11 @@ def score(directory, output):
         raise ValueError("requires --save-linear evaluation outputs")
     if "learned_flip" in fields:
         raise ValueError("evaluation already contains FLIP; use original raw outputs")
-    roles = {"baseline": (directory, "base"), "learned": (directory, "learned")}
+    # Archived v3 reports retain their baseline; v4 has only one live model.
+    roles = {}
+    if "baseline_psnr" in fields:
+        roles["baseline"] = (directory, "base")
+    roles["learned"] = (directory, "learned")
     if quality["control_run"] is not None:
         roles["control"] = (Path(quality["control_run"]), "learned")
     added = ["reference_sha256"] + [f"{role}_flip" for role in roles]
