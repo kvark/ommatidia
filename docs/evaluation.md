@@ -29,11 +29,16 @@ cargo run --release -p ommatidia-train --bin transport -- \
 Repeat `--data` and `--eval-data` to combine captures with equal dimensions and
 sequence lengths. Training samples sequences uniformly across the combined
 corpus (larger captures contribute more). Evaluation can use another resolution.
-Unroll starts are uniform over complete windows. Every other update resets
+Unroll starts are uniform over complete windows. By default every other update resets
 history at that sampled start, providing varied cold-start examples rather than
 only the first frame of each scene. Other updates warm the full prefix using
 current weights. The sampling policy is recorded in `training.json`; `loss.csv`
 includes the sequence, start and actual warmup length for every update.
+`--reset-every N` makes this positive interval explicit (default 2). With
+`--reset-every 1 --unroll 1`, every sampled frame is a cold training example.
+This training control does not change causal evaluation; `--reset-history` is a
+separate evaluation-only diagnostic. Test accumulated output as well as cold
+starts before retaining weights trained without warm history.
 Prefer training at the target evaluation resolution: identical parameter shapes
 do not imply identical pixel-footprint or history statistics.
 `--checkpoint` during training is a weights-only warm start, **not** an Adam
