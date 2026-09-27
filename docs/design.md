@@ -3,8 +3,9 @@
 The maintained model is a lobe-separated radiance-residual U-Net. There is one
 graph builder, one trainer, and one GPU runtime. Config version 3 rejects the
 retired selector versions. Earlier diffusion, kernel, field/relighting and C ABI
-implementations are recoverable at Git commit `b838674` (also the local branch
-`archive/experiments-2026-09-25`); they are not compatibility modes.
+implementations are recoverable at tag `archive/experiments-2026-09-25`
+(`e0922c6`); they are not compatibility modes. The adopted [v4 plan](../PLAN.md)
+will replace v3, not add a second selectable architecture.
 
 ## Architecture
 
@@ -118,4 +119,4 @@ SPIR-V backend resolves the reproduced `VUID-StandaloneSpirv-None-10684` failure
 debug GPU checks pass on RADV and LavaPipe with zero validation errors, as do
 debug capture/train/reload. The run recorder still treats validation errors as
 failure even when the child exits zero. This targeted conformance result does
-not establish full wgpu/CTS coverage; see the [evidence](quality-week.md).
+not establish full wgpu/CTS coverage; see the [archived evidence](archive/quality-week.md).

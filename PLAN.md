@@ -1,7 +1,13 @@
 # Plan: one end-to-end reconstruction model (config v4)
 
-Status: proposed, 2026-09-27. Audience: the implementation agent. Owner: kvark.
+Status: adopted, 2026-09-27; Phase 0 in progress. Owner: kvark.
 Read all of §0–§3 before starting. Open decisions for the owner are in §12.
+
+Implementation starts from `origin/main` at `232a278`, after the owner merged
+PRs #21 (this plan) and #22 (the rebaseline). No duplicate merge is needed.
+`TASK.md` was deliberately removed; its closure and original gate are preserved
+in [the archived sprint](docs/archive/quality-week.md). Run summaries go in
+[docs/experiments.md](docs/experiments.md). Defaults D1–D6 apply.
 
 ## 0. Mission
 
@@ -18,7 +24,7 @@ Why:
   history weight: to reject stale history at h = 15/16 the network must emit residuals
   of order −150·(H−S)/(S+1). Blotches and cold-start noise come from a fixed four-level
   à-trous filter with 50% weight on its ~15-pixel level. The sprint diagnosed both
-  (`docs/quality-week.md` on the rebaseline branch).
+  (`docs/archive/quality-week.md`).
 - The spatial path is the weak link. OIDN, single frame and no history, reached a
   smooth-crop ratio of 0.523 against v3's 0.552 on the first audit.
 - Training is starved. Batch 1, about three visits per training frame per run, and
@@ -64,7 +70,10 @@ Time box: about 12 working days. If a phase overruns its box by 50%, stop and re
 weights, history caps, thresholds, clamps or edge-stopping functions. If the model
 seems to need a signal, add it as an input feature and let the network learn to use it.
 
-## 2. Current state (verified 2026-09-27)
+## 2. Planning baseline (verified before adoption, 2026-09-27)
+
+This section records the plan's starting assumptions. The adoption note above
+supersedes its branch/merge status; implementation checks supersede test counts.
 
 **Code**
 
@@ -164,25 +173,28 @@ update.
 
 Goal: a correct `main` to build on.
 
-- [ ] Close the quality sprint using `TASK.md`'s "Miss" rule:
+- [x] Close the quality sprint using the removed `TASK.md`'s "Miss" rule:
   - Record the outcome of the width-32 run (`wide-cold-training/`) if it finished;
     otherwise stop it and record that.
-  - Append at most 15 lines to `TASK.md`: gates missed, the strongest evidence, and
-    "next hypothesis: `PLAN.md`".
+  - Record at most 15 closure lines in the archived sprint: gates missed, the
+    strongest evidence, and "next hypothesis: `PLAN.md`". Do not restore `TASK.md`.
   - Move `docs/quality-week.md` to `docs/archive/`.
   - Run no further sprint experiments.
-- [ ] Merge `agent/rebaseline-2026-09-25` into `main` with a merge commit, then merge
-  this plan's branch.
-- [ ] README consistency (decision D1, default shown):
+- [x] Consolidate the rebaseline and plan into `main`: the owner merged PRs #21
+  and #22 before implementation began (rebased, not duplicated with a merge commit).
+- [x] README consistency (decision D1, default shown):
   - Keep the published checkpoint.
   - Note that its numbers came from the runtime before the decoder fix.
   - Archive that runtime so the numbers stay reproducible, as the sprint's
     `initial-linear-build/` did from `049a7bd`.
-- [ ] Push a tag `archive/experiments-2026-09-25` → `e0922c6`. Today that commit is
+- [x] Push a tag `archive/experiments-2026-09-25` → `e0922c6`. At planning time that commit was
   reachable only through PR #20's ref. Update the pointers in README and `docs/design.md`.
 - [ ] Naga: port the in-tree patch's handling of SPIR-V below 1.4 into gfx-rs/wgpu#9295,
   which answers the reviewer's open question. Keep `patches/` until a pinned upstream
   revision contains the fix.
+  - Local port at `target/naga-pr9295` (base `731fd872`): targeted SPIR-V
+    validation and all-feature Clippy pass. Upstream publication awaits owner
+    review under wgpu's contribution policy; no upstream branch has been changed.
 
 Done when: `main` builds with the documented steps; fmt, clippy, unit tests and CI
 (including the LavaPipe job) are green; and every README number is reproducible from
@@ -452,7 +464,8 @@ Every rung reports, in one `docs/experiments.md` row per run:
     - the 1080p extrapolation.
 
     More than 2× v3's FLOPs per pixel needs owner approval.
-  - Also report `TASK.md`'s original gate for continuity.
+  - Also report the archived sprint's original ≤ 0.50 smooth-crop gate against
+    the original published checkpoint for continuity.
 - [ ] Measure performance with `benchmark` on an idle GPU: two warm-up and three measured
   sequences.
 - [ ] Publish:

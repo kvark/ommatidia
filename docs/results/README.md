@@ -3,7 +3,9 @@
 One architecture, one selected checkpoint. The width-16 recurrent
 lobe-separated residual U-Net remains unchanged at **188,160 parameters**.
 This updates the single result gallery; earlier evidence remains in Git at
-`91c123d`, and retired architectures at `b838674`.
+`91c123d`, and retired architectures at tag `archive/experiments-2026-09-25`
+(`e0922c6`). These pictures and numbers use the pre-fix v3 decoder; do not
+reproduce them with the current decoder. See the [runtime archive](../archive/README.md).
 
 ## Outcome
 
@@ -33,7 +35,7 @@ Reset scores cover eight initial frames per set; temporal scores cover 120
 adjacent-frame pairs per set. Definitions are in [evaluation.md](../evaluation.md).
 
 The original published audit is now a **regression set**, not an untouched test.
-Both checkpoints were rerun on those same frames with the current runtime:
+Both checkpoints were rerun on those same frames with the then-current pre-fix runtime:
 
 | Original published scenes | Previous PSNR | Now | Previous SSIM | Now |
 |---|---:|---:|---:|---:|
@@ -136,7 +138,7 @@ recorded 20/40 Naga `VUID-StandaloneSpirv-None-10684` Workgroup-array layout
 errors despite passing numerical assertions. Those failures remain recorded.
 Optimized training/evaluation disable validation; their successful exits do not
 establish conformance. Subsequent debug checks with the pinned compiler repair
-pass with zero validation errors; see [the quality sprint](../quality-week.md).
+pass with zero validation errors; see [the archived quality sprint](../archive/quality-week.md).
 That does not retroactively validate these older runs or establish real-time speed.
 
 Blade `fbb4f28`, Naga `323acfb`, and the user's clean Meganeura checkout
