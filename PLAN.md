@@ -231,7 +231,7 @@ Goal: know where training time goes, and have the metrics that will decide v4.
   multiply-accumulates from shapes). Print it at startup and store it in `training.json`.
   Check that v3 at width 16 on a 128×128 LR grid gives 1.05 G multiply-accumulates
   (2.09 GFLOP) per frame.
-- [ ] **Evaluator** (`ommatidia-train/src/bin/transport.rs`):
+- [x] **Evaluator** (`ommatidia-train/src/bin/transport.rs`):
   - `--reset-every N`: simulated cuts during evaluation; off by default.
   - Standard development protocol = two runs: causal, and `--reset-every 16`.
   - Add a `frames_since_reset` column to `frames.csv`. Aggregate cold (0 frames since
@@ -241,11 +241,11 @@ Goal: know where training time goes, and have the metrics that will decide v4.
     replaces the zero-head guide baseline once v3 is deleted.
   - During training, evaluate causal metrics only, without PNGs, every 10,000 steps.
     Candidates get the full protocol.
-- [ ] **ꟻLIP.** Report the mean LDR ꟻLIP per frame on the fixed display transform
+- [x] **ꟻLIP.** Report the mean LDR ꟻLIP per frame on the fixed display transform
   (`x/(1+x)`, then sRGB). Use the official implementation in a scoring script
   (`pip install flip-evaluator`) or port it to Rust. Validate against the reference
   implementation's test images to within 1e-4.
-- [ ] **Confidence intervals.** Write a script that compares two runs' `frames.csv`: mean
+- [x] **Confidence intervals.** Write a script that compares two runs' `frames.csv`: mean
   difference and 95% bootstrap interval (1,000 resamples of sequences). Cover PSNR,
   ꟻLIP, temporal MSE, energy, and the cold/early/warm splits.
 - [x] **Development crops.** Commit the development rectangles the sprint used (recorded

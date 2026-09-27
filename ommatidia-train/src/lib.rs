@@ -2,6 +2,7 @@
 use ommatidia::dataset::{InputSource, Reader};
 use std::{io::Write, path::Path};
 
+pub mod evaluation;
 pub mod profile;
 
 pub type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;

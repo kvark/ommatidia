@@ -65,7 +65,7 @@ cargo +1.92.0 test --workspace --locked
 cargo build --release --workspace
 cargo run --release -p ommatidia-train --bin transport -- \
   --data data/train.omd --eval-data data/dev.omd --out runs/model \
-  --steps 4000 --channels 16 --unroll 2 --lr 0.0003 --eval-every 500
+  --steps 4000 --channels 16 --unroll 2 --lr 0.0003
 ```
 
 [Architecture and runtime](docs/design.md) ·

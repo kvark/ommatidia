@@ -113,6 +113,14 @@ class RegionTests(unittest.TestCase):
             result = scorer.score(self.benchmark(), before, after)
             self.assertAlmostEqual(result["groups"]["kind"]["smooth"]["ratio"]["mse"], 0.25)
             self.assertIsNone(result["groups"]["kind"]["smooth"]["ratio"]["gradient_mse"])
+            self.assertIsNotNone(result["groups"]["age"]["cold"]["smooth"])
+            self.assertIsNotNone(result["groups"]["age"]["early"]["smooth"])
+            self.assertIsNone(result["groups"]["age"]["warm"]["smooth"])
+            for frame in range(2):
+                (before / f"000-{frame:03}-base.rgbf32").write_bytes(struct.pack("<48f", *([1.0] * 48)))
+            cut = scorer.score(self.benchmark(), before, after, before_role="base", reset_every=1)
+            self.assertIsNone(cut["groups"]["age"]["early"]["smooth"])
+            self.assertAlmostEqual(cut["groups"]["age"]["cold"]["smooth"]["ratio"]["mse"], 0.25)
             (after / "000-001-reference.rgbf32").write_bytes(struct.pack("<48f", *([0.01] * 48)))
             with self.assertRaises(ValueError):
                 scorer.score(self.benchmark(), before, after)
@@ -192,7 +200,7 @@ class RegionTests(unittest.TestCase):
 
     def test_frozen_selection_rejects_bad_dates_source_or_evaluation(self):
         mutations = ["late", "before-build", "naive-time", "wrong-source", "dirty-build",
-                     "wrong-checkpoint", "duplicate-checkpoint", "reset-command", "reset-report", "incomplete-report"]
+                     "wrong-checkpoint", "duplicate-checkpoint", "reset-command", "periodic-reset-command", "reset-report", "incomplete-report"]
         for mutation in mutations:
             with self.subTest(mutation=mutation), tempfile.TemporaryDirectory() as temporary:
                 root = Path(temporary)
@@ -216,6 +224,8 @@ class RegionTests(unittest.TestCase):
                     manifest["command"].extend(["--checkpoint", selection["checkpoint"]])
                 elif mutation == "reset-command":
                     manifest["command"].append("--reset-history")
+                elif mutation == "periodic-reset-command":
+                    manifest["command"].extend(["--reset-every", "16"])
                 else:
                     quality_path = root / "images/quality.json"
                     quality = json.loads(quality_path.read_text())

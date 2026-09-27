@@ -83,8 +83,15 @@ jobs:
           python3 -m py_compile scripts/prepare-naga.py scripts/record-run.py scripts/verify-results.py scripts/fetch-catalog.py scripts/score-regions.py scripts/render-comparisons.py
           python3 scripts/test-fetch-catalog.py
           python3 scripts/test-score-regions.py
+          python3 scripts/test-evaluation.py
           python3 scripts/test-render-comparisons.py
           bash -n scripts/check-cache.sh scripts/capture-catalog.sh
+      - name: Check official LDR-FLIP reference
+        working-directory: ommatidia
+        run: |
+          python3 -m venv target/evaluation-env
+          target/evaluation-env/bin/pip install -r scripts/evaluation-requirements.txt
+          target/evaluation-env/bin/python scripts/test-flip.py --reference-dir target/flip-reference
       - name: Check published result evidence
         working-directory: ommatidia
         run: python3 scripts/verify-results.py
@@ -147,6 +154,9 @@ jobs:
             --eval-data target/dev.omd --out target/reload --eval-only \
             --checkpoint target/smoke/model.safetensors
           cmp target/smoke/frames.csv target/reload/frames.csv
+          python3 scripts/record-run.py target/ci-evaluation -- \
+            python3 scripts/check-evaluation.py --binary target/debug/transport \
+            --train-data target/train.omd --eval-data target/dev.omd --out target/evaluation-smoke
       - name: Upload numerical and capture evidence
         if: always()
         uses: actions/upload-artifact@v4
