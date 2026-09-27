@@ -878,6 +878,36 @@ formatting also pass. These synthetic-input probes find no backward-kernel
 failure; they do not prove correctness for all captured inputs or identify the
 remaining quality bottleneck.
 
+### Bounded balanced-training exposure test
+
+The diverse all-cold stages each visit only 2,030 of 2,560 observations in
+4,000 updates (79.3% coverage, 1.5625 draws per observation); individual scenes
+receive 76–117 draws. The successful same-scene cold-noise diagnostic supplies
+2,000 draws over 64 observations (31.25 per observation). These are stage-local
+counts, not the weights' complete training ancestry. Together with the modest
+training-set fitting gain and passing gradient probes, they leave insufficient
+optimization exposure as a concrete hypothesis; they do not establish it.
+
+Test a bounded training package in the retained width-16 model: start from the
+broad parent `89e81df0…51bbe`, use fresh Adam, seed 31, the unchanged 40-scene
+training / ten-scene development corpus, two-frame unroll, reset every other
+window, unchanged losses and 16/8 history. Use 16,000 updates, initial learning
+rate 0.0003 and the existing cosine schedule. This restores mature-history and
+temporal-loss supervision omitted by all-cold training, while increasing cold
+exposure. It tests the package, not isolated attribution to duration, rate or
+sampling. Evaluate all 640 causal development frames at 4,000-update intervals,
+retaining full-precision outputs. Do not use width-32 or single-scene fit weights.
+
+Before starting, pass an eight-update production-resolution debug train/reload
+check using the retained parent and sampling policy. Use the already recorded
+clean f32 release executable for the broad run. Stop on numerical or validation
+failure; otherwise finish the fixed budget without automatic extension. Assess
+cold/mature crops, edge/texture error, energy, lighting response, temporal scores
+and worst frames together. Repeat the fixed 50-frame fitting probe for any
+development-selected candidate. Do not consume confirmation data merely because
+training loss or mean PSNR falls; a visibly useful, development-supported result
+and a new immutable selection record are still required.
+
 ## Progress and evidence
 
 - Initial validation reproduction:

@@ -96,7 +96,8 @@ pause scaling training and resolve the bottleneck first.
       inference passes the full initialization parity probes at the unchanged
       tolerance. Adapter-specific correctness/reload and production-resolution
       directional-gradient checks pass. Precision-policy effects were measured
-      separately from training gains. See the protocol.
+      separately from training gains. A bounded 16,000-update balanced-history
+      follow-up tests the remaining training-exposure hypothesis. See the protocol.
 - [x] Run bounded, hypothesis-driven experiments, selecting checkpoints on the
       development set rather than the final audit.
       Selected the reset-balanced model plus the signed-decoder follow-up, with
