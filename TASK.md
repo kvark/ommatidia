@@ -2,9 +2,11 @@
 
 ## Goal
 
-Deliver one demonstrably useful denoiser at the current **1-spp 128×128 input →
-256×256 reconstruction** setting: visibly cleaner surfaces and reflections,
-stable in motion, with one architecture and a reproducible checkpoint.
+Spend **seven working days** making the existing denoiser demonstrably useful
+on a small, fixed benchmark at the current **1-spp 128×128 input → 256×256
+reconstruction** setting: visibly cleaner surfaces and reflections, stable in
+motion, with one architecture and a reproducible checkpoint. This is a focused
+quality milestone, not a claim of general-purpose reconstruction.
 
 The week's deliverable is an updated README with matched before/after/reference
 images, measured quality numbers, and short motion comparisons, backed by that
@@ -20,6 +22,19 @@ At the start of this sprint, a 4,000-update fine-tune took about 25 minutes,
 but visible noise remained.
 Prioritize diagnosing learning limitations, improving supervision, and testing
 over simply extending training.
+
+## Working budget
+
+Use days 1–2 for correctness and fitting diagnostics, days 3–5 for targeted
+changes and bounded training, and reserve days 6–7 for evaluation and the
+handoff. Before each experiment, record its hypothesis, fixed inputs, update
+budget, and rejection criteria. Longer training is an experiment, not evidence
+of progress; do not automatically extend a run that misses its quality target.
+
+The commitment is a reproducible result and an evidence-backed go/no-go decision
+within the week. The quality thresholds below are acceptance targets, not a
+guarantee that a week of training will reach them. A missed target must still
+leave a clear diagnosis and a specific next experiment, not more architectures.
 
 ## Acceptance criteria
 

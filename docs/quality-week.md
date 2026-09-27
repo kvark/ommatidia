@@ -915,6 +915,13 @@ The broad run is live in `balanced-exposure-training/`, writing
 Its initialization is the broad parent, not the smoke checkpoint. No quality
 improvement is claimed before the development evaluations complete.
 
+The comparison renderer now verifies encoded frame count, dimensions and rate
+with FFprobe. Optional review sheets cover all 64 frames consecutively, four
+per page, instead of eight sampled frames. Three regression tests and a real
+64-frame development rendering pass (`complete-review-smoke-run/`, 16 native
+768×1152 sheets). First/last pages were inspected for layout; this is a tool
+check, not complete visual review or a perceptual playback pass for a candidate.
+
 ## Progress and evidence
 
 - Initial validation reproduction:
