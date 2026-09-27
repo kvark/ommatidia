@@ -6,6 +6,8 @@ Only development selects models. Confirmation is reserved for Phase 6.
 
 | Phase | Run | Budget / purpose | Outcome |
 |---|---|---|---|
+| 1, control | `v4-phase1/v3-control-causal-complete` | Frozen `89e81df0…`, 640 development frames; 40 predeclared crop selections | 30.270709 dB; 10 resets, 630 temporal pairs. All PNGs/float outputs reproduce the first run exactly. |
+| 1, control | `v4-phase1/v3-control-reset16-complete` | Same control/data; reset every 16 frames | 29.607780 dB; 40 resets, 600 temporal pairs. All PNGs/float outputs reproduce the first run exactly. |
 | 0, historical | `quality-week-2026-09-26/wide-cold-training` | 4,000 updates, width-32 v3 | Complete, rejected: development 29.385 dB vs parent 30.271; cold smooth ratio 0.820 vs original. |
 | 0, historical | `quality-week-2026-09-26/balanced-exposure-training` | 16,000 planned; 9,277 recorded | Interrupted, not resumed. Last complete eval at 8,000: 30.061 dB, cold/middle smooth ratios 0.941/0.468 vs original; not promoted. |
 | 0 | `v4-phase0/fmt` | Rust 1.92 formatting | Pass. |
@@ -64,6 +66,14 @@ Only development selects models. Confirmation is reserved for Phase 6.
 | 1 | `v4-phase1/flip-smoke-causal` | Official FLIP on separate causal smoke run | Pass; same learned scores as saved-control smoke. |
 | 1 | `v4-phase1/bootstrap-two-runs-smoke` | Compare two separately scored evaluation directories | All defined differences and interval endpoints zero; undefined strata null. |
 | 1 | `v4-phase1/early-crop-tests` | Owner-approved frame-3 reference-only extension | Ten tests pass; all 24 historical selections preserved, sixteen early selections added with reference hashes. |
+| 1 | `v4-phase1/v3-flip-causal-complete` | Official LDR-FLIP, final causal evaluation | Mean 0.10775234; cold/early/warm 0.16870498/0.12633569/0.10374383. |
+| 1 | `v4-phase1/v3-ci-causal-complete` | 1,000 paired sequence resamples vs zero-head guide | Overall PSNR +2.1952 dB [1.8758, 2.5867]; all four metrics and all age strata retained. |
+| 1 | `v4-phase1/v3-crops-causal-complete` | 40 historical + reference-only early selections | Early smooth/edge/texture MSE ratios 0.2041/0.4874/0.0735 vs guide; cold and warm coverage retained. |
+| 1 | `v4-phase1/v3-flip-reset16-complete` | Official LDR-FLIP, final reset-16 evaluation | Mean 0.11928666; cold/early 0.16477328/0.12532265; warm undefined. |
+| 1 | `v4-phase1/v3-ci-reset16-complete` | 1,000 paired sequence resamples vs zero-head guide | Overall PSNR +3.2647 dB [2.9263, 3.6505]; all four metrics and all defined age strata retained. |
+| 1 | `v4-phase1/v3-crops-reset16-complete` | Same 40 locked selections, reset-aware scoring | Early ratios unchanged; age-15 smooth/edge/texture MSE ratios 0.4217/0.7084/0.1277. |
+| 1 | `v4-phase1/verify-control` | Full artifact/coverage/reproduction audit | Pass: 3,840 PNGs and 3,840 float images reproduce exactly; references/protocols/CIs/crops/profile agree; confirmation untouched. |
+| 1 | `v4-phase1/final-handoff-checks` | Committed-result identity, fmt, metric/crop/FLIP tests, published evidence | Pass; report is byte-identical to audited output, 19 tests pass, README images and published freeze unchanged. |
 
 After the owner merged PR #23, [CI run 36298665573](https://github.com/kvark/ommatidia/actions/runs/36298665573)
 passed all five jobs on `main` at `a153c1e`, including LavaPipe and Linux/macOS/Windows
@@ -72,4 +82,5 @@ follow-up. The tested local compiler patch remains in use.
 
 Earlier sprint detail is [archived](archive/quality-week.md). The declared v3
 control is `89e81df0…`; neither interrupted-run snapshots nor width-32 weights
-initialize v4. Phase 1 will measure the control under both evaluation protocols.
+initialize v4. [Phase 1 measurements](phase1-results.md) establish the control
+under both evaluation protocols, with full metrics, intervals and crop coverage.
