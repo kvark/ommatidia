@@ -1,0 +1,28 @@
+# v4 run ledger
+
+Plan: [PLAN.md](../PLAN.md). Paths are relative to the repository. Each new run
+uses `scripts/record-run.py`; its manifest, log and inputs remain under `runs/`.
+Only development selects models. Confirmation is reserved for Phase 6.
+
+| Phase | Run | Budget / purpose | Outcome |
+|---|---|---|---|
+| 0, historical | `quality-week-2026-09-26/wide-cold-training` | 4,000 updates, width-32 v3 | Complete, rejected: development 29.385 dB vs parent 30.271; cold smooth ratio 0.820 vs original. |
+| 0, historical | `quality-week-2026-09-26/balanced-exposure-training` | 16,000 planned; 9,277 recorded | Interrupted, not resumed. Last complete eval at 8,000: 30.061 dB, cold/middle smooth ratios 0.941/0.468 vs original; not promoted. |
+| 0 | `v4-phase0/fmt` | Rust 1.92 formatting | Pass. |
+| 0 | `v4-phase0/clippy` | Workspace/all targets, warnings denied | Pass. |
+| 0 | `v4-phase0/unit` | Workspace Rust tests | 83 pass; eight GPU checks run separately. |
+| 0 | `v4-phase0/lavapipe-tests` | Eight debug GPU checks | Eight pass, zero validation errors. |
+| 0 | `v4-phase0/radv-tests` | Eight debug GPU checks, RX 7900 XT | Eight pass, zero validation errors. |
+| 0 | `v4-phase0/python-tests` | Catalog/crop/render tests and README verifier | 14 tests pass; published evidence agrees. |
+| 0 | `v4-phase0/archive-published` | Preserve the pre-fix executable/build/weights | Ten files copied with checked hashes; originals retained. |
+| 0 | `v4-phase0/published-reproduction` | Both published checkpoints, both fresh audit sets | 512 frame evaluations; metrics exact, 1,536 PNGs byte-identical. |
+| 0 | `v4-phase0/lavapipe-smoke` | Capture, eight training updates, reload | Pass; seven PNG/score files byte-identical, zero validation errors. |
+| 0 | `v4-phase0/cache-check` | Cold/warm texture-cache independence | Captures byte-identical, zero validation errors. |
+| 0 | `v4-phase0/naga-port-test` | Upstream PR #9295 port, SPIR-V 1.3/1.4, three init modes | Two tests pass, including `spirv-val`; port awaits owner review. |
+| 0 | `v4-phase0/naga-port-clippy` | Naga all-target/all-feature lint | Pass, warnings denied. |
+| 0 | `v4-phase0/naga-port-suite` | Full Naga tests | 139 unit + 232 integration pass; two snapshot tests fail because `spirv-cross` is absent. |
+| 0 | `v4-phase0/naga-port-gpu-suite` | Full upstream `cargo xtask test` | Could not run GPU tests: `cargo-nextest` is absent. |
+
+Earlier sprint detail is [archived](archive/quality-week.md). The declared v3
+control is `89e81df0…`; neither interrupted-run snapshots nor width-32 weights
+initialize v4. Phase 1 will measure the control under both evaluation protocols.

@@ -1,6 +1,23 @@
 # Quality sprint protocol
 
-This implements [TASK.md](../TASK.md). Targets are not achieved results. The
+## Closed — 2026-09-27
+
+Miss: first frozen audit smooth-crop ratio 0.552 exceeded the ≤ 0.50 target.
+Its +1.74 dB PSNR and 35% lower temporal MSE did not pass that primary gate.
+Cold starts remained noisy (cold crop ratio 0.879); no replacement was published.
+The completed width-32 control was rejected: 29.385 dB versus its parent's
+30.271 dB on development, with worse temporal error and lighting response.
+The later balanced run stopped after 9,277 recorded updates; its recorder still
+says `running`, but no training/scoring process remained at closure. Do not resume.
+Its last complete evaluation (8,000) scored 30.061 dB; cold/middle smooth ratios
+0.941/0.468 versus the original, worse than the parent's 0.852/0.303.
+Preserve all artifacts and the stale manifest as evidence of an interrupted run.
+Keep published checkpoint `5d0c7411…`; use `89e81df0…` only as the v3 control.
+No follow-up learned candidate consumed confirmation data. No more sprint runs.
+Next hypothesis: [PLAN.md](../../PLAN.md), one end-to-end recurrent v4 model.
+
+The following is historical evidence, not an active experiment queue. It
+implemented the now-removed `TASK.md`. Targets are not achieved results. The
 starting model is the published width-16 residual U-Net, checkpoint SHA-256
 `5d0c7411c4581a0a8ad99cd87069e4344222dd43020bc28cc0f16a40e47d1321`
 (`runs/quality-2026-09-26/train/model.safetensors`).
@@ -58,7 +75,7 @@ trajectory. Geometry/reference inspection is permitted to define valid smooth
 regions; candidate outputs must not influence crop selection.
 
 The completed audit and 29 reference-selected crops (78 crop/frame pairs) are
-locked in [quality-benchmark.json](quality-benchmark.json), SHA-256
+locked in [quality-benchmark.json](../quality-benchmark.json), SHA-256
 `28b712791d598b1d0ea444a5e11e964166391da523bac49135f3e52be997a58b`.
 All ten scene seeds and the two sampled catalog families are disjoint from
 training/development ancestry and the current diagnostic scenes. Catalog objects
@@ -172,7 +189,7 @@ reference results, not a new selected Ommatidia checkpoint.
 
 ## Compiler conformance repair
 
-The isolated [Naga correction](../patches/README.md) replaces decorated workgroup
+The isolated [Naga correction](../../patches/README.md) replaces decorated workgroup
 composites with undecorated storage types while retaining host-buffer layouts.
 All three debug GPU correctness tests now pass with zero validation errors on
 both RADV and LavaPipe (`corrected-compiler-debug/`,
@@ -910,10 +927,11 @@ and a new immutable selection record are still required.
 
 The debug gate passed with zero validation errors and 49 PNG/f32/frame-score
 files byte-identical after reload (`balanced-exposure-{smoke,reload}-run/`).
-The broad run is live in `balanced-exposure-training/`, writing
+The broad run was started in `balanced-exposure-training/`, writing
 `balanced-exposure-fit/`, with the recorded clean `d1da76d` release executable.
 Its initialization is the broad parent, not the smoke checkpoint. No quality
-improvement is claimed before the development evaluations complete.
+improvement was claimed before the development evaluations completed. It was
+subsequently interrupted and closed without promotion; see the closure above.
 
 The comparison renderer now verifies encoded frame count, dimensions and rate
 with FFprobe. Optional review sheets cover all 64 frames consecutively, four

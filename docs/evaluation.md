@@ -79,7 +79,7 @@ it is explicitly labeled a diagnostic, not the causal production result.
 
 For frozen comparisons, save unquantized images with `--save-linear` and first
 verify the recorded dataset/benchmark hashes with `scripts/score-regions.py` as
-described in the [quality protocol](quality-week.md). For a selected learned
+described in the [archived quality protocol](archive/quality-week.md). For a selected learned
 candidate, also pass `--selection FILE`, and include that freeze file as an
 input when recording its evaluation. The scorer checks the selected checkpoint,
 actual `model.transport.ron` sidecar, executable and clean build revision; the

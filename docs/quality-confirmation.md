@@ -4,7 +4,11 @@ The first [frozen audit](quality-benchmark.json) missed the smooth-crop gate:
 44.8% lower MSE, versus the required 50%. It remains a regression/diagnostic
 set. Its frames, crops and failed selection record are not changed or discarded.
 No later checkpoint may be selected on that audit or called an untouched result
-on it. The one-week scope and quality thresholds in [TASK.md](../TASK.md) remain.
+on it. The sprint is [closed](archive/quality-week.md); [PLAN.md](../PLAN.md)
+now governs training and final gates. Keep these capture/crop locks unchanged.
+Do not evaluate a learned candidate before Phase 6's freeze. The old published
+baseline was rendered during capture verification; no follow-up learned
+candidate has been evaluated on this set.
 
 Before evaluating any follow-up candidate, capture a separate confirmation set
 using the same five cases, two independent scenes per case, 64 consecutive

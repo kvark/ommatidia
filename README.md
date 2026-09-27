@@ -13,6 +13,12 @@ low-resolution radiance, motion/jitter and output-resolution primary surfaces.
 
 ## Measured results
 
+These retained pictures and numbers use the **pre-fix v3 decoder**, not today's
+runtime or a trained v4 model. The checkpoint is unchanged; see the
+[runtime archive and reproduction notes](docs/archive/README.md).
+The [adopted v4 plan](PLAN.md) replaces this model only after correctness and
+quality evaluation; implementation progress is in [the run ledger](docs/experiments.md).
+
 Fresh-scene audit: **256 frames**, 1-spp 128×128 input → 256×256 output,
 16-frame causal sequences, 4,096-spp references. The same model was fine-tuned
 for 4,000 updates at this resolution. Development selected the final checkpoint
@@ -73,7 +79,8 @@ The training corpus is still small and synthetic; game traces, broad interiors,
 and matched external-denoiser comparisons remain missing.
 
 The old diffusion, kernel-selector, field/relighting, C ABI, trainers and result
-galleries were removed. They remain in Git at `b838674`. There are no hidden
+galleries were removed. They remain at tag `archive/experiments-2026-09-25`
+(`e0922c6`). There are no hidden
 architecture switches or compatibility interpretations of their weights.
 The retained runtime is `ommatidia::transport::native::Native`, config version 3.
 
@@ -81,4 +88,4 @@ Numerical CPU/GPU, gradient, recurrence and reload checks pass on the tested
 adapters. With the pinned compiler correction, debug GPU checks pass on RADV and
 LavaPipe with zero validation errors; debug capture/train/reload also pass.
 This fixes the reproduced Workgroup-array layout failure, not all possible
-compiler bugs. [Quality-sprint evidence and remaining gates](docs/quality-week.md).
+compiler bugs. [Closed quality-sprint evidence](docs/archive/quality-week.md).
