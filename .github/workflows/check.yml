@@ -131,6 +131,9 @@ jobs:
       - name: Check gradients, raw features, recurrence, HDR and reload
         working-directory: ommatidia
         run: python3 scripts/record-run.py target/ci-gpu -- cargo +1.92.0 test -p ommatidia --test transport --locked -- --ignored --nocapture --test-threads=1
+      - name: Check single-encoder Blade integration example
+        working-directory: ommatidia
+        run: python3 scripts/record-run.py target/ci-blade-encoder -- cargo +1.92.0 run -p ommatidia --example blade --locked
       - name: Check GPU cursors, accumulation boundary and exact resume
         working-directory: ommatidia
         run: python3 scripts/record-run.py target/ci-cursors -- cargo +1.92.0 test -p ommatidia-train --test cursors --locked -- --ignored --nocapture --test-threads=1

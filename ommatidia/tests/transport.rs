@@ -177,6 +177,144 @@ fn crop_margin_excludes_every_spatial_loss_and_normalizes_interior() {
 
 #[test]
 #[ignore = "requires Vulkan or Metal"]
+fn caller_encoder_matches_offline_across_frames_and_cuts() {
+    use blade_graphics as gpu;
+    let context = gpu_context(false);
+    let config = Config {
+        channels: 1,
+        ..Config::default()
+    };
+    let mut reference = native::Native::new(Arc::clone(&context), config, [8; 2]).unwrap();
+    let mut recorded = native::Native::new(Arc::clone(&context), config, [8; 2]).unwrap();
+    for (p, values) in reference
+        .network
+        .params
+        .iter()
+        .zip(nonzero_parameters(&reference.network))
+    {
+        reference.session.set_parameter(&p.name, &values);
+        recorded.session.set_parameter(&p.name, &values);
+    }
+    let frames: Vec<_> = (0..9)
+        .map(|step| {
+            let mut frame = fixture(config, step, 53).0;
+            frame.exposure = [0.25, 1.0, 4.0][step % 3];
+            frame
+        })
+        .collect();
+    let expected: Vec<_> = frames
+        .iter()
+        .enumerate()
+        .map(|(step, frame)| {
+            if step == 3 {
+                reference.reset();
+            }
+            reference.process(frame).unwrap()
+        })
+        .collect();
+    let buffer = |name, size, memory| context.create_buffer(gpu::BufferDesc { name, size, memory });
+    let upload = |data: &[u8]| {
+        let b = buffer("renderer-upload", data.len() as u64, gpu::Memory::Shared);
+        unsafe {
+            std::ptr::copy_nonoverlapping(data.as_ptr(), b.data(), data.len());
+        }
+        b
+    };
+    // Distinct uploads/results keep host access out of the in-flight loop.
+    let sources: Vec<_> = frames[..8]
+        .iter()
+        .map(|frame| {
+            [
+                upload(bytemuck::cast_slice(&frame.rays)),
+                upload(bytemuck::cast_slice(&frame.surfaces)),
+            ]
+        })
+        .collect();
+    let pixels = frames[0].surfaces.len();
+    let rays_size = std::mem::size_of_val(frames[0].rays.as_slice()) as u64;
+    let surfaces_size = std::mem::size_of_val(frames[0].surfaces.as_slice()) as u64;
+    let rgba_size = (pixels * 16) as u64;
+    let rays = buffer("renderer-rays", rays_size, gpu::Memory::Device);
+    let surfaces = buffer("renderer-surfaces", surfaces_size, gpu::Memory::Device);
+    let output = buffer("renderer-rgba", rgba_size, gpu::Memory::Device);
+    let readbacks: Vec<_> = (0..8)
+        .map(|_| upload(bytemuck::cast_slice(&vec![f32::NAN; pixels * 4])))
+        .collect();
+    let mut encoder = context.create_command_encoder(gpu::CommandEncoderDesc {
+        name: "renderer-and-network",
+        buffer_count: 2,
+        manual_barriers: false,
+    });
+    let mut in_flight = [None, None];
+    for batch in 0..4 {
+        // Blade rotates two command buffers; the caller owns their fences.
+        // Wait only when reusing a slot, not between passes or recorded frames.
+        if let Some(sync) = in_flight[batch % 2].take() {
+            assert!(context.wait_for(&sync, 60_000).unwrap());
+        }
+        encoder.start();
+        for step in batch * 2..batch * 2 + 2 {
+            if step == 3 {
+                recorded.reset();
+            }
+            let frame = &frames[step];
+            {
+                let mut pass = encoder.transfer("renderer-observations");
+                pass.copy_buffer_to_buffer(sources[step][0].at(0), rays.at(0), rays_size);
+                pass.copy_buffer_to_buffer(sources[step][1].at(0), surfaces.at(0), surfaces_size);
+            }
+            recorded.record_prepare(
+                &mut encoder,
+                rays.at(0),
+                surfaces.at(0),
+                frame.jitter,
+                frame.exposure,
+            );
+            recorded.session.record(&mut encoder).unwrap();
+            recorded.record_resolve(&mut encoder, surfaces.at(0), output.at(0));
+            encoder.transfer("renderer-consumer").copy_buffer_to_buffer(
+                output.at(0),
+                readbacks[step].at(0),
+                rgba_size,
+            );
+        }
+        let sync = context.submit(&mut encoder);
+        in_flight[batch % 2] = Some(sync.clone());
+        recorded.session.track_submission(sync);
+    }
+    // Mixing in the offline path must wait for the tracked caller submission
+    // before host uploads. History must carry over without an explicit host wait.
+    let last = recorded.process(&frames[8]).unwrap();
+    close(&last, &expected[8], 0.0);
+    close(
+        &recorded.read_state().values,
+        &reference.read_state().values,
+        0.0,
+    );
+    for (step, readback) in readbacks.iter().enumerate() {
+        let rgba = unsafe { std::slice::from_raw_parts(readback.data().cast::<f32>(), pixels * 4) };
+        assert!(rgba.chunks_exact(4).all(|p| p[3] == 1.0));
+        let actual: Vec<_> = rgba
+            .chunks_exact(4)
+            .flat_map(|pixel| pixel[..3].iter().map(|v| v.to_bits()))
+            .collect();
+        let expected: Vec<_> = expected[step].iter().map(|v| v.to_bits()).collect();
+        assert_eq!(actual, expected, "caller-encoder frame {step}");
+    }
+    drop(recorded);
+    context.destroy_command_encoder(&mut encoder);
+    for b in sources
+        .into_iter()
+        .flatten()
+        .chain(readbacks)
+        .chain([rays, surfaces, output])
+    {
+        context.destroy_buffer(b);
+    }
+}
+
+#[test]
+#[ignore = "requires Vulkan or Metal"]
 fn accumulated_microbatch_gradient_is_the_mean_not_the_sum() {
     let context = gpu_context(false);
     let config = Config {
