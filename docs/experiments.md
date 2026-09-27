@@ -20,7 +20,7 @@ Only development selects models. Confirmation is reserved for Phase 6.
 | 0 | `v4-phase0/published-regression-reproduction` | Both checkpoints, older published regression sets | 256 frame evaluations; metrics exact, 768 PNGs byte-identical. |
 | 0 | `v4-phase0/lavapipe-smoke` | Capture, eight training updates, reload | Pass; seven PNG/score files byte-identical, zero validation errors. |
 | 0 | `v4-phase0/cache-check` | Cold/warm texture-cache independence | Captures byte-identical, zero validation errors. |
-| 0 | `v4-phase0/naga-port-test` | Upstream PR #9295 port, SPIR-V 1.3/1.4, three init modes | Two tests pass, including `spirv-val`; port awaits owner review. |
+| 0 | `v4-phase0/naga-port-test` | Upstream PR #9295 port, SPIR-V 1.3/1.4, three init modes | Two tests pass, including `spirv-val`; owner deferred upstream publication. |
 | 0 | `v4-phase0/naga-port-clippy` | Naga all-target/all-feature lint | Pass, warnings denied. |
 | 0 | `v4-phase0/naga-port-suite` | Full Naga tests | 139 unit + 232 integration pass; two snapshot tests fail because `spirv-cross` is absent. |
 | 0 | `v4-phase0/naga-port-gpu-suite` | Full upstream `cargo xtask test` | Could not run GPU tests: `cargo-nextest` is absent. |
@@ -30,8 +30,10 @@ Only development selects models. Confirmation is reserved for Phase 6.
 | 0 | `v4-phase0/naga-port-gpu-with-nextest` | Full upstream GPU suite with isolated test tools | 1,915 pass, nine fail, 19 skipped: eight need DXC; one OpenGL expected failure unexpectedly passes. |
 | 0 | `v4-phase0/naga-gpu-failures-baseline` | Rerun failing families on unmodified PR head `731fd872` | 27 pass and the same nine fail; no newly introduced failure in these families. Full suite is not green. |
 
-Ommatidia [CI run 36293853401](https://github.com/kvark/ommatidia/actions/runs/36293853401)
-passed all five jobs at `992c2a1`, including LavaPipe and Linux/macOS/Windows builds.
+After the owner merged PR #23, [CI run 36298665573](https://github.com/kvark/ommatidia/actions/runs/36298665573)
+passed all five jobs on `main` at `a153c1e`, including LavaPipe and Linux/macOS/Windows
+builds. Phase 0 is complete; upstream publication is an owner-approved, non-blocking
+follow-up. The tested local compiler patch remains in use.
 
 Earlier sprint detail is [archived](archive/quality-week.md). The declared v3
 control is `89e81df0…`; neither interrupted-run snapshots nor width-32 weights
