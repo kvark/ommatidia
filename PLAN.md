@@ -1,6 +1,6 @@
 # Plan: one end-to-end reconstruction model (config v4)
 
-Status: adopted, 2026-09-27; Phases 0–3 complete. Owner: kvark.
+Status: adopted, 2026-09-27; Phases 0–4 complete. Owner: kvark.
 Read all of §0–§3 before starting. Open decisions for the owner are in §12.
 
 Implementation started from `origin/main` at `232a278`, after the owner merged
@@ -434,26 +434,30 @@ corpus finishes with a development evaluation; and the CI smoke and reload still
 
 Goal: enough scenes that a 60,000-step run does not memorize.
 
-- [ ] Capture 160 more training scenes (32 per case) × 64 frames using the exact recorded
+- [x] Capture 160 more training scenes (32 per case) × 64 frames using the exact recorded
   capture commands of the 40-scene corpus, changing only seeds. For example, use base
   seeds 1,010,001–1,050,001 in steps of 10,000.
 - [x] Before capturing, check seed disjointness against every capture: training,
   development, both audits, diagnostics and published ancestry, as the sprint did.
-- [ ] Catalog scenes use the existing 22-family training pool; verify visibility over
+- [x] Catalog scenes use the existing 22-family training pool; verify visibility over
   each full trajectory.
-- [ ] Expect about 10,000 frames, roughly 40 GB of f16 at 256² HR. This needs the Phase 3
+- [x] Expect about 10,000 frames, roughly 40 GB of f16 at 256² HR. This needs the Phase 3
   loader.
-- [ ] Leave the development set unchanged.
+- [x] Leave the development set unchanged.
 
 Done when: there are 200 training scenes, with membership, hash and visibility checks
 recorded.
 
-In progress, 2026-09-27: preflight checks all 160 proposed seeds against 305
-recorded prior seeds in 943 provenance sources, including published ancestry.
-The original extra-scene executable and four-scene commands are reused exactly,
-changing only seeds/output paths. The 40 capture batches are running; final
-membership, numerical, visibility, loader and protected-set hash checks are still
-required. [Reproduction and admission](docs/training-corpus.md).
+Completed, 2026-09-27: 200 unique scenes / 12,800 frames, balanced at 40 scenes
+per case. All 160 new seeds were checked against 305 recorded prior seeds in
+943 provenance sources before capture. The original executable and commands
+were reused, changing only seeds/output paths. All 12,800 records are finite;
+references are nonnegative/nonblack. All 2,560 catalog frames pass visibility
+(minimum 1.534%); 19 of the existing 22 training families are sampled. The actual
+mapped loader verifies the 52.6 GB corpus and 9,000 crop/augmentation probes.
+Original training, development, both audits and protected selections are
+hash-identical. No model evaluation, training or gallery promotion.
+[Membership, hashes and reproduction](docs/training-corpus.md).
 
 ## 9. Phase 5: training ladder and decision point A (3 days)
 

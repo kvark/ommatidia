@@ -13,8 +13,12 @@ it has 174,576 parameters and 1.63 GFLOP/frame at 128×128 → 256×256. Inputs 
 low-resolution radiance, motion/jitter and output-resolution primary surfaces.
 
 The GPU-cursor training loop reaches **7.41 million valid pixel-gradients/s,
-24.77× the earlier loop**, on the RX 7900 XT. This is training throughput, not
-a quality claim; [measurement and accounting](docs/training-profile.md#phase-3-cursor-loop).
+24.77× the earlier loop**, on the RX 7900 XT with the 40-scene profiling corpus.
+This is training throughput, not a quality claim;
+[measurement and accounting](docs/training-profile.md#phase-3-cursor-loop).
+
+The [verified training corpus](docs/training-corpus.md) now contains **200 scenes /
+12,800 frames**. Quality selection still requires the Phase 5 training ladder.
 
 ## Measured results
 
