@@ -36,8 +36,9 @@ as the fixed baseline, as recorded in [the protocol](docs/quality-week.md).
   measured against the fixed baseline on identical inputs and evaluation
   settings. This is secondary: PSNR improvement alone does not pass the visual bar.
 - **Correctness:** pass numerical, gradient, recurrence, and checkpoint-reload
-  checks, and resolve the outstanding Vulkan-validation failure. Numerical
-  agreement with validation disabled does not establish API conformance.
+  checks, and keep debug Vulkan validation clean, including the regression for
+  the repaired compiler failure. Numerical agreement with validation disabled
+  does not establish API conformance.
 - **Evidence:** publish one checkpoint, reproducible evaluation, representative
   README comparisons and short videos, and measured GPU time and memory.
   Report remaining failures and correctness limitations explicitly.
@@ -83,8 +84,12 @@ pause scaling training and resolve the bottleneck first.
       Now 40 diverse 64-frame training scenes and 10 disjoint development
       scenes, covering static lighting, camera/object/light motion and assets.
       All-cold supervision gave only a small fitting gain and damaged causal
-      quality; it was rejected. A matched, bounded learning-rate control tests
-      optimization before any capacity change. See the protocol.
+      quality; it was rejected. A matched learning-rate control also failed.
+      The next bounded test checks capacity within the same U-Net, conditional
+      on function-preserving initialization. Explicit FP32, unfused inference
+      passes the full GPU parity probes at the unchanged tolerance, and the
+      adapter-specific correctness/reload checks pass. Keep precision-policy
+      effects separate from training gains in the bounded trial. See the protocol.
 - [x] Run bounded, hypothesis-driven experiments, selecting checkpoints on the
       development set rather than the final audit.
       Selected the reset-balanced model plus the signed-decoder follow-up, with

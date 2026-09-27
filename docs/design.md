@@ -91,6 +91,13 @@ queue order. Output is linear RGBA f32. Reset on camera cuts; recreate on extent
 changes. `process` is the synchronous CPU-upload/readback evaluation helper,
 not a frame-time benchmark. Old `Upscaler` and the old C ABI were removed.
 
+Inference explicitly requests f32 operands and disables dispatch fusion to keep
+the capacity control numerically consistent; graph rewrites remain enabled.
+Meganeura's automatic policy can otherwise select f16-input kernels by shape.
+Training's full-precision derivative policy is unchanged. This is a runtime
+precision choice, not a new architecture or a demonstrated quality gain;
+performance must be measured again before publication.
+
 ## Correctness boundary
 
 CPU/WGSL preparation parity covers raw features, 24 frames of flat/sloped

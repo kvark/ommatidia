@@ -41,9 +41,8 @@ pub fn create_context(device_id: Option<u32>, timing: bool) -> Arc<blade_graphic
 
 /// Build an inference session for `graph` on the selected adapter.
 ///
-/// The bare `meganeura::build_inference_session` takes no options and so
-/// lands wherever the driver puts it; this is the same call with the device
-/// choice supplied.
+/// Uses explicit f32 operands and unfused dispatches for numerically controlled
+/// reconstruction, on the caller's device rather than the driver's default.
 pub fn inference_session(
     graph: &meganeura::Graph,
     context: Arc<blade_graphics::Context>,
@@ -62,7 +61,16 @@ pub fn inference_session_with_timing(
         meganeura::SessionConfig {
             mode: meganeura::Mode::Inference,
             gpu: Some(context),
+            options: meganeura::CompileOptions {
+                // Keep pointwise operations separate: shape-dependent fusion
+                // changed rounding enough to fail the initialization control.
+                fuse_dispatches: false,
+                ..Default::default()
+            },
             runtime: meganeura::SessionOptions {
+                // Match the full-precision operands used by training. Auto can
+                // select f16-input kernels depending on the convolution shape.
+                coop: meganeura::CoopPolicy::NativeF32,
                 gpu_timing: timing,
                 ..Default::default()
             },
