@@ -672,6 +672,37 @@ parent; reject cold-only gains accompanied by accumulated bias or lighting
 regressions. Do not extend this run or evaluate confirmation without a justified,
 development-frozen candidate. Retain the single architecture.
 
+### Conditional same-family capacity control
+
+If the completed rate control still gives little broad cold-fitting improvement
+and loses causal quality, test width 32 in the **same existing U-Net graph**.
+This is a capacity comparison, not proof that capacity is the bottleneck and
+not a new architecture family. The retained implementation/default stays width
+16 until evidence justifies changing the single published configuration.
+
+Embed the broad parent's width-16 channels into width 32, preserving all old
+connections and giving old channels zero connections from new channels. Handle
+the decoder's two skip concatenations explicitly. New channels use seeded
+Kaiming initialization (seed 314159); the radiance head initially ignores them.
+Discard optimizer state. Parameter count becomes 685,056. The ignored offline
+conversion's independent 4×4 scalar-core check has exactly zero output error
+(`widen-scalar-check-run/`); this alone is not GPU parity or a quality result.
+
+Before training, compare GPU outputs on the fixed 50-frame cold fitting probe
+and an eight-frame causal diagnostic. Require identical references and maximum
+absolute RGB difference divided by `1 + abs(parent RGB)` at most 1e-5. Verify
+debug training/reload with zero Vulkan-validation errors. Do not train the
+expanded model if those initialization/correctness checks fail.
+
+For a bounded capacity test, use the same broad parent function, fresh Adam,
+seed 31, ordered 40 training / 10 development scenes, unroll 1, reset interval
+1, loss weights, 16/8 history and 4,000 updates as the lower-rate all-cold
+control. Keep learning rate 0.0001 and its cosine schedule fixed; do not combine
+widening with the higher rate. Evaluate causal development every 1,000 updates
+and repeat the fixed fitting probe. Preserve all cold/mature/texture/lighting
+checks; no confirmation evaluation or publication follows from a fitting gain
+alone. Experimental assets remain outside tracked source and result galleries.
+
 ## Progress and evidence
 
 - Initial validation reproduction:
@@ -786,7 +817,7 @@ development-frozen candidate. Retain the single architecture.
   otherwise leave an executable linked to the wrong library revision.
 - All 75 non-ignored Rust tests pass on the default and Rust 1.92 toolchains;
   Clippy and formatting pass on both toolchains, and all five crop-scoring
-Python tests pass. The three release GPU numerical tests also pass.
+  Python tests pass. The three release GPU numerical tests also pass.
   Debug Vulkan conformance failed at this stage. The later patched-compiler
   checks above establish a separate conformance result; the original failure
   records are retained unchanged.
