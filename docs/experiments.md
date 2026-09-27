@@ -27,7 +27,18 @@ Only development selects models. Confirmation is reserved for Phase 6.
 | 4 | `v4-phase4/capture-objects-01` | Four fresh objects scenes × 64 frames | Complete, 118.7 s wall; release capture, 0 logged validation errors. |
 | 4 | `v4-phase4/capture-lights-01` | Four fresh lights scenes × 64 frames | Complete, 115.1 s wall; release capture, 0 logged validation errors. |
 | 4 | `v4-phase4/capture-catalog-01` | Four fresh catalog scenes × 64 frames | Complete, 180.8 s wall; release capture, 0 logged validation errors. All 256 visibility samples pass, minimum 10.681%. |
-| 4 | `v4-phase4/capture-static-02` | Four fresh static scenes × 64 frames | Running. |
+| 4 | `v4-phase4/capture-static-02` | Four fresh static scenes × 64 frames | Complete, 113.1 s wall; release capture, 0 logged validation errors. |
+| 4 | `v4-phase4/capture-camera-02` | Four fresh camera scenes × 64 frames | Complete, 120.7 s wall; release capture, 0 logged validation errors. |
+| 4 | `v4-phase4/capture-objects-02` | Four fresh objects scenes × 64 frames | Complete, 124.2 s wall; release capture, 0 logged validation errors. |
+| 4 | `v4-phase4/capture-lights-02` | Four fresh lights scenes × 64 frames | Complete, 120.5 s wall; release capture, 0 logged validation errors. |
+| 4 | `v4-phase4/capture-catalog-02` | Four fresh catalog scenes × 64 frames | Complete, 176.2 s wall; release capture, 0 logged validation errors. All 256 visibility samples pass, minimum 9.084%. |
+| 4 | `v4-phase4/capture-static-03` | Four fresh static scenes × 64 frames | Complete, 115.4 s wall; release capture, 0 logged validation errors. |
+| 4 | `v4-phase4/capture-camera-03` | Four fresh camera scenes × 64 frames | Complete, 98.8 s wall; release capture, 0 logged validation errors. |
+| 4 | `v4-phase4/capture-objects-03` | Four fresh objects scenes × 64 frames | Complete, 105.0 s wall; release capture, 0 logged validation errors. |
+| 4 | `v4-phase4/capture-lights-03` | Four fresh lights scenes × 64 frames | Complete, 122.0 s wall; release capture, 0 logged validation errors. |
+| 4 | `v4-phase4/capture-catalog-03` | Four fresh catalog scenes × 64 frames | Complete, 166.6 s wall; release capture, 0 logged validation errors. All 256 visibility samples pass, minimum 5.498%. |
+| 4 | `v4-phase4/capture-static-04` | Four fresh static scenes × 64 frames | Complete, 110.2 s wall; release capture, 0 logged validation errors. |
+| 4 | `v4-phase4/capture-camera-04` | Four fresh camera scenes × 64 frames | Running. |
 | 4 | `v4-phase4/script-tests` | Seed derivation, nested ancestry, command preservation, visibility, no-overwrite and hash rejection | Six tests pass. |
 | 4 | `v4-phase4/preflight-run` | Before capture: seed/family splits, protected hashes, archived executable and space | Pass: 160 new seeds disjoint from 305 prior seeds across 943 provenance sources; exact archive binary; 42,077,260,288 capture bytes planned. |
 | 4 | `v4-phase4/capture-run` | Sequential orchestration of 40 recorded four-scene capture batches | Running; per-batch results recorded separately. No training/evaluation. |
