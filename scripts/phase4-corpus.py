@@ -229,6 +229,12 @@ def check_identity(item):
     require(identity(item["path"]) == item, f"protected input changed: {item['path']}")
 
 
+def same_f32(a, b):
+    # Struct sidecars serialize f32 directly; serde_json::Value serializes its
+    # exact f64 promotion. Compare the underlying f32, not decimal spellings.
+    return math.isfinite(a) and math.isfinite(b) and struct.pack("<f", a) == struct.pack("<f", b)
+
+
 def capture():
     report = read(ROOT / "preflight.json")
     for item in [report[k] for k in ("training_pool", "build", "executable")] + report["assets"]:
@@ -326,6 +332,8 @@ def verify():
                     f"failed capture: {run_path}")
             require(run["command"] == job["command"] and item["scene_seeds"] == job["scene_seeds"],
                     "capture differs from preflight")
+            require(all(run["environment"].get(k) == v for k, v in job["environment"].items()),
+                    "capture environment differs from template")
             template_path = Path(option(read(job["template"]["path"])["command"], "--out"))
             require(info == header(template_path), "capture layout differs from template")
             item["capture_run"] = identity(run_path)
@@ -335,7 +343,7 @@ def verify():
             item["catalog"] = identity(catalog_path)
             item["visibility"] = visibility(read(catalog_path), set(report["training_families"]))
             require(set(provenance["family_ids"]) == set(item["visibility"]["families"]), "family metadata mismatch")
-            require(provenance["minimum_catalog_visible_fraction"] == item["visibility"]["minimum"],
+            require(same_f32(provenance["minimum_catalog_visible_fraction"], item["visibility"]["minimum"]),
                     "visibility metadata mismatch")
         corpus.append(item)
         print(f"Verified {index + 1}/50: {path}", flush=True)

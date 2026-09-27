@@ -26,6 +26,13 @@ overlap with 305 prior seeds across 943 provenance records. Historical files
 without seed provenance cannot independently establish a seed identity; they
 are not admitted to the current corpus.
 
+The independent coverage audit confirms the preflight includes all ten current
+training captures, five development captures, five captures in each audit,
+eight diagnostic records and both published-ancestry reports. Their seeds were
+checked before the first new capture. The training pool is also disjoint from
+all eight held-out ABO families; unused legacy interior entries in the root
+catalog do not enter this corpus.
+
 Catalog uses exactly the existing 22-family training pool, with one object per
 scene and target extent 2. Every catalog frame must have measured visible
 coverage at least 1%; this is the existing geometric admission threshold, not
