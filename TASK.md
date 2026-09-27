@@ -89,7 +89,8 @@ pause scaling training and resolve the bottleneck first.
       on function-preserving initialization. Explicit FP32, unfused inference
       passes the full GPU parity probes at the unchanged tolerance, and the
       adapter-specific correctness/reload checks pass. Keep precision-policy
-      effects separate from training gains in the bounded trial. See the protocol.
+      effects separate from training gains in the bounded trial. The 4,000-update
+      width-32 control is running; it is not a selected result. See the protocol.
 - [x] Run bounded, hypothesis-driven experiments, selecting checkpoints on the
       development set rather than the final audit.
       Selected the reset-balanced model plus the signed-decoder follow-up, with

@@ -791,6 +791,29 @@ gradient test remains the earlier `wide-gradient-check/`; training code did not
 change. Rust 1.92 regular tests (83), Clippy, formatting, eight crop tests, three
 catalog tests and the unchanged published-result verifier pass.
 
+The clean release runtime is source `d1da76d`, executable SHA-256
+`f24fe1fd2cce91bdeace1054b9071f3c557a0da14c892eb1b12cfe8fb908aab8`
+(`precision-policy-release-build/`, `precision-policy-runtime/transport`).
+Release repeats both complete parity probes successfully, and all 1,396
+PNG/f32/frame-score files match their debug counterparts byte-for-byte.
+The default-adapter observation explicitly identifies the Ryzen integrated GPU
+(`default-adapter-observation/`), explaining why the earlier unselected identity
+tests did not exercise the RX 7900 XT's reduced-precision path.
+
+Both full 640-frame development controls were repeated with this release:
+
+| Matched f32 control | PSNR | Cold PSNR | Middle smooth ratio | Cold smooth ratio | Temporal MSE |
+|---|---:|---:|---:|---:|---:|
+| Broad parent, width 16 | 30.27071 | 26.26739 | 0.30321 | 0.85154 | 0.000358527 |
+| All-cold, width 16, update 4,000 | 29.67390 | 26.39442 | 0.33253 | 0.83550 | 0.000360407 |
+
+These crop ratios still compare against the fixed original implementation.
+Precision-only mean PSNR changes are -0.00009392 / -0.00006031 dB; all 640
+references in each comparison match exactly. No per-frame PSNR change exceeds
+0.00116 dB in magnitude. Evidence: `dev-{parent,allcold}-f32-run/` and the
+corresponding `{middle,cold}.json` crop reports. The earlier quality verdicts
+stand; the policy change does not remove the cold-start fitting limitation.
+
 For a bounded capacity test, use the same broad parent function, fresh Adam,
 seed 31, ordered 40 training / 10 development scenes, unroll 1, reset interval
 1, loss weights, 16/8 history and 4,000 updates as the lower-rate all-cold
@@ -799,6 +822,15 @@ widening with the higher rate. Evaluate causal development every 1,000 updates
 and repeat the fixed fitting probe. Preserve all cold/mature/texture/lighting
 checks; no confirmation evaluation or publication follows from a fitting gain
 alone. Experimental assets remain outside tracked source and result galleries.
+
+The bounded run is now live (`wide-cold-training/`, output `wide-cold-fit/`),
+using that clean release runtime and the checked 685,056-parameter conversion,
+not either smoke-test checkpoint. Its metadata confirms fresh Adam, seed 31,
+2,560 training / 640 development frames, unroll/reset interval 1, and the fixed
+4,000-update budget. The initial sampled sequence/start/reset triples match the
+width-16 control exactly. No width-32 quality selection, audit, confirmation or
+publication claim has been made; assess the completed development evaluations
+and fixed cold-fitting probe before choosing a follow-up.
 
 ## Progress and evidence
 
