@@ -100,7 +100,11 @@ fluctuation from grain. Neither score is a perceptual video pass.
 AFTER_OUTPUTS --out NEW_DIRECTORY --sequences 0 1 --review-sheets` renders the
 current 64-frame, 24-fps comparison format with FFmpeg. It checks identical
 references, preserves native image dimensions and only adds labels outside the
-images. Lossy video encoding is presentation-only; metrics never read the videos.
+images. It decodes each encoded video to verify dimensions, frame count and
+playback rate. Review sheets cover all 64 frames in order, four per page;
+earlier sparse overview sheets did not establish complete frame inspection.
+Sheets support frame-by-frame review but do not establish a perceptual playback
+pass. Lossy video encoding is presentation-only; metrics never read the videos.
 
 The training objective now includes absolute compressed-lobe supervision
 (`--lobe-weight 0.5` by default). RGB alone cannot identify the split: diffuse and
