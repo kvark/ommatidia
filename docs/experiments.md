@@ -6,6 +6,12 @@ Only development selects models. Confirmation is reserved for Phase 6.
 
 | Phase | Run | Budget / purpose | Outcome |
 |---|---|---|---|
+| 3 | `v4-phase3/final-gallery-check` | README/gallery consistency after throughput/docs update | Pass; historical images, checkpoint and frozen selections unchanged. |
+| 3 | `v4-phase3/causal-comparison` | Reference-hashed paired comparison against frozen v3; 1,000 sequence resamples | PSNR −5.632 dB [−6.523, −4.935]; FLIP +0.124952 [+0.106281, +0.144641]. This smoke checkpoint is not promoted; temporal difference inconclusive. |
+| 3 | `v4-phase3/flip-causal` | Official FLIP on independently reloaded 640-frame development output | Mean 0.232705, cold 0.304717, warm 0.229213; all float outputs finite/nonnegative. Not promoted. |
+| 3 | `v4-phase3/verify-run` | Audit all 5,000 updates, 84 parameter/Adam tensors, cursor state, exact reload and protected hashes | Pass; optimizer step 5,000, 40,000 windows, 6,991 cold; gallery/confirmation/crop selections unchanged. |
+| 3 | `v4-phase3/train-5000-retry` | From scratch, 40 scenes, 5,000 steps; 640 development frames | Completes in 311.45 timed training seconds, 17.48% cold. Development 24.638 dB, cold 21.160; 14 finite loss spikes >1 (max 547,544.7). Finite/exact reload, zero validation errors; not promoted. |
+| 3 | `v4-phase3/reload-5000` | Independent full-development reload with raw float outputs | All 640 frame scores and diagnostics reproduce byte-for-byte; zero validation errors. |
 | 3 | `v4-phase3/ci-eight-reload` | Independent process reload of exact CI checkpoint | CSV byte-identical; zero validation errors. |
 | 3 | `v4-phase3/ci-eight-updates` | Exact eight-update CI configuration, debug LavaPipe | Pass, finite parameters and bit-exact checkpoint reload; zero validation errors. |
 | 3 | `v4-phase3/python-checks-direct` | Evaluator/crop/catalog/render tests and gallery verifier | 21 pass; published evidence and protected selections unchanged. |

@@ -48,8 +48,8 @@ is carried with GPU copies. Mean-gradient accumulation takes one clipped Adam
 step per batch. Evaluation shares parameter storage. Read-only memory-mapped
 captures feed a bounded crop-prefetch worker; radiance gains stay fixed per
 cursor life. Checkpoints include Adam, schedule, cursor/RNG state and capture
-hashes; weights-only warm starts are rejected. Phase 3 throughput and full-corpus
-training gates are still pending, not established by correctness tests.
+hashes; weights-only warm starts are rejected. Phase 3 passes the throughput and
+5,000-step full-corpus gates, but its checkpoint remains well below v3 quality.
 
 At 128×128 → 256×256: **132 input channels, 174,576 parameters, 814,743,552
 convolution MACs = 1.62949 GFLOP/frame = 24,864 FLOPs/output pixel**.

@@ -1,6 +1,6 @@
 # Plan: one end-to-end reconstruction model (config v4)
 
-Status: adopted, 2026-09-27; Phases 0–2 complete, Phase 3 in progress. Owner: kvark.
+Status: adopted, 2026-09-27; Phases 0–3 complete. Owner: kvark.
 Read all of §0–§3 before starting. Open decisions for the owner are in §12.
 
 Implementation started from `origin/main` at `232a278`, after the owner merged
@@ -413,11 +413,19 @@ Tests:
 - [x] Taps outside the crop are invalid, and the loss margin is applied.
 - [x] Report steps per second and pixel-gradients per second against the Phase 1 baseline.
 
-Progress, 2026-09-27: the 200-update profile reaches 16.074 updates/s and
+Completed, 2026-09-27: the 200-update profile reaches 16.074 updates/s and
 7.407 million valid interior pixel-gradients/s, **24.769×** Phase 1; cold windows
 are 16.31%. [Measured accounting](docs/training-profile.md#phase-3-cursor-loop).
 GPU carry, accumulation, resume and evaluator smoke pass on RADV/LavaPipe.
-The 5,000-step run and development evaluation remain pending; no promotion.
+The 5,000-step, 40-scene run finishes in 311.45 timed training seconds with
+17.48% cold windows. All 640 development scores and diagnostics reproduce
+byte-for-byte in a separate reload. 94 regular tests, ten GPU gates on each
+backend and the exact CI/evaluator/resume smoke pass with zero validation errors.
+This completes the loop milestone, **not quality**: development is 24.638 dB
+versus v3's 30.271, with 14 finite training-loss spikes above 1. Their cause is
+not established. The Phase 5 sanity/debugging rung must account for this evidence;
+neither this checkpoint nor the 200-step probe is a production warm-start source.
+No gallery promotion, reset-16 candidate protocol or confirmation evaluation.
 
 Done when: the tests pass; throughput is at least 10×; a 5,000-step run on the 40-scene
 corpus finishes with a development evaluation; and the CI smoke and reload still pass.

@@ -71,5 +71,36 @@ preprocessing is justified. Only B scalar losses return to the CPU per update;
 recurrent state and prepared features stay on GPU. Evaluation shares parameters.
 Checkpoint-only state/Adam readback is outside ordinary updates.
 
-This is a throughput probe, not quality evidence. The 5,000-step full-corpus
-run and development evaluation remain the outstanding Phase 3 gate.
+The probe is not a quality candidate. The separate, from-scratch 5,000-step run
+(`runs/v4-phase3/train-5000-retry/`) completes in 311.448 timed training seconds:
+16.054 updates/s, 7.398 M valid pixel-gradients/s, 24.738× Phase 1. It consumes
+40,000 windows, 6,991 cold (17.48%). Its 640-frame development evaluation and
+independent reload are byte-identical, including per-lobe diagnostics. All 84
+parameter/Adam tensors and all cursor state values are finite; optimizer step,
+RNG/cursors, settings and data hashes pass the recorded bundle audit.
+
+### Quality remains an open problem
+
+This smoke checkpoint is **not promoted**. Causal development, paired against
+the frozen v3 control; percentile 95% intervals use 1,000 whole-sequence
+resamples of all ten sequences. Raw reference hashes and protocol match.
+
+| Metric | v3 control | v4, 5,000 steps | v4 − v3 [95% CI] |
+|---|---:|---:|---:|
+| Overall PSNR, dB ↑ | 30.271 | 24.638 | −5.632 [−6.523, −4.935] |
+| Cold PSNR, dB ↑ | 26.267 | 21.160 | −5.107 [−7.723, −2.876] |
+| Warm PSNR, dB ↑ | 30.498 | 24.840 | −5.658 [−6.636, −4.797] |
+| LDR FLIP ↓ | 0.107752 | 0.232705 | +0.124952 [+0.106281, +0.144641] |
+
+Overall energy ratio is 0.983824 (cold 1.430018); temporal MSE is 0.000393361.
+Temporal difference is +0.000034834 [−0.000033390, +0.000082118], inconclusive.
+First/last 100-update mean loss is 0.045119 → 0.007313, **but fourteen finite
+spikes exceed 1**, reaching 547,544.7 at update 303. The full-run mean is 155.615,
+median 0.008878; no spikes are discarded. Their cause is not established, and
+lower typical training loss is not a quality pass. Phase 5's sanity/debugging
+rung must address this evidence before drawing budget/capacity conclusions.
+
+Checkpoint SHA-256: `47611ca9937b649fd456233dc8c527591c517ec09a693421821926e721d5ed46`.
+Commands, failures, raw outputs, FLIP scores and full intervals are recorded in
+`reload-5000/`, `flip-causal/`, `causal-comparison/` and `verify-run/` under
+`runs/v4-phase3/`. Confirmation and the published gallery remain untouched.
