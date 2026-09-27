@@ -22,6 +22,10 @@ Only development selects models. Confirmation is reserved for Phase 6.
 | 0 | `v4-phase0/naga-port-clippy` | Naga all-target/all-feature lint | Pass, warnings denied. |
 | 0 | `v4-phase0/naga-port-suite` | Full Naga tests | 139 unit + 232 integration pass; two snapshot tests fail because `spirv-cross` is absent. |
 | 0 | `v4-phase0/naga-port-gpu-suite` | Full upstream `cargo xtask test` | Could not run GPU tests: `cargo-nextest` is absent. |
+| 0 | `v4-phase0/naga-port-suite-with-cross` | Full Naga tests with isolated SPIRV-Cross | 139 unit, 234 integration and six doctests pass; validator test was run separately. |
+| 0 | `v4-phase0/naga-snapshot-baseline` | Same snapshot generator on unmodified PR head `731fd872` | Three tests pass; isolates five SPIRV-Cross-version-only sidecar changes. |
+| 0 | `v4-phase0/naga-snapshot-check` | Compare snapshots; assemble/validate changed SPIR-V | Only three shader snapshots and their sidecars change; all three modules pass `spirv-val`. |
+| 0 | `v4-phase0/naga-port-gpu-with-nextest` | Full upstream GPU suite with isolated test tools | Running. |
 
 Earlier sprint detail is [archived](archive/quality-week.md). The declared v3
 control is `89e81df0…`; neither interrupted-run snapshots nor width-32 weights
