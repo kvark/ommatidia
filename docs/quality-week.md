@@ -490,6 +490,30 @@ frame scores and all 24 PNGs, with zero Vulkan-validation errors
 Rust 1.92 (`cold-coverage-unit-tests/`). These correctness checks do not establish
 that the new sampling policy improves quality; that remains a development test.
 
+The bounded run completed all 4,000 updates. Full-precision development crop
+reports are `dev-coldcoverage{1000,2000,3000,4000}-{middle,cold}.json`, using the
+unchanged development rectangles and original published runtime as the control:
+
+| Update | PSNR | Cold-start PSNR | Middle smooth MSE ratio | Cold smooth MSE ratio |
+|---|---:|---:|---:|---:|
+| 1,000 | 30.03709 | 26.10979 | 0.348 | 0.892 |
+| 2,000 | 30.26950 | 26.22736 | 0.316 | 0.833 |
+| 3,000 | 30.22411 | 26.26231 | 0.303 | 0.858 |
+| 4,000 | 30.27080 | 26.26738 | 0.303 | 0.852 |
+
+At 4,000 all 640 frames improve over the original implementation, by at least
+0.438 dB. Temporal MSE is 0.00035853, gradient MSE 0.00059287 and mean energy
+ratio 1.00423. Middle edge/texture MSE ratios are 0.699 / 0.297. These are useful
+development gains, but the cold-crop result is not a material improvement over
+the parent's approximately 0.84 ratio. Do not extend this run or evaluate a new
+confirmation candidate on this evidence. The final weights are
+`89e81df0b0a2228b04853c46c9aa0fb589bc364f8c6ba03935c9c8047ce51bbe`.
+
+All ten development sequences at update 1,000 have lower temporal and
+8×8-block-change errors than the original model (`dev-coldcoverage1000-sequences/`).
+Matched review sheets show substantially cleaner accumulated surfaces but
+remaining cold outliers. This is development evidence, not a new held-out pass.
+
 If this four-checkpoint comparison does not materially improve cold starts, do
 not extend broad training or consume the confirmation audit. First test cold
 fitting capacity on a single frame of the existing diagnostic scene 310001,
@@ -516,6 +540,11 @@ two. Allow valid nonempty one-frame captures while retaining provenance and
 input-source checks; recurrent training still rejects unrolls longer than the
 sequence, and frozen benchmark checks still require their locked lengths.
 Single-frame scores have zero temporal pairs and establish no temporal result.
+The loader correction passes all 82 regular workspace tests, Clippy and formatting
+on Rust 1.92. Eight debug one-frame training updates all have start/warmup zero;
+training and reload have zero validation errors and 49 image/score files match
+byte-for-byte (`cold-capacity-{smoke,reload}-run/`). On the existing eight-frame
+control, the loader-only change preserves all 97 image/score files exactly.
 
 ## Progress and evidence
 
