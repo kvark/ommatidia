@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Small independent fixtures for the full-precision crop scorer."""
 import copy
+import hashlib
 import importlib.util
 import json
 from pathlib import Path
@@ -85,6 +86,119 @@ class RegionTests(unittest.TestCase):
             (after / "000-001-reference.rgbf32").write_bytes(struct.pack("<48f", *([0.01] * 48)))
             with self.assertRaises(ValueError):
                 scorer.score(self.benchmark(), before, after)
+
+    def frozen_candidate(self, root):
+        data = root / "data.omd"
+        data.write_bytes(b"dataset")
+        benchmark = self.benchmark()
+        benchmark["datasets"][0]["sha256"] = scorer.sha256(data)
+        benchmark_path = root / "benchmark.json"
+        benchmark_path.write_text(json.dumps(benchmark))
+        checkpoint, config, executable = [root / name for name in ["model.safetensors", "model.transport.ron", "transport"]]
+        for path in [checkpoint, config, executable]:
+            path.write_bytes(path.name.encode())
+        build_path = root / "build.json"
+        build = {"status": "complete", "exit_code": 0, "validation_errors": 0,
+                 "finished": "2026-09-26T12:00:00+00:00", "repositories": {str(root): {
+                     "head": "source-revision", "status": "", "tracked_diff_sha256": hashlib.sha256(b"").hexdigest()}}}
+        build_path.write_text(json.dumps(build))
+        selection = {"schema": 1, "selected_at": "2026-09-26T12:01:00+00:00",
+                     "checkpoint": str(checkpoint), "checkpoint_sha256": scorer.sha256(checkpoint),
+                     "config": str(config), "config_sha256": scorer.sha256(config),
+                     "inference_executable_sha256": scorer.sha256(executable),
+                     "inference_source_commit": "source-revision", "build_manifest": str(build_path),
+                     "build_manifest_sha256": scorer.sha256(build_path), "benchmark_sha256": scorer.sha256(benchmark_path)}
+        selection_path = root / "selection.json"
+        selection_path.write_text(json.dumps(selection))
+        output = root / "images"
+        output.mkdir()
+        (output / "quality.json").write_text(json.dumps({"history_mode": "causal", "learned": {"frames": 2, "resets": 1}}))
+        manifest = {"cwd": str(root), "status": "complete", "exit_code": 0, "validation_errors": 0,
+                    "started": "2026-09-26T12:02:00+00:00",
+                    "command": [str(executable), "--eval-only", "--save-linear", "--eval-data", str(data),
+                                "--checkpoint", str(checkpoint), "--out", str(output)],
+                    "inputs": [{"path": str(path), "sha256": scorer.sha256(path)} for path in
+                               [data, benchmark_path, checkpoint, config, executable, build_path, selection_path]]}
+        (root / "manifest.json").write_text(json.dumps(manifest))
+        return benchmark_path, benchmark, selection_path, selection, manifest
+
+    def test_frozen_selection_matches_evaluated_artifacts_and_chronology(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            benchmark_path, benchmark, selection_path, selection, manifest = self.frozen_candidate(root)
+            scorer.verify_run(root, benchmark_path, benchmark)
+            result = scorer.verify_selection(root, selection_path, benchmark_path, benchmark)
+            self.assertEqual(result["checkpoint_sha256"], selection["checkpoint_sha256"])
+            self.assertIn("not a quality", result["scope"])
+            # Both predeclared audit hashes may belong to one frozen candidate.
+            confirmation = root / "confirmation.json"
+            confirmation.write_text(json.dumps({**benchmark, "purpose": "confirmation"}))
+            selection["confirmation_benchmark_sha256"] = scorer.sha256(confirmation)
+            selection_path.write_text(json.dumps(selection))
+            manifest["inputs"][-1]["sha256"] = scorer.sha256(selection_path)
+            manifest["inputs"].append({"path": str(confirmation), "sha256": scorer.sha256(confirmation)})
+            (root / "manifest.json").write_text(json.dumps(manifest))
+            scorer.verify_selection(root, selection_path, confirmation, benchmark)
+
+    def test_frozen_selection_rejects_changed_or_unrecorded_artifacts(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            benchmark_path, benchmark, selection_path, _, manifest = self.frozen_candidate(root)
+            for item in manifest["inputs"][1:]:
+                path = Path(item["path"])
+                original = path.read_bytes()
+                with self.subTest(changed=path.name):
+                    path.write_bytes(original + b" ")
+                    with self.assertRaises(ValueError):
+                        scorer.verify_selection(root, selection_path, benchmark_path, benchmark)
+                    path.write_bytes(original)
+                with self.subTest(unrecorded=path.name):
+                    bad = copy.deepcopy(manifest)
+                    bad["inputs"].remove(item)
+                    (root / "manifest.json").write_text(json.dumps(bad))
+                    with self.assertRaises(ValueError):
+                        scorer.verify_selection(root, selection_path, benchmark_path, benchmark)
+                    (root / "manifest.json").write_text(json.dumps(manifest))
+
+    def test_frozen_selection_rejects_bad_dates_source_or_evaluation(self):
+        mutations = ["late", "before-build", "naive-time", "wrong-source", "dirty-build",
+                     "wrong-checkpoint", "duplicate-checkpoint", "reset-command", "reset-report", "incomplete-report"]
+        for mutation in mutations:
+            with self.subTest(mutation=mutation), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                benchmark_path, benchmark, selection_path, selection, manifest = self.frozen_candidate(root)
+                if mutation in ["late", "before-build", "naive-time"]:
+                    selection["selected_at"] = {"late": "2026-09-26T12:03:00+00:00",
+                                                "before-build": "2026-09-26T11:59:00+00:00",
+                                                "naive-time": "2026-09-26T12:01:00"}[mutation]
+                elif mutation == "wrong-source":
+                    selection["inference_source_commit"] = "different-revision"
+                elif mutation == "dirty-build":
+                    build_path = Path(selection["build_manifest"])
+                    build = json.loads(build_path.read_text())
+                    build["repositories"][str(root)]["status"] = " M source.rs"
+                    build_path.write_text(json.dumps(build))
+                    selection["build_manifest_sha256"] = scorer.sha256(build_path)
+                    next(item for item in manifest["inputs"] if item["path"] == str(build_path))["sha256"] = scorer.sha256(build_path)
+                elif mutation == "wrong-checkpoint":
+                    manifest["command"][manifest["command"].index("--checkpoint") + 1] = "different.safetensors"
+                elif mutation == "duplicate-checkpoint":
+                    manifest["command"].extend(["--checkpoint", selection["checkpoint"]])
+                elif mutation == "reset-command":
+                    manifest["command"].append("--reset-history")
+                else:
+                    quality_path = root / "images/quality.json"
+                    quality = json.loads(quality_path.read_text())
+                    if mutation == "reset-report":
+                        quality["history_mode"] = "reset-every-frame diagnostic"
+                    else:
+                        quality["learned"]["frames"] = 1
+                    quality_path.write_text(json.dumps(quality))
+                selection_path.write_text(json.dumps(selection))
+                next(item for item in manifest["inputs"] if item["path"] == str(selection_path))["sha256"] = scorer.sha256(selection_path)
+                (root / "manifest.json").write_text(json.dumps(manifest))
+                with self.assertRaises(ValueError):
+                    scorer.verify_selection(root, selection_path, benchmark_path, benchmark)
 
 
 if __name__ == "__main__":

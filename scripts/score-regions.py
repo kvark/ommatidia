@@ -8,6 +8,7 @@ be hashed inputs to both runs, so crops cannot be chosen after seeing a result.
 
 import argparse
 from array import array
+import datetime
 import hashlib
 import json
 import math
@@ -64,6 +65,76 @@ def verify_run(directory, benchmark_path, benchmark):
             raise ValueError(f"dataset hash mismatch: {path}")
     output = cwd / command[command.index("--out") + 1]
     return output, sha256(manifest_path)
+
+
+def verify_selection(directory, selection_path, benchmark_path, benchmark):
+    """Verify a frozen candidate's identity/timing, not its quality or selection judgment."""
+    selection = json.loads(selection_path.read_text())
+    manifest = json.loads((directory / "manifest.json").read_text())
+    if selection["schema"] != 1 or manifest["status"] != "complete" or manifest.get("exit_code") != 0:
+        raise ValueError("expected a frozen selection and completed candidate evaluation")
+    if manifest.get("validation_errors", 0):
+        raise ValueError("candidate evaluation has validation errors")
+    cwd = Path(manifest["cwd"])
+    command = manifest["command"]
+    inputs = {str(Path(item["path"]).resolve()): item["sha256"] for item in manifest["inputs"]}
+
+    def locked(path, expected):
+        if inputs.get(str(path.resolve())) != expected or sha256(path) != expected:
+            raise ValueError(f"selected artifact differs from recorded evaluation input: {path}")
+
+    def argument(flag):
+        if command.count(flag) != 1 or command.index(flag) + 1 == len(command):
+            raise ValueError(f"expected exactly one {flag} argument")
+        return (cwd / command[command.index(flag) + 1]).resolve()
+
+    def timestamp(value):
+        result = datetime.datetime.fromisoformat(value)
+        if result.tzinfo is None:
+            raise ValueError("selection/build/evaluation timestamps require a timezone")
+        return result
+
+    locked(selection_path, sha256(selection_path))
+    benchmark_hash = sha256(benchmark_path)
+    if benchmark_hash not in {selection["benchmark_sha256"], selection.get("confirmation_benchmark_sha256")}:
+        raise ValueError("benchmark was not part of this frozen selection")
+    locked(benchmark_path, benchmark_hash)
+    if "--eval-only" not in command or "--save-linear" not in command or "--reset-history" in command:
+        raise ValueError("selected candidate requires full-precision causal evaluation")
+    checkpoint = (cwd / selection["checkpoint"]).resolve()
+    if argument("--checkpoint") != checkpoint:
+        raise ValueError("evaluated checkpoint is not the selected checkpoint")
+    locked(checkpoint, selection["checkpoint_sha256"])
+    config = (cwd / selection["config"]).resolve()
+    # transport loads this exact sidecar even for step-N.safetensors.
+    if config != checkpoint.with_name("model.transport.ron"):
+        raise ValueError("selected configuration is not the runtime's checkpoint sidecar")
+    locked(config, selection["config_sha256"])
+    locked(cwd / command[0], selection["inference_executable_sha256"])
+    build_path = cwd / selection["build_manifest"]
+    locked(build_path, selection["build_manifest_sha256"])
+    build = json.loads(build_path.read_text())
+    if build["status"] != "complete" or build.get("exit_code") != 0 or build.get("validation_errors", 0):
+        raise ValueError("selected runtime build did not complete cleanly")
+    source = build["repositories"].get(str(cwd.resolve()), {})
+    if (source.get("head") != selection["inference_source_commit"] or source.get("status") != ""
+            or source.get("tracked_diff_sha256") != hashlib.sha256(b"").hexdigest()):
+        raise ValueError("selected runtime source is not the recorded clean build revision")
+    selected_at = timestamp(selection["selected_at"])
+    if not timestamp(build["finished"]) <= selected_at < timestamp(manifest["started"]):
+        raise ValueError("build must precede selection, and selection must precede candidate evaluation")
+    quality_path = argument("--out") / "quality.json"
+    quality = json.loads(quality_path.read_text())
+    sequences = sum(case["sequences"] for case in benchmark["datasets"])
+    if (quality["history_mode"] != "causal" or quality["learned"]["resets"] != sequences
+            or quality["learned"]["frames"] != sequences * benchmark["sequence_length"]):
+        raise ValueError("selected evaluation does not cover the complete causal benchmark")
+    return {"path": str(selection_path), "sha256": sha256(selection_path),
+            "checkpoint_sha256": selection["checkpoint_sha256"],
+            "config_sha256": selection["config_sha256"],
+            "executable_sha256": selection["inference_executable_sha256"],
+            "quality_sha256": sha256(quality_path),
+            "scope": "Recorded artifact identity and chronology only; not a quality or selection-policy pass"}
 
 
 def read_image(path, extent):
@@ -148,15 +219,19 @@ def main():
     parser.add_argument("--benchmark", type=Path, required=True)
     parser.add_argument("--before-run", type=Path, required=True)
     parser.add_argument("--after-run", type=Path, required=True)
+    parser.add_argument("--selection", type=Path, help="Verify the after-run against its pre-recorded candidate freeze")
     parser.add_argument("--out", type=Path, required=True)
     args = parser.parse_args()
     benchmark = json.loads(args.benchmark.read_text())
     validate_benchmark(benchmark)
     before, before_hash = verify_run(args.before_run, args.benchmark, benchmark)
     after, after_hash = verify_run(args.after_run, args.benchmark, benchmark)
+    selection = verify_selection(args.after_run, args.selection, args.benchmark, benchmark) if args.selection else None
     result = score(benchmark, before, after)
     result["benchmark_sha256"] = sha256(args.benchmark)
     result["run_manifest_sha256"] = {"before": before_hash, "after": after_hash}
+    if selection is not None:
+        result["selection_provenance"] = selection
     with args.out.open("x") as stream:
         json.dump(result, stream, indent=2, allow_nan=False)
         stream.write("\n")

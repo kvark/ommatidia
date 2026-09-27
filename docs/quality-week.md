@@ -786,9 +786,18 @@ development-frozen candidate. Retain the single architecture.
   otherwise leave an executable linked to the wrong library revision.
 - All 75 non-ignored Rust tests pass on the default and Rust 1.92 toolchains;
   Clippy and formatting pass on both toolchains, and all five crop-scoring
-  Python tests pass. The three release GPU numerical tests also pass.
+Python tests pass. The three release GPU numerical tests also pass.
   Debug Vulkan conformance failed at this stage. The later patched-compiler
   checks above establish a separate conformance result; the original failure
   records are retained unchanged.
+- Candidate crop scoring now supports `--selection FILE` to verify the frozen
+  checkpoint, sidecar, executable, clean source/build record and chronology,
+  including complete causal frame coverage. Eight Python tests cover crop math,
+  changed/unrecorded artifacts, both locked audit hashes, bad timestamps,
+  swapped checkpoints, dirty builds and reset/partial evaluations. Re-scoring
+  the first audit with its original selection record produces exactly identical
+  values for all 78 crop/frame pairs and every aggregate
+  (`audit-selection-verification-run/`). The 44.8% smooth-error reduction still
+  fails the quality gate; provenance verification does not change that verdict.
 - Held-out learned quality gates, final uncontended timings, and videos remain
   pending. No README quality improvement is claimed by these diagnostics.
