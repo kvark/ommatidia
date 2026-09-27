@@ -1,0 +1,357 @@
+{
+  "schema": 1,
+  "purpose": "v4 training corpus only; no model evaluation or checkpoint promotion",
+  "pass": true,
+  "scenes": 200,
+  "frames": 12800,
+  "sequences_per_case": 40,
+  "bytes": 52596575360,
+  "contract": {
+    "low_extent": [
+      128,
+      128
+    ],
+    "scale": 2,
+    "sequence_frames": 64,
+    "input_spp": 1,
+    "reference_spp": 1024,
+    "input_bounces": 8,
+    "reference_bounces": 8,
+    "projection_jitter": true,
+    "hr_gbuffer": true,
+    "split_radiance": true
+  },
+  "source_report": {
+    "path": "runs/v4-phase4/corpus.json",
+    "bytes": 67950,
+    "sha256": "6e86c6d0ddd4adc8016f4b13b694e1a1fc81e1cf2dc6808abd19cc18a83e3f04"
+  },
+  "verification_run": {
+    "path": "runs/v4-phase4/verify-run/manifest.json",
+    "bytes": 3495,
+    "sha256": "a9e028a9b3156f5bc1d6b312e3acb718d281a2a8a44f5f7221b199f5c135133c"
+  },
+  "preflight": {
+    "path": "runs/v4-phase4/preflight.json",
+    "bytes": 454146,
+    "sha256": "19f41d6401ca7866b9d6fe1bf7e58238ae16def95aa80bc17e1d3cec4d339e8b"
+  },
+  "verifier": {
+    "path": "scripts/phase4-corpus.py",
+    "bytes": 18036,
+    "sha256": "3b953ab627b045662185479438f203f74171a8a5b0cd7087c6e8cb8af41677dc"
+  },
+  "capture_executable": {
+    "path": "runs/quality-week-2026-09-26/confirmation-runtime/ommatidia-data",
+    "bytes": 9883968,
+    "sha256": "ad682fd117c96ff19cc472dbc8107e7417972ad11d125f0368ba93ab8f113670"
+  },
+  "capture_build": {
+    "path": "runs/quality-week-2026-09-26/confirmation-capture-build/manifest.json",
+    "bytes": 3462,
+    "sha256": "5de9b4927f99779134d43037e1daa1e7c28f642b0dfecb4e3adcfe629bee78cb"
+  },
+  "numerics": {
+    "finite_records": 12800,
+    "nonnegative_nonblack_references": true,
+    "peak_reference_radiance": 718.5
+  },
+  "catalog": {
+    "pool": {
+      "path": "runs/quality-2026-09-26/data/opaque-train-catalog.json",
+      "bytes": 5390,
+      "sha256": "2f4205437f14b35812a24e7ab8208949778982379d7e6f006e21941d530db912"
+    },
+    "pool_families": [
+      "abo/B01M4OYBOI",
+      "abo/B01M5BDH0H",
+      "abo/B01MDM0UWS",
+      "abo/B07121RM99",
+      "abo/B07124WCSF",
+      "abo/B07124WCZY",
+      "abo/B0713T6W1C",
+      "abo/B07149T97D",
+      "abo/B0714QGLSD",
+      "abo/B0714QGLVP",
+      "abo/B0714QGRSL",
+      "abo/B07177355J",
+      "abo/B0717B4Y3X",
+      "abo/B0718WYQ8D",
+      "abo/B0719SNKSY",
+      "abo/B0719WQ4GK",
+      "abo/B0719WQH8N",
+      "abo/B071FJR3S6",
+      "abo/B071FJR3SR",
+      "abo/B071FJR46L",
+      "abo/B071FJR479",
+      "abo/B071FMSMH4"
+    ],
+    "sampled_families": [
+      "abo/B01M4OYBOI",
+      "abo/B01M5BDH0H",
+      "abo/B01MDM0UWS",
+      "abo/B07121RM99",
+      "abo/B07124WCSF",
+      "abo/B07124WCZY",
+      "abo/B0713T6W1C",
+      "abo/B07149T97D",
+      "abo/B0714QGLSD",
+      "abo/B0714QGLVP",
+      "abo/B07177355J",
+      "abo/B0718WYQ8D",
+      "abo/B0719SNKSY",
+      "abo/B0719WQ4GK",
+      "abo/B0719WQH8N",
+      "abo/B071FJR3S6",
+      "abo/B071FJR3SR",
+      "abo/B071FJR479",
+      "abo/B071FMSMH4"
+    ],
+    "visibility_frames": 2560,
+    "minimum_visible_fraction": 0.015335083
+  },
+  "protected": [
+    {
+      "path": "docs/dev-crops.json",
+      "bytes": 4832,
+      "sha256": "6d810304481405ae1361d84b3221f5c115e7f0956304781b7d1fb86f5ba825f9"
+    },
+    {
+      "path": "docs/quality-benchmark.json",
+      "bytes": 4586,
+      "sha256": "28b712791d598b1d0ea444a5e11e964166391da523bac49135f3e52be997a58b"
+    },
+    {
+      "path": "docs/quality-confirmation.json",
+      "bytes": 5394,
+      "sha256": "06f3c023c2d94d31f8d6c765bd222a8befae868ce9408586d2c165a3817cc67a"
+    },
+    {
+      "path": "docs/results/results.json",
+      "bytes": 213778,
+      "sha256": "afee03343ea92d6d7ed81fa18e54523a5fa76f21c7fb50ec8fcf98b7f51478b0"
+    },
+    {
+      "path": "docs/results/selection.json",
+      "bytes": 3754,
+      "sha256": "d4802165f97ea070c1a6f7709004ee6eeedb9b2204f26fcf33b4ae9ea7a1d277"
+    },
+    {
+      "path": "runs/quality-week-2026-09-26/data/audit-camera.omd",
+      "bytes": 532676672,
+      "sha256": "48af7ff45dde77f1a2725acedf88b560833b5ce0c7f428806d6a21177e3688f6"
+    },
+    {
+      "path": "runs/quality-week-2026-09-26/data/audit-camera.transport.json",
+      "bytes": 931,
+      "sha256": "5317d609d3807b5cff034a08977233eb8acf3f453adbfea5741413d6ffe2daea"
+    },
+    {
+      "path": "runs/quality-week-2026-09-26/data/audit-catalog.catalog.json",
+      "bytes": 3225,
+      "sha256": "81364c10001c19bbec2a7f48047ffcad4642d9129c6da720e2407af6809fa961"
+    },
+    {
+      "path": "runs/quality-week-2026-09-26/data/audit-catalog.omd",
+      "bytes": 532676672,
+      "sha256": "003713d2ba7bd4adce40e3d8cac73d7cf24abf4a83bf809fa2a8c60ba720ba22"
+    },
+    {
+      "path": "runs/quality-week-2026-09-26/data/audit-catalog.transport.json",
+      "bytes": 1025,
+      "sha256": "f8857fc69fb4e890b0bd3efb2e24085c4b4755ee0f3cfb603a803d68860616bf"
+    },
+    {
+      "path": "runs/quality-week-2026-09-26/data/audit-lights.omd",
+      "bytes": 532676672,
+      "sha256": "d270d1993c38408a21f2f13542a80c6351aa1bd27dc978964c128231d68152cb"
+    },
+    {
+      "path": "runs/quality-week-2026-09-26/data/audit-lights.transport.json",
+      "bytes": 948,
+      "sha256": "2556b3218b43a4d367b54a2669911cb1a503660e682071ffc58718965895387c"
+    },
+    {
+      "path": "runs/quality-week-2026-09-26/data/audit-objects.omd",
+      "bytes": 532676672,
+      "sha256": "2333dd4ff70fd7b95b090e48f681332e7b0a2705060a23fac2e0e560485a9d86"
+    },
+    {
+      "path": "runs/quality-week-2026-09-26/data/audit-objects.transport.json",
+      "bytes": 931,
+      "sha256": "609a4643171d70a93c4b5efa9523f2588e1fc0b3ac347c086fbe27ae8304defe"
+    },
+    {
+      "path": "runs/quality-week-2026-09-26/data/audit-static.omd",
+      "bytes": 499122240,
+      "sha256": "2d5b776cd48f292d10f315931a4ffb30d2eea8eeec3443a88858dc516ee634a7"
+    },
+    {
+      "path": "runs/quality-week-2026-09-26/data/audit-static.transport.json",
+      "bytes": 931,
+      "sha256": "e1615840c7cf03c7519b94c57b3355e53f93906b29e966471e1fa1235a5d1335"
+    },
+    {
+      "path": "runs/quality-week-2026-09-26/data/confirm-camera.omd",
+      "bytes": 532676672,
+      "sha256": "8d68b84016282d241bec155fa0143d0f3d1594e44b2b833843ee3914030b3b3a"
+    },
+    {
+      "path": "runs/quality-week-2026-09-26/data/confirm-camera.transport.json",
+      "bytes": 931,
+      "sha256": "8d811e6bda451973ce28c981eded1f38869c450181280445c4b8eb19a07ec589"
+    },
+    {
+      "path": "runs/quality-week-2026-09-26/data/confirm-catalog.catalog.json",
+      "bytes": 3174,
+      "sha256": "f1eaed94d5b7b8e28affa8da062a37966bf21d58e141b99c0e251a50c2c1f5be"
+    },
+    {
+      "path": "runs/quality-week-2026-09-26/data/confirm-catalog.omd",
+      "bytes": 532676672,
+      "sha256": "a8b4c1254759e2ff02c5785485db56f40ac2c7eca176ce12393fe03d2bef7235"
+    },
+    {
+      "path": "runs/quality-week-2026-09-26/data/confirm-catalog.transport.json",
+      "bytes": 1025,
+      "sha256": "4cd0b8113e12b2d734aef178637ac4c4a817836cf278243225cc7bd5ca69e308"
+    },
+    {
+      "path": "runs/quality-week-2026-09-26/data/confirm-lights.omd",
+      "bytes": 532676672,
+      "sha256": "97337079b82dd77ea25b717185d26d80dc228cff4410df7d19f8bb76e6fce81c"
+    },
+    {
+      "path": "runs/quality-week-2026-09-26/data/confirm-lights.transport.json",
+      "bytes": 948,
+      "sha256": "f2359d3f29e7eeb9722d629d8797a33fa86c038a8ab195da38f72e7b92bbf586"
+    },
+    {
+      "path": "runs/quality-week-2026-09-26/data/confirm-objects.omd",
+      "bytes": 532676672,
+      "sha256": "4b030b64f1ccc4bfd8b4a82c6729cdc18710eaaab443cab4578331bd0c4ffd86"
+    },
+    {
+      "path": "runs/quality-week-2026-09-26/data/confirm-objects.transport.json",
+      "bytes": 931,
+      "sha256": "8155461d867a6542e01bc96b8fbc950575a16ac03d76557b01b33301659d3d80"
+    },
+    {
+      "path": "runs/quality-week-2026-09-26/data/confirm-static.omd",
+      "bytes": 499122240,
+      "sha256": "632004ed5a9d6b1ec420ce99390503f1638a5f22a28f1f57bdb4d66a6fe0ba60"
+    },
+    {
+      "path": "runs/quality-week-2026-09-26/data/confirm-static.transport.json",
+      "bytes": 931,
+      "sha256": "6caa1f0021bc26fe4aba9137304f46c2ef17d97a8a8d0be3bbe86771404b7f1c"
+    },
+    {
+      "path": "runs/quality-week-2026-09-26/data/dev-camera.omd",
+      "bytes": 532676672,
+      "sha256": "44f760be45e15e190c8af6ee47b0927149ccd0af488228a224575a23ff71ae64"
+    },
+    {
+      "path": "runs/quality-week-2026-09-26/data/dev-camera.transport.json",
+      "bytes": 931,
+      "sha256": "3c5ba2c556dfe1a53174c5a110c959c1e93f725243af1121754503e658fb4a8c"
+    },
+    {
+      "path": "runs/quality-week-2026-09-26/data/dev-catalog.catalog.json",
+      "bytes": 3180,
+      "sha256": "fcc609830f746e919baf5947a24be6a3d859a1c785daf2b1b5d835d55b9c08fa"
+    },
+    {
+      "path": "runs/quality-week-2026-09-26/data/dev-catalog.omd",
+      "bytes": 532676672,
+      "sha256": "5d06e7a5a21a713795d5f17664b344e465154b662be7c9f11905f41523a47515"
+    },
+    {
+      "path": "runs/quality-week-2026-09-26/data/dev-catalog.transport.json",
+      "bytes": 1026,
+      "sha256": "931c48c93450a38eb2baa47e0338b52b4bb88b02e1e7d6c6891a39106fdc9d11"
+    },
+    {
+      "path": "runs/quality-week-2026-09-26/data/dev-lights.omd",
+      "bytes": 532676672,
+      "sha256": "4250bd4abea6cd851bcfee837e9eb141abe8e09e0ddac1b41ce93e1fc95c567d"
+    },
+    {
+      "path": "runs/quality-week-2026-09-26/data/dev-lights.transport.json",
+      "bytes": 948,
+      "sha256": "2e3d1604b116be41100aa3d8a24baed76900bd3a193ac821ca69a01fb52c58ef"
+    },
+    {
+      "path": "runs/quality-week-2026-09-26/data/dev-objects.omd",
+      "bytes": 532676672,
+      "sha256": "5a3703e3f7f9ee74d84385cd130ebf8a58df53b791d754d6d6b558f2b617e93a"
+    },
+    {
+      "path": "runs/quality-week-2026-09-26/data/dev-objects.transport.json",
+      "bytes": 931,
+      "sha256": "a66502a9c6a2bb74a47c1e49301b2e9550f42fa29603af82af461c9cf871bcf0"
+    },
+    {
+      "path": "runs/quality-week-2026-09-26/data/dev-static.omd",
+      "bytes": 499122240,
+      "sha256": "10641c298643a7ee70a83d569386adfc24f73259f02694a21e1635d4b8b84b40"
+    },
+    {
+      "path": "runs/quality-week-2026-09-26/data/dev-static.transport.json",
+      "bytes": 931,
+      "sha256": "44cdb62d726ebfeb651bff9ca746ff26fb35cdfb6414d2100af4d561849528ce"
+    }
+  ],
+  "datasets": [
+    {"path":"runs/quality-week-2026-09-26/data/train-static.omd","case":"static","bytes":998244416,"sha256":"ed28d8c1adc4dd3e87139cbe4d087f32a286d4afc651a7fc756d2c26f80b8aef","scene_seeds":[510001,2653991304,5308496707,7962993946],"provenance":{"path":"runs/quality-week-2026-09-26/data/train-static.transport.json","bytes":962,"sha256":"99524e72c9e61194b6327b8898eccabdd10b90c86533bd0f23da8e8b59bfa9c3"},"peak_reference_radiance":41.28125},
+    {"path":"runs/quality-week-2026-09-26/data/train-camera.omd","case":"camera","bytes":1065353280,"sha256":"2d7490aafedde2e2764b959c6257766871a8b2f13135bd6a5d6f6ef5d7cb105c","scene_seeds":[520001,2653984504,5308488755,7962985066],"provenance":{"path":"runs/quality-week-2026-09-26/data/train-camera.transport.json","bytes":962,"sha256":"ca992befb8a16eaa31e06b0343c39190da6d67d9b6d769732201a953089f34ea"},"peak_reference_radiance":153.125},
+    {"path":"runs/quality-week-2026-09-26/data/train-objects.omd","case":"objects","bytes":1065353280,"sha256":"b40694e7ac1d6b0d97005ea1aaaee13e0b493f817b55428f2ba8a28c933c3e35","scene_seeds":[530001,2654957544,5308343587,7963835258],"provenance":{"path":"runs/quality-week-2026-09-26/data/train-objects.transport.json","bytes":962,"sha256":"7f58aa4e86d13ba2687778fd67004c5bdeb054f99ff24015201105939370e6d3"},"peak_reference_radiance":89.5},
+    {"path":"runs/quality-week-2026-09-26/data/train-lights.omd","case":"lights","bytes":1065353280,"sha256":"a8caa59389e0c3e4a42373900654032a79d798af3a4831c360785626651a5f3b","scene_seeds":[540001,2654946520,5308337683,7963824202],"provenance":{"path":"runs/quality-week-2026-09-26/data/train-lights.transport.json","bytes":979,"sha256":"1170ea2bc67d73b812ca1851896541562f2b53f14455758171b7b230d1437fdc"},"peak_reference_radiance":179},
+    {"path":"runs/quality-week-2026-09-26/data/train-catalog.omd","case":"catalog","bytes":1065353280,"sha256":"f5e9b42220c3a4bb9dc8f7d899c975b8369710c76e8be9ffb279bb1c3f3f358e","scene_seeds":[550001,2654936520,5308323587,7963806042],"provenance":{"path":"runs/quality-week-2026-09-26/data/train-catalog.transport.json","bytes":1099,"sha256":"eb2c3aabe86573c80b7261712b9f94f950f043d71cdd30373053bd80935a1282"},"peak_reference_radiance":34.875,"catalog":{"path":"runs/quality-week-2026-09-26/data/train-catalog.catalog.json","bytes":6309,"sha256":"cac9e981ee0c1a581a1a46f6e5f5b8abcb823c3f14345e833d693598ba7cb079"},"visibility":{"frames":256,"minimum":0.019226074,"families":["abo/B07149T97D","abo/B0714QGLSD","abo/B0719WQH8N","abo/B071FMSMH4"]}},
+    {"path":"runs/quality-week-2026-09-26/data/train-extra-static.omd","case":"static","bytes":998244416,"sha256":"4c8743802edaa350ad665e36de28301a25868c4d271e22d1e699b5491b81bb5a","scene_seeds":[910001,2654640904,5308092867,7963643802],"provenance":{"path":"runs/quality-week-2026-09-26/data/train-extra-static.transport.json","bytes":962,"sha256":"e63bffcb6bb0634049a1db7652e7eb1f0c7b2d3906e699193843a709bb9cfd1a"},"peak_reference_radiance":45.6875},
+    {"path":"runs/quality-week-2026-09-26/data/train-extra-camera.omd","case":"camera","bytes":1065353280,"sha256":"60aec90637b9803af0a6780133f422622a457ac8ff424a460c42774a9e9f022a","scene_seeds":[920001,2654564472,5307955891,7963436266],"provenance":{"path":"runs/quality-week-2026-09-26/data/train-extra-camera.transport.json","bytes":962,"sha256":"5822e5dcc436878694cde362d69ffcf05d824f21388c6e4f3cb7e0ef7c28dd71"},"peak_reference_radiance":79.0625},
+    {"path":"runs/quality-week-2026-09-26/data/train-extra-objects.omd","case":"objects","bytes":1065353280,"sha256":"0bdd88da9aea9cc95a19c400a9eb4442497018a4e222a3b43910d16db1ea9c51","scene_seeds":[930001,2654554472,5307941795,7963434490],"provenance":{"path":"runs/quality-week-2026-09-26/data/train-extra-objects.transport.json","bytes":962,"sha256":"ed1f8a7ef58561663bc9d858099d645f96c0028cc0243390c4fa06827e6cc2be"},"peak_reference_radiance":236.5},
+    {"path":"runs/quality-week-2026-09-26/data/train-extra-lights.omd","case":"lights","bytes":1065353280,"sha256":"0e476df97897c83879528d59db8bd8b183d3ed0c5ae79f172b5303fb1729ad66","scene_seeds":[940001,2654547544,5307933843,7963425482],"provenance":{"path":"runs/quality-week-2026-09-26/data/train-extra-lights.transport.json","bytes":979,"sha256":"e753b58aa39dd14c98db5e47a83ce103b871dd9f4bae7f0b2262c7bd0575feb6"},"peak_reference_radiance":84.875},
+    {"path":"runs/quality-week-2026-09-26/data/train-extra-catalog.omd","case":"catalog","bytes":1065353280,"sha256":"c6b7b5f58bf84b9287cf1c89462654c12e8a5fafa5636588b7cbff725f61077f","scene_seeds":[950001,2654537544,5307927939,7963415514],"provenance":{"path":"runs/quality-week-2026-09-26/data/train-extra-catalog.transport.json","bytes":1101,"sha256":"9b050d66f1c210269db3fc1ddd9a094e24f50ce4dad716f3ec11965d896770cf"},"peak_reference_radiance":40.28125,"catalog":{"path":"runs/quality-week-2026-09-26/data/train-extra-catalog.catalog.json","bytes":6303,"sha256":"a7168ae415980701e0583835d2aa4cef7fc070f27d63fef9d7f0b178610efa4f"},"visibility":{"frames":256,"minimum":0.054611206,"families":["abo/B01M5BDH0H","abo/B07124WCSF","abo/B0718WYQ8D","abo/B0719WQH8N"]}},
+    {"path":"runs/v4-phase4/data/train-static-00.omd","case":"static","bytes":998244416,"sha256":"799d32dffd9fdd81947473581bfc3d9af99b750e9e954c234356f34228a27729","scene_seeds":[1010001,2654474472,5307996707,7963477114],"provenance":{"path":"runs/v4-phase4/data/train-static-00.transport.json","bytes":964,"sha256":"a0f51c262f8cdb34a336e56a19c80252f767cb2ffdf1d4497a1b334103fa2809"},"peak_reference_radiance":40.6875,"capture_run":{"path":"runs/v4-phase4/capture-static-00/manifest.json","bytes":5229,"sha256":"eb620b67891b5b4d3d1d3e46be89dfad95c7d0922cde2ac8b62e40cef3e28c06"}},
+    {"path":"runs/v4-phase4/data/train-camera-00.omd","case":"camera","bytes":1065353280,"sha256":"0fa75854a9c29315c55338c69803f86062ac8a293c3bf252055488becadabd28","scene_seeds":[1020001,2654530008,5307982611,7963540810],"provenance":{"path":"runs/v4-phase4/data/train-camera-00.transport.json","bytes":964,"sha256":"76b1297def08b1162295c942fceb06a4ea2f75413d16a268e391a151d047ff96"},"peak_reference_radiance":45.09375,"capture_run":{"path":"runs/v4-phase4/capture-camera-00/manifest.json","bytes":5304,"sha256":"2ba99185aae51f60e716388c54e929eccb41dd26a28d476f4fc0d7c714c539e7"}},
+    {"path":"runs/v4-phase4/data/train-objects-00.omd","case":"objects","bytes":1065353280,"sha256":"dac01fd84e4905a37d7caf3da305cde05376f86bef5840057d604c53607fb428","scene_seeds":[1030001,2654523080,5307974659,7963531866],"provenance":{"path":"runs/v4-phase4/data/train-objects-00.transport.json","bytes":964,"sha256":"a5ca8d1581e1b9828d2e9ea9329cc0431ad48d94bc690458e536c1c69f76ae0e"},"peak_reference_radiance":145.75,"capture_run":{"path":"runs/v4-phase4/capture-objects-00/manifest.json","bytes":5385,"sha256":"d41ee072e3e20ad974440be21acbdbb72e29a6c62d1c3fc48f9452bb8c483552"}},
+    {"path":"runs/v4-phase4/data/train-lights-00.omd","case":"lights","bytes":1065353280,"sha256":"4b084e26ee630da0f354ea71b487f01c5bfe40c4d3fe229d0acdf673b187ec79","scene_seeds":[1040001,2654512952,5307969011,7963521962],"provenance":{"path":"runs/v4-phase4/data/train-lights-00.transport.json","bytes":981,"sha256":"1ff68ad02f94d74d4db46375340e1f9daede5181822a3d6bbf1f740581623edf"},"peak_reference_radiance":324.75,"capture_run":{"path":"runs/v4-phase4/capture-lights-00/manifest.json","bytes":5382,"sha256":"83a7132fdf7b33746e380614faa21bf73aec52d982d864a299b3b6876de55c8e"}},
+    {"path":"runs/v4-phase4/data/train-catalog-00.omd","case":"catalog","bytes":1065353280,"sha256":"633750aed98b80a8864c723f44f935521a4ef1711a74b025f12755f27659770d","scene_seeds":[1050001,2653387816,5309920995,7964354746],"provenance":{"path":"runs/v4-phase4/data/train-catalog-00.transport.json","bytes":1103,"sha256":"34fa981239a02251867a97b3a658a3236059bc7c8694edf6612a6573016db3e9"},"peak_reference_radiance":43.09375,"catalog":{"path":"runs/v4-phase4/data/train-catalog-00.catalog.json","bytes":6337,"sha256":"a82501b11247001be89d789237a53cfef8e28fd0d2046eea7c9688caf154b9ef"},"visibility":{"frames":256,"minimum":0.01927185,"families":["abo/B07149T97D","abo/B0714QGLVP","abo/B0719SNKSY","abo/B071FJR3SR"]},"capture_run":{"path":"runs/v4-phase4/capture-catalog-00/manifest.json","bytes":5429,"sha256":"abda9ef7fb84452e121dcb54cb73359da54f126096e8701dddf7f0693303034e"}},
+    {"path":"runs/v4-phase4/data/train-static-01.omd","case":"static","bytes":998244416,"sha256":"955e375327f336f85e1c602c60cf22bc2bbbbd7e9cf76b8022453d8ec15e5bd5","scene_seeds":[1011001,2654475392,5307997771,7963475986],"provenance":{"path":"runs/v4-phase4/data/train-static-01.transport.json","bytes":964,"sha256":"a7153fb6bfc6996232615f229d4c8f1a2393c882bf74c6d03526bd6dfae82b4f"},"peak_reference_radiance":40.46875,"capture_run":{"path":"runs/v4-phase4/capture-static-01/manifest.json","bytes":5205,"sha256":"e3b9ddc4d1de04e6ac4d3e73024417c604eacfb088fb18d9540a19617b8a45f8"}},
+    {"path":"runs/v4-phase4/data/train-camera-01.omd","case":"camera","bytes":1065353280,"sha256":"aa7059537f634fef5c77077e9c8dc466d45f73bd253cee9b82b80d46bf1e1563","scene_seeds":[1021001,2654531056,5307983675,7963539810],"provenance":{"path":"runs/v4-phase4/data/train-camera-01.transport.json","bytes":964,"sha256":"eaee3fc6a01385d7081b4a50355940f738178748a8a3f35886f51fb0f9ac33e2"},"peak_reference_radiance":90.75,"capture_run":{"path":"runs/v4-phase4/capture-camera-01/manifest.json","bytes":5304,"sha256":"b1da1b0c3ec26cb5d059c392910f5b9b8f448e96bf733e551c8dcad166d78488"}},
+    {"path":"runs/v4-phase4/data/train-objects-01.omd","case":"objects","bytes":1065353280,"sha256":"bff81022b66f4bd36831f3d4af4db8a10f668146187fc219b40e002d9ae78379","scene_seeds":[1031001,2654520032,5307975723,7963530866],"provenance":{"path":"runs/v4-phase4/data/train-objects-01.transport.json","bytes":964,"sha256":"bd83fb7bfb5519cd76aaaf2f51b2b709c528c114447192eda20257373f2569a2"},"peak_reference_radiance":241.75,"capture_run":{"path":"runs/v4-phase4/capture-objects-01/manifest.json","bytes":5281,"sha256":"6db64db8157030cb1ed6e965cdc4e875c1245da6de21aa09d81848aa9897fd7d"}},
+    {"path":"runs/v4-phase4/data/train-lights-01.omd","case":"lights","bytes":1065353280,"sha256":"ec6c9acab67ff6fcac80df74840fe73c4af84b7110dbaef1d7e0ba45312e92f7","scene_seeds":[1041001,2654510032,5307961627,7963512642],"provenance":{"path":"runs/v4-phase4/data/train-lights-01.transport.json","bytes":981,"sha256":"ea9d017a3dc71480e04d954f8c364eedadc4498f9e8a35644ff51e19547d69bb"},"peak_reference_radiance":39.59375,"capture_run":{"path":"runs/v4-phase4/capture-lights-01/manifest.json","bytes":5278,"sha256":"ba37908e96a72923ecb357d5961d5112d6960faf83789594caaf4041a91027b5"}},
+    {"path":"runs/v4-phase4/data/train-catalog-01.omd","case":"catalog","bytes":1065353280,"sha256":"e9a9bed69ec8cbadf4b538be10ea3492dd74c380944b143113e55653db029cae","scene_seeds":[1051001,2653384896,5309921803,7964353618],"provenance":{"path":"runs/v4-phase4/data/train-catalog-01.transport.json","bytes":1100,"sha256":"e8e19a886d5e34a01c5bac84e02355631d5e8344b156a93a969255f36eca04a7"},"peak_reference_radiance":39.09375,"catalog":{"path":"runs/v4-phase4/data/train-catalog-01.catalog.json","bytes":6257,"sha256":"e594b2dcb7d3db7aadaf8117076ebbba7183d919f2885f95ada70d9a85983fae"},"visibility":{"frames":256,"minimum":0.10681152,"families":["abo/B01MDM0UWS","abo/B0713T6W1C","abo/B0714QGLVP","abo/B071FJR3SR"]},"capture_run":{"path":"runs/v4-phase4/capture-catalog-01/manifest.json","bytes":5513,"sha256":"cd8655bb79b70e9b3ac445a9766ceafb84dc3c35e5a7c1cb256355356f0557dd"}},
+    {"path":"runs/v4-phase4/data/train-static-02.omd","case":"static","bytes":998244416,"sha256":"2ee9bd45e1299297dc6cf34ec57aba2f85c67733183fa3b6264a589a220a5e9e","scene_seeds":[1012001,2654472344,5307990611,7963483146],"provenance":{"path":"runs/v4-phase4/data/train-static-02.transport.json","bytes":964,"sha256":"8bfcab472e7acab97aa123243de6439dcfa70bba15751374913ba66d13d668bb"},"peak_reference_radiance":56.71875,"capture_run":{"path":"runs/v4-phase4/capture-static-02/manifest.json","bytes":5257,"sha256":"74885d89345a8ce97a487058394991fbccc657075556f830b1e0aa5bab359dc9"}},
+    {"path":"runs/v4-phase4/data/train-camera-02.omd","case":"camera","bytes":1065353280,"sha256":"9f5e1a629aa83683d78630455d176244e708171815bd0611db816dc2bcbc80fd","scene_seeds":[1022001,2654527880,5307984707,7963538714],"provenance":{"path":"runs/v4-phase4/data/train-camera-02.transport.json","bytes":964,"sha256":"ca684f16a56918519b10ec03d9c44edcca41d7ce7cd2a7fb6be1d54e004b469e"},"peak_reference_radiance":45.125,"capture_run":{"path":"runs/v4-phase4/capture-camera-02/manifest.json","bytes":5220,"sha256":"59ee50dda342022daf99443a915a146fea0bf8adb16917ce96e81be872e26ed8"}},
+    {"path":"runs/v4-phase4/data/train-objects-02.omd","case":"objects","bytes":1065353280,"sha256":"e494b80fcfc3d6ba7fe7115b8fe339c1b51b25a9e4f07c1022925e48b11cba4e","scene_seeds":[1032001,2654521080,5307976755,7963529834],"provenance":{"path":"runs/v4-phase4/data/train-objects-02.transport.json","bytes":964,"sha256":"fdfed6ddcfff66b1258f4f682da16ba9da701e800583141a91ca4fc181a25d44"},"peak_reference_radiance":119.9375,"capture_run":{"path":"runs/v4-phase4/capture-objects-02/manifest.json","bytes":5197,"sha256":"1fd95634ac6dfaa76eaa6bf2ed69bb25bc2e84278de9c366d39800d681305152"}},
+    {"path":"runs/v4-phase4/data/train-lights-02.omd","case":"lights","bytes":1065353280,"sha256":"2be9887dca0fb52df2079e4dc4ada11cc992341b6d8dabd11e1e6bf8233a4668","scene_seeds":[1042001,2654511080,5307962659,7963511674],"provenance":{"path":"runs/v4-phase4/data/train-lights-02.transport.json","bytes":981,"sha256":"d02d5979a43cc4c531aefae2f3117caf942b9f0d931324838e00cac676055b1f"},"peak_reference_radiance":718.5,"capture_run":{"path":"runs/v4-phase4/capture-lights-02/manifest.json","bytes":5194,"sha256":"63eb907edaff6f5329941e978860b52727f72e117f734e8aec8c46e0eabfe8f2"}},
+    {"path":"runs/v4-phase4/data/train-catalog-02.omd","case":"catalog","bytes":1065353280,"sha256":"d7077d3dae03099edd1d009e439a22e6ee62ce1cc3ea1a559cb9bf03797b071f","scene_seeds":[1052001,2653385944,5309922835,7964352586],"provenance":{"path":"runs/v4-phase4/data/train-catalog-02.transport.json","bytes":1103,"sha256":"0e307c14c33c0ff9cb6461fc6422523e9e5797690b60a362fcdb667e7f9514cd"},"peak_reference_radiance":105.6875,"catalog":{"path":"runs/v4-phase4/data/train-catalog-02.catalog.json","bytes":6259,"sha256":"f4e09f3e49bc47a1d8d939c7609ef99e0404434075d92ded1b360900ef5762c3"},"visibility":{"frames":256,"minimum":0.09083557,"families":["abo/B07124WCSF","abo/B0714QGLVP","abo/B0719WQ4GK","abo/B071FJR3S6"]},"capture_run":{"path":"runs/v4-phase4/capture-catalog-02/manifest.json","bytes":5429,"sha256":"4299b4b391f880c4fcf54c8507fcee97d40447b34473825d8dce74ee4bc064fa"}},
+    {"path":"runs/v4-phase4/data/train-static-03.omd","case":"static","bytes":998244416,"sha256":"bfb856721aa962c20e148647e9279d03d07f30316bb148a71f45facd9c7e258c","scene_seeds":[1013001,2654473392,5307991675,7963482146],"provenance":{"path":"runs/v4-phase4/data/train-static-03.transport.json","bytes":964,"sha256":"32c61822d883505f1e217fcc0989b468c444c6a326bd0f7acf65418c623d9117"},"peak_reference_radiance":122.625,"capture_run":{"path":"runs/v4-phase4/capture-static-03/manifest.json","bytes":5145,"sha256":"139ef533e84e96b7920565127295881155fee90f5692cd0029d957ec40bff9f0"}},
+    {"path":"runs/v4-phase4/data/train-camera-03.omd","case":"camera","bytes":1065353280,"sha256":"6051631483120bafd74f97d0613b85a96d812e3a19d90d9af1b14f9587c23575","scene_seeds":[1023001,2654528928,5307985771,7963537714],"provenance":{"path":"runs/v4-phase4/data/train-camera-03.transport.json","bytes":964,"sha256":"68a50cc291654389ec0c99273427b3454cc3b29f2ab9712b310192abb02bbcb5"},"peak_reference_radiance":38.8125,"capture_run":{"path":"runs/v4-phase4/capture-camera-03/manifest.json","bytes":5220,"sha256":"be9eb55dabf19a5f8010473fcfb7aba0f34d02bd20c9978a0d1248464f881eeb"}},
+    {"path":"runs/v4-phase4/data/train-objects-03.omd","case":"objects","bytes":1065353280,"sha256":"f90c8bc50b9b87f86fbae385d5def98a13e5c74bb8fbe495ec6c3eff4ba4400c","scene_seeds":[1033001,2654517904,5307969627,7963520514],"provenance":{"path":"runs/v4-phase4/data/train-objects-03.transport.json","bytes":964,"sha256":"079dcadcd26ce455cb276c920e97fe85c7b0e4ed135040128418ec2bc1cb0799"},"peak_reference_radiance":37.46875,"capture_run":{"path":"runs/v4-phase4/capture-objects-03/manifest.json","bytes":5197,"sha256":"a6265a30c09424bcb83dd2a5f5accca02400d21620767368b743bf553c56203a"}},
+    {"path":"runs/v4-phase4/data/train-lights-03.omd","case":"lights","bytes":1065353280,"sha256":"4370b875a154fca60447d6cb0d4bac1ab0318f14a710ae52b33b4a0b7d4900df","scene_seeds":[1043001,2654507904,5307963723,7963510546],"provenance":{"path":"runs/v4-phase4/data/train-lights-03.transport.json","bytes":981,"sha256":"37cf2b3aac950d75c67c4de78edf43d5147f5e6e2453e977f4ce08217e6a6c08"},"peak_reference_radiance":72.625,"capture_run":{"path":"runs/v4-phase4/capture-lights-03/manifest.json","bytes":5194,"sha256":"d62b0fadd3682e060077e2d5deda9beff4e436e2ea0a6d9ce3b1b1c3f68e207b"}},
+    {"path":"runs/v4-phase4/data/train-catalog-03.omd","case":"catalog","bytes":1065353280,"sha256":"b339a9dcf6e6c177a23193f75456209d2773ef3104a5c3ae96e54dbb533e9164","scene_seeds":[1053001,2653382896,5309915707,7964359778],"provenance":{"path":"runs/v4-phase4/data/train-catalog-03.transport.json","bytes":1103,"sha256":"1d53a1d67c23145a3e9f82b410e02191e933643553a49c920d1819f4b04dac0c"},"peak_reference_radiance":32.65625,"catalog":{"path":"runs/v4-phase4/data/train-catalog-03.catalog.json","bytes":6279,"sha256":"27c83502a8cc539b0b08914102bdce152affb29593f85d92f47c1c86c3a1cf61"},"visibility":{"frames":256,"minimum":0.054977417,"families":["abo/B0719SNKSY","abo/B0719WQ4GK","abo/B071FJR3SR","abo/B071FJR479"]},"capture_run":{"path":"runs/v4-phase4/capture-catalog-03/manifest.json","bytes":5429,"sha256":"69fc37994005c75ecfc04111b70586c2670abad7d332618c5142d0781b4daeb2"}},
+    {"path":"runs/v4-phase4/data/train-static-04.omd","case":"static","bytes":998244416,"sha256":"b2d31a8cb2e3f68e20d6de56ff7cda795238f1ee8e16f981993e62ab46abf4b9","scene_seeds":[1014001,2654470472,5307992963,7963481562],"provenance":{"path":"runs/v4-phase4/data/train-static-04.transport.json","bytes":964,"sha256":"fbf3b535987afa153bd3b93fdf959696d5d99dcc3297b8962f7d8df3b78f0679"},"peak_reference_radiance":45.5625,"capture_run":{"path":"runs/v4-phase4/capture-static-04/manifest.json","bytes":5145,"sha256":"0eb1abccfd9263bffbf5447cb411a71a0bd842090feeff50213d11f0da3e62e0"}},
+    {"path":"runs/v4-phase4/data/train-camera-04.omd","case":"camera","bytes":1065353280,"sha256":"8898c8ae65aeb3ef2d29f6544d7d89f94d099fca0ebf03b202ea4398fc159c4d","scene_seeds":[1024001,2654525880,5307978611,7963528490],"provenance":{"path":"runs/v4-phase4/data/train-camera-04.transport.json","bytes":964,"sha256":"20b8643f2eca8902eb913661b9686c51f500e834b4cace4b61eda768de0c6664"},"peak_reference_radiance":46.875,"capture_run":{"path":"runs/v4-phase4/capture-camera-04/manifest.json","bytes":5220,"sha256":"90b84500267d37b06342788102fa527a24fc6179e17ca6c522a4eed8bec3f0e3"}},
+    {"path":"runs/v4-phase4/data/train-objects-04.omd","case":"objects","bytes":1065353280,"sha256":"491c3f0a010cdd95033b9b25fb11c88fefed436e11b4719f0018562400c03ae3","scene_seeds":[1034001,2654518952,5307970659,7963519546],"provenance":{"path":"runs/v4-phase4/data/train-objects-04.transport.json","bytes":964,"sha256":"3a319ce3125f62581df98ba22a9f9bd575fe4fbfe896957e04cda7d6bbfcbca6"},"peak_reference_radiance":56.84375,"capture_run":{"path":"runs/v4-phase4/capture-objects-04/manifest.json","bytes":5197,"sha256":"0fcb1cd00b0a1054a4a6b1879574870a73578b5ee6b009b18ee949481f0b6e72"}},
+    {"path":"runs/v4-phase4/data/train-lights-04.omd","case":"lights","bytes":1065353280,"sha256":"19108225f503aec32f613259ecc7b3f4fc3acae8bad43fa9f74a0d801679b784","scene_seeds":[1044001,2654508952,5307964755,7963509514],"provenance":{"path":"runs/v4-phase4/data/train-lights-04.transport.json","bytes":981,"sha256":"8a47db57b5bb847c50a02d9cc10eed729808f682fc89df33bc9d1dd7077630d9"},"peak_reference_radiance":124.875,"capture_run":{"path":"runs/v4-phase4/capture-lights-04/manifest.json","bytes":5194,"sha256":"d99e9bb36cba372b573d32c1c16db7a0691ad029009c6e4f5e420b5ab755c430"}},
+    {"path":"runs/v4-phase4/data/train-catalog-04.omd","case":"catalog","bytes":1065353280,"sha256":"c5f7e8c53050c7e85939e73225f499344fc284aa0ce2f8a0e94364937b6a4a07","scene_seeds":[1054001,2653383816,5309916739,7964358682],"provenance":{"path":"runs/v4-phase4/data/train-catalog-04.transport.json","bytes":1103,"sha256":"ba8832d60764436ad150be9b259cbe4dee18ce9e62c969a673b4af8bf304cf47"},"peak_reference_radiance":33.65625,"catalog":{"path":"runs/v4-phase4/data/train-catalog-04.catalog.json","bytes":6313,"sha256":"17edec439b71108858fe6290b0d6b799b1cea304efe97317041d3a46b05470ce"},"visibility":{"frames":256,"minimum":0.015335083,"families":["abo/B01M4OYBOI","abo/B0714QGLSD","abo/B0719WQ4GK","abo/B0719WQH8N"]},"capture_run":{"path":"runs/v4-phase4/capture-catalog-04/manifest.json","bytes":5429,"sha256":"2b50a520d9622315d2a49deea850565f1cd898a8eaaa93a82ec7fe6e952ce3c6"}},
+    {"path":"runs/v4-phase4/data/train-static-05.omd","case":"static","bytes":998244416,"sha256":"c133d016a734e139345c6894d622effe521f5bb7ceca5575841af1d4edb63ade","scene_seeds":[1015001,2654471520,5307994027,7963480562],"provenance":{"path":"runs/v4-phase4/data/train-static-05.transport.json","bytes":964,"sha256":"6a1c3f5623c6aacb61322c93373bc4d429ce50fecb5cb7b553b66ea7f6aa2189"},"peak_reference_radiance":59.28125,"capture_run":{"path":"runs/v4-phase4/capture-static-05/manifest.json","bytes":5145,"sha256":"9a39aaa18ea01815a40eda963cf0dec488a9f088624d940275918b12e3cc846a"}},
+    {"path":"runs/v4-phase4/data/train-camera-05.omd","case":"camera","bytes":1065353280,"sha256":"707d08794a7af1d91daa80fc9c459fdad647f68731c5af2a761e0a9bc3d048e8","scene_seeds":[1025001,2654526032,5307977883,7963528898],"provenance":{"path":"runs/v4-phase4/data/train-camera-05.transport.json","bytes":964,"sha256":"c14ff727726993ce3782f54c8575dd76f9f9eef0b48892ede1e62b94d9f7f349"},"peak_reference_radiance":102.0625,"capture_run":{"path":"runs/v4-phase4/capture-camera-05/manifest.json","bytes":5220,"sha256":"82d8bddde7dc6f4e9a2911515eaa9dae47df81d2a490ffaa92276135425a7ab7"}},
+    {"path":"runs/v4-phase4/data/train-objects-05.omd","case":"objects","bytes":1065353280,"sha256":"396fe2412ecab90cf867eefc151b6dbdb7296111d23ab5e512482da7074ae30c","scene_seeds":[1035001,2654516032,5307971979,7963518930],"provenance":{"path":"runs/v4-phase4/data/train-objects-05.transport.json","bytes":964,"sha256":"67e00b7e69df1442093e904e2eacfb213612f8d8b866170bb665c1bef3ca8297"},"peak_reference_radiance":80.75,"capture_run":{"path":"runs/v4-phase4/capture-objects-05/manifest.json","bytes":5197,"sha256":"f254c822547cafe3a8b623f16043263a19208d31233a5ef9d0c9bc1f076b5e63"}},
+    {"path":"runs/v4-phase4/data/train-lights-05.omd","case":"lights","bytes":1065353280,"sha256":"f5d9c136aba13577f4a8c9b20fc2bec2aedae64bda6b680c5187f0a0bc1bc756","scene_seeds":[1045001,2654505904,5307957627,7963516706],"provenance":{"path":"runs/v4-phase4/data/train-lights-05.transport.json","bytes":981,"sha256":"bb59e5526be6f768f6a7a0a59dce83ec607b8791ed915ff9d65353249bae490c"},"peak_reference_radiance":58.71875,"capture_run":{"path":"runs/v4-phase4/capture-lights-05/manifest.json","bytes":5194,"sha256":"5a210bd5714b5e406fb86c5482ab9c177b94218ffa37a8eeb0177ae0a61ef53f"}},
+    {"path":"runs/v4-phase4/data/train-catalog-05.omd","case":"catalog","bytes":1065353280,"sha256":"1fce2417c6f47f03ca29162c60ad66e8fd54cafe868dadbb02c958c6bd7dbb13","scene_seeds":[1055001,2653380768,5309917803,7964357682],"provenance":{"path":"runs/v4-phase4/data/train-catalog-05.transport.json","bytes":1102,"sha256":"48ea33f13791f431ad89ece58f63de6275d6dfcee2eb335d17c5ddff0b7db7b3"},"peak_reference_radiance":43.46875,"catalog":{"path":"runs/v4-phase4/data/train-catalog-05.catalog.json","bytes":6342,"sha256":"c36e498868b8dad08635a361fb909e1c5e29bea5c8aea832d84d6d8fd4a67aa3"},"visibility":{"frames":256,"minimum":0.01663208,"families":["abo/B07121RM99","abo/B07149T97D","abo/B0714QGLVP","abo/B071FJR3SR"]},"capture_run":{"path":"runs/v4-phase4/capture-catalog-05/manifest.json","bytes":5429,"sha256":"8a50cf9bc276fd8ca87f0922e697d7423a06f7b84b9b5d20d9d1f7680eea721a"}},
+    {"path":"runs/v4-phase4/data/train-static-06.omd","case":"static","bytes":998244416,"sha256":"0bac010274198578a3fe4daa8fd48beb3a5e14ab25bdec8ddf320346f042ec5c","scene_seeds":[1016001,2654534008,5307986867,7963536874],"provenance":{"path":"runs/v4-phase4/data/train-static-06.transport.json","bytes":964,"sha256":"dab404ae85b0bee6d6f044cad1e309b59b3c42e9921ce28063f067af4498f1be"},"peak_reference_radiance":47.4375,"capture_run":{"path":"runs/v4-phase4/capture-static-06/manifest.json","bytes":5145,"sha256":"28489edaa026f6fc9701ba654637193b5320047ac5df26b8a66a86668e64ea24"}},
+    {"path":"runs/v4-phase4/data/train-camera-06.omd","case":"camera","bytes":1065353280,"sha256":"10c04af05110a9eefb3dc896811bc8ad8c71c7b34dc60cab2caed61e4c314d77","scene_seeds":[1026001,2654527080,5307978915,7963527930],"provenance":{"path":"runs/v4-phase4/data/train-camera-06.transport.json","bytes":964,"sha256":"4eaa812d8a67282e3c01d54e658d5de26a987b05603e0eb8aa9f36c7c9bea121"},"peak_reference_radiance":210.375,"capture_run":{"path":"runs/v4-phase4/capture-camera-06/manifest.json","bytes":5220,"sha256":"eedc2166da7f1fe674650abaa2fc024a66f58068ceb05c1ad53ba84dbca1b145"}},
+    {"path":"runs/v4-phase4/data/train-objects-06.omd","case":"objects","bytes":1065353280,"sha256":"8d5d08438c2529dc372b3032191b387ace77497dc8887874d192e5e5c22c82a9","scene_seeds":[1036001,2654517080,5307973011,7963517898],"provenance":{"path":"runs/v4-phase4/data/train-objects-06.transport.json","bytes":964,"sha256":"59e07526cfd12c5a4c33fbdcd9437ba1f9c506aa0afb23c2c85e155e595c09e2"},"peak_reference_radiance":43.1875,"capture_run":{"path":"runs/v4-phase4/capture-objects-06/manifest.json","bytes":5197,"sha256":"33722332057f1dcf660e26188a923624cd9697472e36fec5a731d2b453034424"}},
+    {"path":"runs/v4-phase4/data/train-lights-06.omd","case":"lights","bytes":1065353280,"sha256":"59d73c10003af014d6ec0dbf77dcb6f2d634d1b39429effc984c09ed5c5c2afd","scene_seeds":[1046001,2654506056,5307958915,7963515098],"provenance":{"path":"runs/v4-phase4/data/train-lights-06.transport.json","bytes":981,"sha256":"95fff4ae40462271c510f6b3bf5a5708263ca6065537b184d0aa42a10b6e6488"},"peak_reference_radiance":53.4375,"capture_run":{"path":"runs/v4-phase4/capture-lights-06/manifest.json","bytes":5194,"sha256":"5136581e874a9993e3d547bb6837c0b2c23a732a4df84d8e533c62a1a66aa820"}},
+    {"path":"runs/v4-phase4/data/train-catalog-06.omd","case":"catalog","bytes":1065353280,"sha256":"939b76d6399d16c453a2f18d1644176531765c00dd4b3350d0a5904563184589","scene_seeds":[1056001,2653381816,5309918835,7964356650],"provenance":{"path":"runs/v4-phase4/data/train-catalog-06.transport.json","bytes":1102,"sha256":"f79e37b64669ff1b4b4e665b224cd4ebc77aa27e59d6bccdec6710f9c2ab3871"},"peak_reference_radiance":67.9375,"catalog":{"path":"runs/v4-phase4/data/train-catalog-06.catalog.json","bytes":6297,"sha256":"ba8ec6476d508c9a6ce524087495543bd0538021faf4d9d2ec8799296598e9f9"},"visibility":{"frames":256,"minimum":0.042388916,"families":["abo/B07124WCZY","abo/B0713T6W1C","abo/B07177355J","abo/B0719SNKSY"]},"capture_run":{"path":"runs/v4-phase4/capture-catalog-06/manifest.json","bytes":5429,"sha256":"6275ede5b2cbfa48dce0967811959c9693226c2e3ec61a76a2b6ec34365f67c1"}},
+    {"path":"runs/v4-phase4/data/train-static-07.omd","case":"static","bytes":998244416,"sha256":"553b2ce00f87d884ecf0343ee02406ce94e3401dc261f2cd6e39c88ea1a50ec1","scene_seeds":[1017001,2654534928,5307987931,7963535746],"provenance":{"path":"runs/v4-phase4/data/train-static-07.transport.json","bytes":964,"sha256":"4840bb13560d83932b179b3e844aea8c53c91bcfe127c047cbfcc5802ae298a5"},"peak_reference_radiance":44.5,"capture_run":{"path":"runs/v4-phase4/capture-static-07/manifest.json","bytes":5145,"sha256":"11b63113bdac65a957e35d2767635f7bb1b83d3408209cf71fe5d7d70f0f11ac"}},
+    {"path":"runs/v4-phase4/data/train-camera-07.omd","case":"camera","bytes":1065353280,"sha256":"9bf0deca33fa71b23a0c8fa5fa7672007a19bcfe423f99829b93b6a8f220a7d9","scene_seeds":[1027001,2654523904,5307979979,7963526802],"provenance":{"path":"runs/v4-phase4/data/train-camera-07.transport.json","bytes":964,"sha256":"074665827171d56a1b7802144995ca181b5995e9a87dd61b51993084e2771776"},"peak_reference_radiance":174.375,"capture_run":{"path":"runs/v4-phase4/capture-camera-07/manifest.json","bytes":5220,"sha256":"80cbd0e6b69db517636e0107a6b4c90ba90197c76cb6bcd6343f25637d944333"}},
+    {"path":"runs/v4-phase4/data/train-objects-07.omd","case":"objects","bytes":1065353280,"sha256":"907523616a49ed59dc0d6c269caf864361d6f77964ccacf82e138d2cb0df9db3","scene_seeds":[1037001,2654514032,5307965883,7963525090],"provenance":{"path":"runs/v4-phase4/data/train-objects-07.transport.json","bytes":964,"sha256":"9dad1a20cf779698b6adcad49bb69b0b8041a12b1d6721f6c74e3533dd98c21e"},"peak_reference_radiance":143.25,"capture_run":{"path":"runs/v4-phase4/capture-objects-07/manifest.json","bytes":5197,"sha256":"71c5b7239e24c48771e47363aae76f3f3f4c17cd327c86dea1e7897e996f20f5"}},
+    {"path":"runs/v4-phase4/data/train-lights-07.omd","case":"lights","bytes":1065353280,"sha256":"78ad26678b77ee001bafa6a9a95e276bf8e83ca7ba68a5b91e5044e14b97acb4","scene_seeds":[1047001,2654503008,5307959979,7963514098],"provenance":{"path":"runs/v4-phase4/data/train-lights-07.transport.json","bytes":981,"sha256":"49093f875c720e4ec844d45fcc34626bcbf64e7ba9caf4caa8d7faea841f57f6"},"peak_reference_radiance":314,"capture_run":{"path":"runs/v4-phase4/capture-lights-07/manifest.json","bytes":5194,"sha256":"77eb2ff988c14337dd499edf2709dbd9565df6f597b078ce00ac03a75bae7f4d"}},
+    {"path":"runs/v4-phase4/data/train-catalog-07.omd","case":"catalog","bytes":1065353280,"sha256":"288e6d5b0a43727097cd631e3c4c4b1e82bed53e5dbedbc60e04f04578dc12f3","scene_seeds":[1057001,2653378896,5309911963,7964347842],"provenance":{"path":"runs/v4-phase4/data/train-catalog-07.transport.json","bytes":1102,"sha256":"5206df312c077e5efbb2c2e77bd32a251836d68491ef09416b8166c0d48e05e3"},"peak_reference_radiance":47.5,"catalog":{"path":"runs/v4-phase4/data/train-catalog-07.catalog.json","bytes":6313,"sha256":"37959bff7b368c8418c8640fe92f53263f8fcc9dce2704bf440d5c7eedc5010c"},"visibility":{"frames":256,"minimum":0.05343628,"families":["abo/B01MDM0UWS","abo/B0718WYQ8D","abo/B0719SNKSY","abo/B071FJR3S6"]},"capture_run":{"path":"runs/v4-phase4/capture-catalog-07/manifest.json","bytes":5429,"sha256":"b356165178aa127f7e9e4b5c9085ea68ca773f84b2f6e9cec71f7dbf585c13ff"}}
+  ]
+}
