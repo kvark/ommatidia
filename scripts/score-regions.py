@@ -14,6 +14,7 @@ import json
 import math
 from pathlib import Path
 import sys
+from evaluation_metrics import bucket
 
 
 def sha256(path):
@@ -99,7 +100,8 @@ def verify_selection(directory, selection_path, benchmark_path, benchmark):
     if benchmark_hash not in {selection["benchmark_sha256"], selection.get("confirmation_benchmark_sha256")}:
         raise ValueError("benchmark was not part of this frozen selection")
     locked(benchmark_path, benchmark_hash)
-    if "--eval-only" not in command or "--save-linear" not in command or "--reset-history" in command:
+    if ("--eval-only" not in command or "--save-linear" not in command
+            or "--reset-history" in command or "--reset-every" in command):
         raise ValueError("selected candidate requires full-precision causal evaluation")
     checkpoint = (cwd / selection["checkpoint"]).resolve()
     if argument("--checkpoint") != checkpoint:
@@ -184,7 +186,7 @@ def summarize(rows):
     return result
 
 
-def score(benchmark, before, after):
+def score(benchmark, before, after, before_role="learned", after_role="learned", reset_every=None):
     rows = []
     case_by_sequence = [case["name"] for case in benchmark["datasets"] for _ in range(case["sequences"])]
     frame_regions = {}
@@ -197,11 +199,12 @@ def score(benchmark, before, after):
         if sha256(reference_path) != sha256(after / reference_path.name):
             raise ValueError(f"reference differs between runs: {prefix}")
         reference = read_image(reference_path, benchmark["extent"])
-        images = {name: read_image(directory / f"{prefix}-learned.rgbf32", benchmark["extent"])
-                  for name, directory in (("before", before), ("after", after))}
+        images = {name: read_image(directory / f"{prefix}-{role}.rgbf32", benchmark["extent"])
+                  for name, directory, role in (("before", before, before_role), ("after", after, after_role))}
         for region in regions:
             row = {"region": region["name"], "kind": region["kind"], "case": case_by_sequence[sequence],
-                   "sequence": sequence, "frame": frame, "rect": region["rect"]}
+                   "sequence": sequence, "frame": frame, "rect": region["rect"],
+                   "frames_since_reset": frame if reset_every is None else frame % reset_every}
             row.update({name: crop_error(image, reference, benchmark["extent"], region["rect"])
                         for name, image in images.items()})
             rows.append(row)
@@ -209,7 +212,15 @@ def score(benchmark, before, after):
     for field in ("region", "case", "kind"):
         groups[field] = {value: summarize([row for row in rows if row[field] == value])
                          for value in sorted({row[field] for row in rows})}
+    groups["age"] = {}
+    for group in ("cold", "early", "settling", "warm"):
+        selected = [row for row in rows if bucket(row["frames_since_reset"]) == group]
+        groups["age"][group] = {
+            kind: summarize([row for row in selected if row["kind"] == kind])
+            if any(row["kind"] == kind for row in selected) else None
+            for kind in ("smooth", "edge", "texture")}
     return {"metric_space": "fixed x/(1+x), before sRGB or quantization",
+            "roles": {"before": before_role, "after": after_role}, "reset_every": reset_every,
             "aggregation": "RGB-value weighted; gradient-neighbor weighted",
             "scope": "spatial crops only; no automatic temporal or visual pass", "groups": groups, "frames": rows}
 
@@ -219,6 +230,8 @@ def main():
     parser.add_argument("--benchmark", type=Path, required=True)
     parser.add_argument("--before-run", type=Path, required=True)
     parser.add_argument("--after-run", type=Path, required=True)
+    parser.add_argument("--before-role", choices=("learned", "base"), default="learned")
+    parser.add_argument("--after-role", choices=("learned", "base"), default="learned")
     parser.add_argument("--selection", type=Path, help="Verify the after-run against its pre-recorded candidate freeze")
     parser.add_argument("--out", type=Path, required=True)
     args = parser.parse_args()
@@ -227,7 +240,15 @@ def main():
     before, before_hash = verify_run(args.before_run, args.benchmark, benchmark)
     after, after_hash = verify_run(args.after_run, args.benchmark, benchmark)
     selection = verify_selection(args.after_run, args.selection, args.benchmark, benchmark) if args.selection else None
-    result = score(benchmark, before, after)
+    if args.selection and args.after_role != "learned":
+        parser.error("frozen selection must score learned outputs")
+    before_quality = json.loads((before / "quality.json").read_text())
+    after_quality = json.loads((after / "quality.json").read_text())
+    reset_every = before_quality.get("reset_every")
+    if (reset_every != after_quality.get("reset_every")
+            or before_quality["history_mode"] != after_quality["history_mode"]):
+        raise ValueError("crop comparison reset protocols differ")
+    result = score(benchmark, before, after, args.before_role, args.after_role, reset_every)
     result["benchmark_sha256"] = sha256(args.benchmark)
     result["run_manifest_sha256"] = {"before": before_hash, "after": after_hash}
     if selection is not None:

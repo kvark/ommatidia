@@ -5,6 +5,7 @@ use ommatidia::{
     transport::{Config, Frame, Target, graph, native},
 };
 use ommatidia_train::{
+    evaluation::{self, ControlRun},
     open_capture,
     profile::{Stage, TrainingProfile, Update},
     save_linear, save_png,
@@ -17,7 +18,7 @@ use std::{
     sync::Arc,
     time::Instant,
 };
-type EvaluationHistory = ([Vec<f32>; 2], Vec<f32>, Vec<ommatidia::temporal::Surface>);
+type EvaluationHistory = (Vec<Vec<f32>>, Vec<f32>, Vec<ommatidia::temporal::Surface>);
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 
 const DEFAULT_RESET_INTERVAL: usize = 2;
@@ -124,7 +125,7 @@ impl Corpus {
         Ok(())
     }
 }
-#[derive(Default, Serialize)]
+#[derive(Clone, Default, Serialize)]
 struct Score {
     frames: usize,
     psnr: f64,
@@ -145,6 +146,57 @@ struct Score {
     rejected_history_fraction: Option<f64>,
 }
 impl Score {
+    fn accumulate(&mut self, other: &Self) {
+        self.frames += other.frames;
+        self.psnr += other.psnr;
+        self.ssim += other.ssim;
+        self.low_frequency_psnr += other.low_frequency_psnr;
+        self.relative_mse += other.relative_mse;
+        self.linear_mse += other.linear_mse;
+        self.energy_ratio += other.energy_ratio;
+        self.detail_ratio += other.detail_ratio;
+        self.gradient_mse += other.gradient_mse;
+        self.temporal_mse += other.temporal_mse;
+        self.temporal_frames += other.temporal_frames;
+        self.reset_psnr += other.reset_psnr;
+        self.resets += other.resets;
+        if let Some(value) = other.rejected_history_mse {
+            *self.rejected_history_mse.get_or_insert(0.0) += value;
+        }
+        self.rejected_history_pixels += other.rejected_history_pixels;
+        self.history_pixels += other.history_pixels;
+    }
+
+    fn report(&self) -> serde_json::Value {
+        if self.frames == 0 {
+            return serde_json::Value::Null;
+        }
+        let mut score = self.clone();
+        score.finish();
+        let mut report = serde_json::to_value(score).unwrap();
+        if self.temporal_frames == 0 {
+            report["temporal_mse"] = serde_json::Value::Null;
+        }
+        if self.resets == 0 {
+            report["reset_psnr"] = serde_json::Value::Null;
+        }
+        report
+    }
+
+    fn cells(&self) -> [Option<f64>; 9] {
+        [
+            Some(self.psnr),
+            Some(self.ssim),
+            Some(self.low_frequency_psnr),
+            Some(self.relative_mse),
+            Some(self.linear_mse),
+            Some(self.energy_ratio),
+            Some(self.detail_ratio),
+            Some(self.gradient_mse),
+            (self.temporal_frames > 0).then_some(self.temporal_mse),
+        ]
+    }
+
     fn add(&mut self, image: &[f32], target: &[f32], extent: [u32; 2], reset: bool) {
         self.frames += 1;
         let psnr = -10.0 * (metrics::error(image, target) as f64).max(1e-20).log10();
@@ -256,11 +308,21 @@ fn compose_lobes(frame: &Frame, lobes: &[Vec<f32>; 2]) -> Vec<f32> {
         .collect()
 }
 
-#[derive(Clone, Copy, Default)]
+#[derive(Clone, Default)]
 struct EvaluationOptions {
-    reset_history: bool,
+    reset_every: Option<NonZeroUsize>,
     save_lobes: bool,
     save_linear: bool,
+    no_images: bool,
+    control_run: Option<PathBuf>,
+}
+impl EvaluationOptions {
+    fn training() -> Self {
+        Self {
+            no_images: true,
+            ..Self::default()
+        }
+    }
 }
 
 fn evaluate(
@@ -269,26 +331,78 @@ fn evaluate(
     learned: &mut native::Native,
     baseline: &mut native::Native,
     out: &Path,
-    options: EvaluationOptions,
+    options: &EvaluationOptions,
 ) -> Result<serde_json::Value> {
-    let mut scores = [Score::default(), Score::default()];
+    let mut report = serde_json::json!({
+        "schema":2, "capture":corpus.provenance,
+        "extent":corpus.frames[0].low().map(|v| v * config.scale),
+        "sequence_length":corpus.length,"frames":corpus.frames.len(),
+        "reset_every":options.reset_every,"save_linear":options.save_linear,
+        "control_run":options.control_run,
+        "history_mode":if options.reset_every.is_some() { "periodic-cuts" } else { "causal" },
+        "metric_space":"PSNR/SSIM/gradient/lobe MSE: x/(1+x); energy: scene-linear; PNG: same compression then sRGB",
+        "temporal_scope":"motion-compensated change residual; pairs crossing resets are excluded; undefined metrics are null",
+        "rejected_history_space":"pixel-weighted compressed RGB MSE on non-reset pixels with unavailable reprojection in either lobe; includes disocclusions and out-of-frame motion, excludes reactive/learned gate suppression; empty regions are null",
+        "bucket_definitions":{"cold":"0","early":"1-7","settling":"8-15","warm":">=16"},
+        "speed_claim":false,
+    });
+    let control = options
+        .control_run
+        .as_ref()
+        .map(|dir| ControlRun::open(dir, &report))
+        .transpose()?;
+    let roles: &[&str] = if control.is_some() {
+        &["baseline", "learned", "control"]
+    } else {
+        &["baseline", "learned"]
+    };
+    let mut scores = vec![Score::default(); roles.len()];
+    let mut buckets = std::collections::BTreeMap::from(
+        ["cold", "early", "settling", "warm"].map(|key| (key, vec![Score::default(); roles.len()])),
+    );
     let mut previous: Option<EvaluationHistory> = None;
     let mut diagnostics = Vec::new();
     let mut rows = std::fs::File::create(out.join("frames.csv"))?;
-    writeln!(rows, "sequence,frame,baseline_psnr,learned_psnr")?;
+    const METRICS: [&str; 9] = [
+        "psnr",
+        "ssim",
+        "low_frequency_psnr",
+        "relative_mse",
+        "linear_mse",
+        "energy_ratio",
+        "detail_ratio",
+        "gradient_mse",
+        "temporal_mse",
+    ];
+    write!(rows, "sequence,frame,frames_since_reset")?;
+    for role in roles
+        .iter()
+        .copied()
+        .chain(control.as_ref().map(|_| "delta"))
+    {
+        for metric in METRICS {
+            write!(rows, ",{role}_{metric}")?;
+        }
+    }
+    writeln!(rows)?;
     for (index, record) in corpus.frames.iter().enumerate() {
         let (frame, target) = record.decode(config)?;
         let (frame, target) = (&frame, &target);
-        let sequence_start = index % corpus.length == 0;
-        let reset = sequence_start || options.reset_history;
-        if sequence_start {
+        let since_reset = evaluation::age(index % corpus.length, options.reset_every);
+        let reset = since_reset == 0;
+        if reset {
             previous = None;
         }
         if reset {
             learned.reset();
             baseline.reset();
         }
-        let images = [baseline.process(frame)?, learned.process(frame)?];
+        let prefix = format!("{:03}-{:03}", index / corpus.length, index % corpus.length);
+        let mut images = vec![baseline.process(frame)?, learned.process(frame)?];
+        if let Some(control) = &control {
+            images.push(control.load(&prefix, &target.rgb)?);
+        }
+        let mut frame_scores = vec![Score::default(); roles.len()];
         let extent = frame.low.map(|v| v * config.scale);
         let current = surfaces(frame);
         let motion: Vec<_> = frame
@@ -296,16 +410,16 @@ fn evaluate(
             .iter()
             .flat_map(|s| s.motion[..2].iter().copied())
             .collect();
-        for (score, image) in scores.iter_mut().zip(&images) {
-            if image.iter().any(|v| !v.is_finite()) {
-                return Err("non-finite reconstruction".into());
+        for (score, image) in frame_scores.iter_mut().zip(&images) {
+            if image.iter().any(|v| !v.is_finite() || *v < 0.0) {
+                return Err("non-finite or negative reconstruction".into());
             }
             score.add(image, &target.rgb, extent, reset);
         }
         if !reset {
             for (k, model) in [&*baseline, &*learned].into_iter().enumerate() {
                 let mask = rejected_history_mask(&model.read_history_validity(), frame.low, config);
-                scores[k].add_rejected_history(&images[k], &target.rgb, &mask);
+                frame_scores[k].add_rejected_history(&images[k], &target.rgb, &mask);
             }
         }
         if let Some((old, reference, old_surfaces)) = &previous {
@@ -315,7 +429,7 @@ fn evaluate(
                 previous: old_surfaces,
                 rejection: Default::default(),
             };
-            for k in 0..2 {
+            for k in 0..images.len() {
                 if let Some(e) = metrics::temporal_error(
                     [&images[k], &old[k]],
                     [&target.rgb, reference],
@@ -324,21 +438,36 @@ fn evaluate(
                     frame.low.map(|v| v as usize),
                     config.scale as usize,
                 ) {
-                    scores[k].temporal_mse += e.mean();
-                    scores[k].temporal_frames += 1;
+                    frame_scores[k].temporal_mse = e.mean();
+                    frame_scores[k].temporal_frames = 1;
                 }
             }
         }
-        writeln!(
+        write!(
             rows,
-            "{},{},{:.6},{:.6}",
+            "{},{},{since_reset}",
             index / corpus.length,
-            index % corpus.length,
-            -10.0 * metrics::error(&images[0], &target.rgb).max(1e-20).log10(),
-            -10.0 * metrics::error(&images[1], &target.rgb).max(1e-20).log10()
+            index % corpus.length
         )?;
+        let mut cells: Vec<_> = frame_scores.iter().map(Score::cells).collect();
+        if control.is_some() {
+            cells.push(std::array::from_fn(|i| {
+                cells[1][i].zip(cells[2][i]).map(|(new, old)| new - old)
+            }));
+        }
+        for value in cells.into_iter().flatten() {
+            write!(
+                rows,
+                ",{}",
+                value.map(|v| v.to_string()).unwrap_or_default()
+            )?;
+        }
+        writeln!(rows)?;
+        for (k, score) in frame_scores.iter().enumerate() {
+            scores[k].accumulate(score);
+            buckets.get_mut(evaluation::bucket(since_reset)).unwrap()[k].accumulate(score);
+        }
         // All frames are retained: evaluation is not a cherry-picked screenshot.
-        let prefix = format!("{:03}-{:03}", index / corpus.length, index % corpus.length);
         let truth = reference_lobes(frame, target, config);
         let composition = compose_lobes(frame, &truth);
         let mut diagnostic = serde_json::json!({
@@ -397,7 +526,9 @@ fn evaluate(
             ("learned", &images[1]),
             ("reference", &target.rgb),
         ] {
-            save_png(&out.join(format!("{prefix}-{name}.png")), image, extent)?;
+            if !options.no_images {
+                save_png(&out.join(format!("{prefix}-{name}.png")), image, extent)?;
+            }
             if options.save_linear {
                 save_linear(&out.join(format!("{prefix}-{name}.rgbf32")), image)?;
             }
@@ -408,10 +539,27 @@ fn evaluate(
         out.join("diagnostics.json"),
         serde_json::to_vec_pretty(&diagnostics)?,
     )?;
-    scores.iter_mut().for_each(Score::finish);
-    Ok(
-        serde_json::json!({"baseline":scores[0],"learned":scores[1],"history_mode":if options.reset_history { "reset-every-frame diagnostic" } else { "causal" }, "metric_space":"PSNR/SSIM/gradient/lobe MSE: x/(1+x); energy: scene-linear; PNG: same compression then sRGB", "rejected_history_space":"pixel-weighted compressed RGB MSE on non-reset pixels with unavailable reprojection in either lobe; includes disocclusions and out-of-frame motion, excludes reactive/learned gate suppression; empty regions are null", "speed_claim":false}),
-    )
+    for (role, score) in roles.iter().zip(&scores) {
+        report[*role] = score.report();
+    }
+    report["buckets"] = serde_json::Value::Object(
+        buckets
+            .into_iter()
+            .map(|(bucket, scores)| {
+                (
+                    bucket.to_owned(),
+                    serde_json::Value::Object(
+                        roles
+                            .iter()
+                            .zip(scores)
+                            .map(|(role, score)| ((*role).to_owned(), score.report()))
+                            .collect(),
+                    ),
+                )
+            })
+            .collect(),
+    );
+    Ok(report)
 }
 fn main() -> Result<()> {
     env_logger::init();
@@ -426,7 +574,7 @@ fn main() -> Result<()> {
     let mut eval_only = false;
     let mut profile_only = false;
     let mut checkpoint_input = None::<PathBuf>;
-    let mut eval_every = 500usize;
+    let mut eval_every = 10_000usize;
     let mut reset_every = NonZeroUsize::new(DEFAULT_RESET_INTERVAL).unwrap();
     let mut device_id = None;
     let mut weights = graph::LossWeights::default();
@@ -437,14 +585,17 @@ fn main() -> Result<()> {
             println!(
                 "transport --data TRAIN.omd --eval-data DEV.omd --out DIR
   --steps N [4000] --unroll N [2] --channels N [16] --seed N [7]
-  --lr F [0.0003] --eval-every N [500] --device-id ID
-  --reset-every N [2] (training: empty history each Nth window; 1 resets every window)
+  --lr F [0.0003] --eval-every N [10000] (causal metrics, no images) --device-id ID
+  --train-reset-every N [2] (training: empty history each Nth window)
+  --reset-every N [off] (evaluation: simulated cut each N frames, within each sequence)
   --checkpoint FILE (weights-only warm start, or evaluation input)
   --eval-only (loads checkpoint sidecar; evaluation resolution may differ)
   --profile-only (training-loop measurement; save checkpoint/timings, skip evaluation)
   --reset-history (eval-only diagnostic: reset the model before every frame)
   --save-lobes (save diffuse/specular images alongside per-frame diagnostics)
   --save-linear (save row-major, little-endian scene-linear RGB f32 for crop scoring)
+  --no-images (skip PNG writing; compatible with --save-linear)
+  --control-run DIR (compare saved control outputs; identical ordered data and reset protocol)
   --compressed-weight F [1] --physical-weight F [0.005]
   --low-frequency-weight F [0.01] --temporal-weight F [0.02]
   --lobe-weight F [0.5] (absolute diffuse/specular supervision)
@@ -462,7 +613,17 @@ seeds/catalog families must be disjoint. Use a separate final audit split."
             continue;
         }
         if arg == "--reset-history" {
-            evaluation.reset_history = true;
+            if evaluation
+                .reset_every
+                .replace(NonZeroUsize::new(1).unwrap())
+                .is_some()
+            {
+                return Err("specify only one evaluation reset option".into());
+            }
+            continue;
+        }
+        if arg == "--no-images" {
+            evaluation.no_images = true;
             continue;
         }
         if arg == "--save-lobes" {
@@ -484,7 +645,13 @@ seeds/catalog families must be disjoint. Use a separate final audit split."
             "--seed" => seed = v.parse()?,
             "--lr" => rate = v.parse()?,
             "--eval-every" => eval_every = v.parse()?,
-            "--reset-every" => reset_every = v.parse()?,
+            "--train-reset-every" => reset_every = v.parse()?,
+            "--reset-every" => {
+                if evaluation.reset_every.replace(v.parse()?).is_some() {
+                    return Err("specify only one evaluation reset option".into());
+                }
+            }
+            "--control-run" => evaluation.control_run = Some(PathBuf::from(v).canonicalize()?),
             "--checkpoint" => checkpoint_input = Some(v.into()),
             "--device-id" => device_id = Some(ommatidia::gpu::parse_device_id(&v)?),
             "--compressed-weight" => weights.compressed = v.parse()?,
@@ -502,8 +669,20 @@ seeds/catalog families must be disjoint. Use a separate final audit split."
     if profile_only {
         eval_every = 0;
     }
-    if evaluation.reset_history && !eval_only {
-        return Err("--reset-history is an evaluation-only diagnostic".into());
+    if !eval_only && (evaluation.reset_every.is_some() || evaluation.control_run.is_some()) {
+        return Err("--reset-every/--reset-history/--control-run require --eval-only; training checks are causal".into());
+    }
+    if evaluation.no_images && evaluation.save_lobes {
+        return Err("--no-images and --save-lobes are mutually exclusive".into());
+    }
+    if !eval_only && (evaluation.save_linear || evaluation.save_lobes) {
+        return Err(
+            "--save-linear/--save-lobes require --eval-only; training checks save metrics only"
+                .into(),
+        );
+    }
+    if out.join("frames.csv").exists() || out.join("quality.json").exists() {
+        return Err("refusing to overwrite existing evaluation outputs".into());
     }
     if !eval_only && out.join("model.safetensors").exists() {
         return Err("refusing to overwrite an existing checkpoint".into());
@@ -593,6 +772,7 @@ seeds/catalog families must be disjoint. Use a separate final audit split."
                 "inference_macs":inference_macs, "inference_flops":2 * inference_macs,
                 "macs_scope":"dense forward convolutions per frame, padded taps included; excludes activations, warp, preparation and backward",
                 "profile_only":profile_only,
+                "evaluation":{"every":eval_every,"history_mode":"causal","pngs":false},
                 "loss_weights":weights, "warm_start":checkpoint_input, "optimizer_resumed":false,
                 "preparation":"native GPU features/guide/history; CPU differentiable gather maps",
                 "cpu_corpus":"original f16 capture records; per-frame f32 expansion with no requantization",
@@ -703,7 +883,7 @@ seeds/catalog families must be disjoint. Use a separate final audit split."
                     &mut learned,
                     &mut baseline,
                     &dir,
-                    evaluation,
+                    &EvaluationOptions::training(),
                 )?;
                 std::fs::write(
                     dir.join("quality.json"),
@@ -745,7 +925,11 @@ seeds/catalog families must be disjoint. Use a separate final audit split."
         &mut learned,
         &mut baseline,
         &out,
-        evaluation,
+        &if eval_only {
+            evaluation
+        } else {
+            EvaluationOptions::training()
+        },
     )?;
     report["role"] = serde_json::json!(if eval_only {
         "evaluation"
@@ -766,6 +950,37 @@ seeds/catalog families must be disjoint. Use a separate final audit split."
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn training_evaluation_is_causal_and_does_not_save_images() {
+        let options = EvaluationOptions::training();
+        assert!(options.no_images);
+        assert!(options.reset_every.is_none() && options.control_run.is_none());
+        assert!(!options.save_lobes && !options.save_linear);
+    }
+
+    #[test]
+    fn frame_scores_aggregate_once_and_undefined_metrics_stay_null() {
+        assert_eq!(Score::default().report(), serde_json::Value::Null);
+        let mut cold = Score::default();
+        cold.add(&[0.5; 3 * 16 * 16], &[1.0; 3 * 16 * 16], [16, 16], true);
+        assert!(cold.cells()[8].is_none());
+        assert!(cold.report()["temporal_mse"].is_null());
+        let mut early = Score::default();
+        early.add(&[1.0; 3 * 16 * 16], &[1.0; 3 * 16 * 16], [16, 16], false);
+        early.temporal_mse = 0.25;
+        early.temporal_frames = 1;
+        assert!(early.report()["reset_psnr"].is_null());
+        let mut total = Score::default();
+        total.accumulate(&cold);
+        total.accumulate(&early);
+        let report = total.report();
+        assert_eq!(report["frames"], 2);
+        assert_eq!(report["psnr"], (cold.psnr + early.psnr) / 2.0);
+        assert_eq!(report["temporal_mse"], 0.25);
+        assert_eq!(report["energy_ratio"], 0.75);
+        assert_eq!(report["reset_psnr"], cold.psnr);
+    }
 
     #[test]
     fn training_cuts_preserve_random_frame_coverage_and_full_warmup() {

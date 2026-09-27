@@ -38,6 +38,22 @@ Only development selects models. Confirmation is reserved for Phase 6.
 | 1 | `v4-phase1/profile-clippy` | Workspace/all targets, warnings denied | Pass. |
 | 1 | `v4-phase1/crop-recovery-tests` | Crop schema and exact historical recovery | Ten pass; all 24 crop/frame selections match. |
 | 1 | `v4-phase1/profile-200` | 200 updates, original 40 scenes, RX 7900 XT | 2.282 updates/s; readback/history maps 63.00%, step/wait 3.69%; R1 not triggered. [Table](training-profile.md). |
+| 1 | `v4-phase1/eval-contract-unit` | New evaluator contract tests | Compile failed on an ambiguous closure index; added its `usize` type. |
+| 1 | `v4-phase1/eval-contract-unit-fixed` | Evaluation/library unit tests | 15 pass, including ordered control identity, byte references and missing strata. |
+| 1 | `v4-phase1/eval-contract-clippy` | Workspace/all targets | Pass, warnings denied. |
+| 1 | `v4-phase1/flip-environment` | Isolated Python 3.12, official FLIP 1.7 / NumPy 2.2.6 | Installed pinned CPU scoring dependencies. |
+| 1 | `v4-phase1/flip-fixtures` | Pinned official reference images, test source and license | Downloaded from NVlabs revision `b475eb4`; hashes retained in the reference test. |
+| 1 | `v4-phase1/bootstrap-tests` | Whole-sequence bootstrap contract | Five tests pass, including correlated clusters, nulls, unequal temporal counts and mismatches. |
+| 1 | `v4-phase1/flip-reference-tests` | Official mean plus extra bit-exact magma check | Mean passes 1e-4; extra visualization equality fails (0.76% of channels, max 3/255). |
+| 1 | `v4-phase1/flip-mean-reference-tests` | Prescribed mean tolerance; magma differences diagnostic | Four tests pass; mean 0.159714609385 vs 0.159691 (error 2.36e-5). |
+| 1 | `v4-phase1/eval-contract-build` | Debug evaluator | Pass. |
+| 1 | `v4-phase1/eval-contract-smoke` | LavaPipe training/reload/cut/control integration | Pass; no training PNGs, zero self-control deltas, reset mismatch rejected; zero validation errors. |
+| 1 | `v4-phase1/eval-contract-final-unit` | Workspace unit tests | 92 pass; eight GPU checks previously passed on both backends. |
+| 1 | `v4-phase1/eval-contract-final-clippy` | Workspace/all targets | Pass, warnings denied. |
+| 1 | `v4-phase1/eval-python-tests` | Bootstrap, crop, catalog/render tests and published evidence | 21 tests pass; published evidence unchanged. |
+| 1 | `v4-phase1/flip-smoke` | Score raw GPU outputs including saved control | Pass; learned and self-control FLIP identical. |
+| 1 | `v4-phase1/bootstrap-smoke` | Paired control/learned enriched CSVs | All defined differences and interval endpoints exactly zero; unsupported strata null. |
+| 1 | `v4-phase1/eval-fmt` | Rust formatting | Pass. |
 
 After the owner merged PR #23, [CI run 36298665573](https://github.com/kvark/ommatidia/actions/runs/36298665573)
 passed all five jobs on `main` at `a153c1e`, including LavaPipe and Linux/macOS/Windows

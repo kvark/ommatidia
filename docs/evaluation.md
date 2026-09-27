@@ -20,7 +20,7 @@ scores, and include resets, rejected history and longer-than-training rollouts.
 cargo build --release --workspace
 cargo run --release -p ommatidia-train --bin transport -- \
   --data data/train.omd --eval-data data/dev.omd --out runs/model \
-  --steps 4000 --channels 16 --unroll 2 --lr 0.0003 --eval-every 500
+  --steps 4000 --channels 16 --unroll 2 --lr 0.0003
 cargo run --release -p ommatidia-train --bin transport -- \
   --checkpoint runs/model/model.safetensors --eval-only \
   --eval-data data/audit.omd --out runs/audit
@@ -34,10 +34,10 @@ history at that sampled start, providing varied cold-start examples rather than
 only the first frame of each scene. Other updates warm the full prefix using
 current weights. The sampling policy is recorded in `training.json`; `loss.csv`
 includes the sequence, start and actual warmup length for every update.
-`--reset-every N` makes this positive interval explicit (default 2). With
-`--reset-every 1 --unroll 1`, every sampled frame is a cold training example.
+`--train-reset-every N` makes this positive interval explicit (default 2). With
+`--train-reset-every 1 --unroll 1`, every sampled frame is a cold training example.
 This training control does not change causal evaluation; `--reset-history` is a
-separate evaluation-only diagnostic. Test accumulated output as well as cold
+separate evaluation-only diagnostic (equivalent to `--reset-every 1`). Test accumulated output as well as cold
 starts before retaining weights trained without warm history.
 Prefer training at the target evaluation resolution: identical parameter shapes
 do not imply identical pixel-footprint or history statistics.
@@ -47,9 +47,21 @@ are saved with the run. Existing final checkpoints are not overwritten.
 
 ## What the numbers mean
 
-The control is the same multiscale/recurrent guide with a zero residual head,
+The `baseline` is the same multiscale/recurrent guide with a zero residual head,
 running its **own** history. Both methods receive identical observations.
-All frames are evaluated causally, with a reset at each sequence boundary.
+By default frames are evaluated causally, with a reset at each sequence boundary.
+The standard development protocol also runs `--eval-only --reset-every 16`,
+simulating periodic cuts within each sequence. `frames.csv` records sequence,
+frame, `frames_since_reset`, and per-frame metrics. `quality.json` reports cold
+(age 0), early (1–7), settling (8–15), and warm (≥16) separately. Reset-16 has
+no warm frames; that aggregate is null. Temporal pairs crossing resets are excluded,
+so cold temporal MSE is also null, not zero.
+
+`--control-run DIR` loads a previous evaluation's saved float RGB and reports
+`control_*` and `delta_*` (learned minus control) columns. It requires the same
+ordered capture provenance, extent, sequence length, complete frame ordering and
+reset protocol. References must match **byte for byte** at every frame. Missing,
+invalid or mismatched outputs fail the run; they are not silently skipped.
 When updating a published result, also evaluate the previous trained checkpoint
 on exactly the same new frames. A different dataset or stronger fixed-guide
 comparison alone does not establish an improvement over the previous model.
@@ -67,15 +79,19 @@ comparison alone does not establish an improvement over the previous model.
   are null, never perfect zeros. Reactivity suppression is not disocclusion.
 
 PNGs use the same compression followed by sRGB; no per-image exposure or
-postprocessing. All frames are saved. README pictures must be copied from those
+postprocessing. Candidate evaluation saves every frame unless `--no-images` is
+set. Training checks are always causal, write no PNGs, and run every 10,000
+updates by default (`--eval-every`), plus the final checkpoint. Use separate
+`--eval-only` runs for the full candidate protocol and `--save-linear` for scoring.
+README pictures must be copied from those
 outputs with hashes and checkpoint/data provenance, never generated or retouched.
 
 Each evaluation also writes `diagnostics.json`: per-frame diffuse illumination,
 material-weighted diffuse radiance and specular radiance errors, mean history
 ages, and the error from composing reference lobes with observed material data.
 Use `--save-lobes` for matched component PNGs. `--eval-only --reset-history`
-resets both models before every frame while still measuring inter-frame changes;
-it is explicitly labeled a diagnostic, not the causal production result.
+resets both models before every frame; all temporal pairs are excluded. It is a
+spatial diagnostic, not the causal production result.
 
 For frozen comparisons, save unquantized images with `--save-linear` and first
 verify the recorded dataset/benchmark hashes with `scripts/score-regions.py` as
@@ -87,6 +103,47 @@ build must precede selection, and selection must precede evaluation. It rejects
 partial or reset-every-frame candidate evaluations. A follow-up freeze records
 both `benchmark_sha256` and `confirmation_benchmark_sha256`. These are identity
 and chronology checks, not proof of sound checkpoint selection or visual quality.
+
+## Development protocol and confidence intervals
+
+Use the five development captures, in the exact order of `docs/dev-crops.json`,
+with the same checkpoint for both causal and `--reset-every 16` evaluations.
+Record the executable, checkpoint/config, benchmark, ordered captures and sidecars
+as inputs with `scripts/record-run.py`. Do not use confirmation data here.
+
+Install `scripts/evaluation-requirements.txt` in an isolated Python environment
+(the recorded environment uses Python 3.12). `score-flip.py` uses the
+[official NVIDIA FLIP implementation](https://github.com/NVlabs/flip), version 1.7,
+at 67 pixels/degree, on unquantized float RGB after the same compression and sRGB
+transform as the pictures. It writes a new score directory, preserving the source.
+
+```sh
+target/evaluation-env/bin/python scripts/test-flip.py --reference-dir target/flip-reference
+target/evaluation-env/bin/python scripts/score-flip.py --run runs/control/causal --out runs/control/causal-scores
+python3 scripts/bootstrap-evaluation.py \
+  --before runs/control/causal-scores/frames.csv \
+  --after runs/candidate/causal-scores/frames.csv --out runs/comparison.json
+```
+
+The bootstrap uses 1,000 **paired, whole-sequence** resamples (seed 31), retaining
+frame weighting within each sample. It reports after-minus-before differences and
+percentile 95% intervals for PSNR, FLIP, temporal MSE and linear energy ratio, both
+overall and by reset age. Matching frame identities, protocol and per-frame
+reference hashes are required. Missing temporal pairs stay missing; unsupported
+strata are null. To measure the v3 control against its zero-head guide, use the same
+CSV twice with `--before-prefix baseline`. This is not a v4 improvement claim.
+
+The FLIP test pins and hashes upstream reference images and checks the published
+mean 0.159691 within 1e-4. The local CPU wheel gives 0.159714609385 (absolute error
+2.36e-5). Its quantized magma visualization is not bit-identical to the upstream
+C++ fixture (0.76% of channels differ, at most 3/255); that additional diagnostic
+is disclosed, not used to replace the prescribed mean tolerance.
+
+Crop scoring retains the historical rectangles **and frame selections**. It adds
+reset-age breakdowns and supports `--before-role base` for guide/control ratios.
+No early crop was selected historically: early crop ratios are null, not a pass.
+The reset-16 protocol likewise has no warm frames. All-frame metric coverage is
+independent of the limited historical crop coverage.
 
 On those verified outputs,
 `score-sequences --benchmark FILE --before BEFORE_OUTPUTS --after AFTER_OUTPUTS
