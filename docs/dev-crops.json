@@ -1,0 +1,39 @@
+{
+  "schema": 1,
+  "extent": [256, 256],
+  "sequence_length": 64,
+  "selection": "Recovered unchanged from the closed sprint's dev-parent-f32-middle.json and dev-parent-f32-cold.json. Retains their exact rectangles, sequences and frame selections; no new prediction-based selection. Rectangles are x,y,width,height in output pixels. Historical coverage is eight smooth crops at frame 0 and sixteen smooth/edge/texture crops at frame 31, not every sequence or temporal stratum.",
+  "source_reports": [
+    "runs/quality-week-2026-09-26/dev-parent-f32-middle.json",
+    "runs/quality-week-2026-09-26/dev-parent-f32-cold.json"
+  ],
+  "source_report_sha256": {
+    "runs/quality-week-2026-09-26/dev-parent-f32-middle.json": "edf1b6761da406e08e968b821ffb30ff65199f34370de9d9bd54f18658e8b031",
+    "runs/quality-week-2026-09-26/dev-parent-f32-cold.json": "e7a273d9e1b4536498f41bb0d163dce3b30cfafe753f36e20ebabf6201d6ba42"
+  },
+  "datasets": [
+    {"name": "dev-static", "path": "runs/quality-week-2026-09-26/data/dev-static.omd", "sha256": "10641c298643a7ee70a83d569386adfc24f73259f02694a21e1635d4b8b84b40", "sequences": 2},
+    {"name": "dev-camera", "path": "runs/quality-week-2026-09-26/data/dev-camera.omd", "sha256": "44f760be45e15e190c8af6ee47b0927149ccd0af488228a224575a23ff71ae64", "sequences": 2},
+    {"name": "dev-objects", "path": "runs/quality-week-2026-09-26/data/dev-objects.omd", "sha256": "5a3703e3f7f9ee74d84385cd130ebf8a58df53b791d754d6d6b558f2b617e93a", "sequences": 2},
+    {"name": "dev-lights", "path": "runs/quality-week-2026-09-26/data/dev-lights.omd", "sha256": "4250bd4abea6cd851bcfee837e9eb141abe8e09e0ddac1b41ce93e1fc95c567d", "sequences": 2},
+    {"name": "dev-catalog", "path": "runs/quality-week-2026-09-26/data/dev-catalog.omd", "sha256": "5d06e7a5a21a713795d5f17664b344e465154b662be7c9f11905f41523a47515", "sequences": 2}
+  ],
+  "regions": [
+    {"sequence": 0, "kind": "smooth", "name": "0-wall", "rect": [65, 91, 58, 40], "frames": [0, 31]},
+    {"sequence": 0, "kind": "smooth", "name": "0-ceiling", "rect": [118, 63, 64, 20], "frames": [0, 31]},
+    {"sequence": 0, "kind": "edge", "name": "0-box", "rect": [123, 96, 80, 100], "frames": [31]},
+    {"sequence": 2, "kind": "smooth", "name": "2-ceiling", "rect": [30, 3, 96, 10], "frames": [31]},
+    {"sequence": 2, "kind": "smooth", "name": "2-wall", "rect": [197, 43, 42, 53], "frames": [31]},
+    {"sequence": 2, "kind": "texture", "name": "2-floor", "rect": [184, 160, 60, 72], "frames": [31]},
+    {"sequence": 2, "kind": "edge", "name": "2-sphere", "rect": [89, 116, 76, 72], "frames": [31]},
+    {"sequence": 4, "kind": "smooth", "name": "4-wall", "rect": [140, 40, 45, 40], "frames": [0, 31]},
+    {"sequence": 4, "kind": "smooth", "name": "4-floor", "rect": [200, 220, 40, 20], "frames": [0, 31]},
+    {"sequence": 4, "kind": "edge", "name": "4-sphere", "rect": [142, 115, 97, 95], "frames": [31]},
+    {"sequence": 6, "kind": "smooth", "name": "6-ceiling", "rect": [24, 18, 72, 32], "frames": [0, 31]},
+    {"sequence": 6, "kind": "smooth", "name": "6-wall", "rect": [25, 95, 40, 20], "frames": [0, 31]},
+    {"sequence": 6, "kind": "edge", "name": "6-objects", "rect": [68, 125, 125, 71], "frames": [31]},
+    {"sequence": 8, "kind": "smooth", "name": "8-wall", "rect": [16, 16, 60, 30], "frames": [0, 31]},
+    {"sequence": 8, "kind": "smooth", "name": "8-floor", "rect": [192, 177, 40, 56], "frames": [0, 31]},
+    {"sequence": 8, "kind": "edge", "name": "8-chair", "rect": [52, 51, 141, 176], "frames": [31]}
+  ]
+}

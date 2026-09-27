@@ -4,13 +4,18 @@ use ommatidia::{
     metrics,
     transport::{Config, Frame, Target, graph, native},
 };
-use ommatidia_train::{open_capture, save_linear, save_png};
+use ommatidia_train::{
+    open_capture,
+    profile::{Stage, TrainingProfile, Update},
+    save_linear, save_png,
+};
 use serde::Serialize;
 use std::{
     io::Write,
     num::NonZeroUsize,
     path::{Path, PathBuf},
     sync::Arc,
+    time::Instant,
 };
 type EvaluationHistory = ([Vec<f32>; 2], Vec<f32>, Vec<ommatidia::temporal::Surface>);
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
@@ -419,6 +424,7 @@ fn main() -> Result<()> {
     let mut seed = 7u64;
     let mut rate = 0.0003f32;
     let mut eval_only = false;
+    let mut profile_only = false;
     let mut checkpoint_input = None::<PathBuf>;
     let mut eval_every = 500usize;
     let mut reset_every = NonZeroUsize::new(DEFAULT_RESET_INTERVAL).unwrap();
@@ -435,6 +441,7 @@ fn main() -> Result<()> {
   --reset-every N [2] (training: empty history each Nth window; 1 resets every window)
   --checkpoint FILE (weights-only warm start, or evaluation input)
   --eval-only (loads checkpoint sidecar; evaluation resolution may differ)
+  --profile-only (training-loop measurement; save checkpoint/timings, skip evaluation)
   --reset-history (eval-only diagnostic: reset the model before every frame)
   --save-lobes (save diffuse/specular images alongside per-frame diagnostics)
   --save-linear (save row-major, little-endian scene-linear RGB f32 for crop scoring)
@@ -448,6 +455,10 @@ seeds/catalog families must be disjoint. Use a separate final audit split."
         }
         if arg == "--eval-only" {
             eval_only = true;
+            continue;
+        }
+        if arg == "--profile-only" {
+            profile_only = true;
             continue;
         }
         if arg == "--reset-history" {
@@ -485,6 +496,12 @@ seeds/catalog families must be disjoint. Use a separate final audit split."
         }
     }
     weights.validate()?;
+    if profile_only && eval_only {
+        return Err("--profile-only and --eval-only are mutually exclusive".into());
+    }
+    if profile_only {
+        eval_every = 0;
+    }
     if evaluation.reset_history && !eval_only {
         return Err("--reset-history is an evaluation-only diagnostic".into());
     }
@@ -518,6 +535,11 @@ seeds/catalog families must be disjoint. Use a separate final audit split."
         .collect::<Result<Vec<_>>>()?;
     let holdout = Corpus::combine(&mut held_corpora)?;
     let low = holdout.frames[0].low();
+    let inference_macs = graph::build(config, low, 0)?.macs();
+    println!(
+        "{inference_macs} convolution MACs/frame; {:.6} GFLOP/frame (forward convolutions only)",
+        inference_macs as f64 * 2.0e-9
+    );
     let context = ommatidia::gpu::create_context(device_id, false);
     let mut learned = native::Native::new(Arc::clone(&context), config, low)?;
     let mut baseline = native::Native::new(Arc::clone(&context), config, low)?;
@@ -568,6 +590,9 @@ seeds/catalog families must be disjoint. Use a separate final audit split."
             out.join("training.json"),
             serde_json::to_vec_pretty(&serde_json::json!({
                 "steps":steps, "unroll":unroll, "seed":seed, "learning_rate":rate,
+                "inference_macs":inference_macs, "inference_flops":2 * inference_macs,
+                "macs_scope":"dense forward convolutions per frame, padded taps included; excludes activations, warp, preparation and backward",
+                "profile_only":profile_only,
                 "loss_weights":weights, "warm_start":checkpoint_input, "optimizer_resumed":false,
                 "preparation":"native GPU features/guide/history; CPU differentiable gather maps",
                 "cpu_corpus":"original f16 capture records; per-frame f32 expansion with no requantization",
@@ -583,32 +608,56 @@ seeds/catalog families must be disjoint. Use a separate final audit split."
         let mut rng = ommatidia::rng::Rng::new(seed);
         let mut losses = std::fs::File::create(out.join("loss.csv"))?;
         writeln!(losses, "update,loss,sequence,start,warmup_frames")?;
+        let mut profile_rows = std::fs::File::create(out.join("profile.csv"))?;
+        Update::write_header(&mut profile_rows)?;
+        let mut profile = TrainingProfile::default();
+        let mut steady_profile = TrainingProfile::default();
         let started = std::time::Instant::now();
         for update in 0..steps {
+            let update_start = Instant::now();
+            let mut timing = Update::default();
+            let stage = Instant::now();
             session.wait();
             learned.sync_parameters(&session);
             learned.reset();
+            timing.record(Stage::ParameterSync, stage);
             let sequence = rng.below((train.frames.len() / train.length) as u32) as usize;
             let start = rng.below((train.length - unroll + 1) as u32) as usize;
             let offset = sequence * train.length;
             // Simulate cuts at varied times, retaining full causal warmup otherwise.
             let warmup = warmup_length(update, start, reset_every);
             for record in &train.frames[offset..offset + warmup] {
-                learned.advance(&record.frame(config)?)?;
+                let stage = Instant::now();
+                let frame = record.frame(config)?;
+                timing.record(Stage::FrameDecode, stage);
+                let stage = Instant::now();
+                learned.advance(&frame)?;
+                timing.record(Stage::WarmupAdvance, stage);
             }
             for slot in 0..unroll {
+                let stage = Instant::now();
                 let (frame, target) = train.frames[offset + start + slot].decode(config)?;
+                timing.record(Stage::FrameDecode, stage);
                 let (frame, target) = (&frame, &target);
+                let stage = Instant::now();
                 let old = if warmup + slot == 0 {
                     Vec::new()
                 } else {
                     learned.read_state()
                 };
+                timing.record(Stage::ReadPrepared, stage);
+                let stage = Instant::now();
                 learned.advance(frame)?;
+                timing.record(Stage::SlotAdvance, stage);
+                let stage = Instant::now();
                 let prepared = learned.read_prepared(frame, &old);
+                timing.record(Stage::ReadPrepared, stage);
+                let stage = Instant::now();
                 graph::feed(&mut session, &format!("f{slot}"), &prepared, target, slot);
                 graph::feed_rgb(&mut session, &format!("f{slot}"), frame, target, config);
+                timing.record(Stage::Feed, stage);
             }
+            let stage = Instant::now();
             weights.feed(&mut session);
             let fraction = update as f32 / steps as f32;
             session.set_adam(
@@ -617,9 +666,14 @@ seeds/catalog families must be disjoint. Use a separate final audit split."
                 0.999,
                 1e-8,
             );
+            timing.record(Stage::Feed, stage);
+            let stage = Instant::now();
             session.step();
             session.wait();
+            timing.record(Stage::StepWait, stage);
+            let stage = Instant::now();
             let loss = session.read_loss();
+            timing.record(Stage::LossReadback, stage);
             if !loss.is_finite() {
                 return Err("training became non-finite".into());
             }
@@ -630,6 +684,12 @@ seeds/catalog families must be disjoint. Use a separate final audit split."
                     update + 1,
                     (update + 1) as f32 / started.elapsed().as_secs_f32()
                 );
+            }
+            timing.finish(update_start);
+            timing.write(&mut profile_rows, update + 1)?;
+            profile.add(&timing);
+            if update >= 10 {
+                steady_profile.add(&timing);
             }
             if eval_every > 0 && (update + 1) % eval_every == 0 && update + 1 < steps {
                 let path = out.join(format!("step-{}.safetensors", update + 1));
@@ -656,7 +716,26 @@ seeds/catalog families must be disjoint. Use a separate final audit split."
                 );
             }
         }
+        let profile_report = serde_json::json!({
+            "scope":"non-overlapping host wall time; excludes corpus loading, session setup, checkpoints, evaluation and profile CSV writes; advance and step include their GPU waits",
+            "read_prepared_scope":"previous state readback, prepared-input readback and CPU history_maps",
+            "device":context.device_information().device_name,
+            "low_extent":low, "unroll":unroll,
+            "training_frames":train.frames.len(), "training_sequences":train.frames.len() / train.length,
+            "all_updates":profile.report(), "after_first_10_updates":steady_profile.report(),
+        });
+        std::fs::write(
+            out.join("profile.json"),
+            serde_json::to_vec_pretty(&profile_report)?,
+        )?;
+        println!(
+            "training profile: {}",
+            serde_json::to_string(&profile_report)?
+        );
         session.save_checkpoint(&checkpoint)?;
+        if profile_only {
+            return Ok(());
+        }
         // Score serialized weights, not the still-live training session.
         learned.session.load_checkpoint(&checkpoint)?;
     }
