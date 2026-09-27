@@ -546,6 +546,33 @@ training and reload have zero validation errors and 49 image/score files match
 byte-for-byte (`cold-capacity-{smoke,reload}-run/`). On the existing eight-frame
 control, the loader-only change preserves all 97 image/score files exactly.
 
+The 1,000-update cold fitting probe completed (`cold-capacity-training/`). Every
+update had empty history. Its loss fell from 0.00249290 to 0.00049699; training
+frame PSNR rose from 28.10802 to 35.36028 dB. On eight independent-noise inputs
+of the same scene, however, PSNR only rose from 27.98058 to 28.61715, SSIM fell
+from 0.79671 to 0.79490, and gradient error increased 4.8%. The fitted image is
+much cleaner, while independent-noise images retain visible streaks and colored
+outliers. The model can fit cold output, but this is mostly memorization, not
+robust denoising. These weights are rejected as a quality candidate.
+
+### Controlled cold-noise generalization
+
+Before another broad run, test varied cold observations of the same diagnostic
+scene. Use the existing 64-frame `fit-train-long.omd` (scene 310001, input offset
+256), with `--unroll 1 --reset-every 1`, and evaluate `fit-long.omd` (same scene,
+independent offset 128) with reset before every frame. Keep the observed jitter,
+4,096-spp references, model configuration and loss weights. A one-frame unroll
+has no temporal-loss pairs; no recurrent-quality improvement is inferred.
+
+Start again from the matched-history parent, never from the one-image overfit.
+Bound the diagnostic to 2,000 updates, learning rate 0.0003 and seed 31. Evaluate
+the fitted 64 inputs and the 64 independent-noise inputs against that exact
+parent, with identical reset behavior. Retain the separate scene-310101 causal
+development result as an overfitting warning, not a checkpoint-selection target.
+The explicit positive reset interval defaults to the unchanged every-other
+policy and is recorded in training provenance. Verify all-cold sampling and
+serialized reload in debug before the run. No frozen audit is used here.
+
 ## Progress and evidence
 
 - Initial validation reproduction:

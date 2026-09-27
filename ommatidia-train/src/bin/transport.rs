@@ -8,16 +8,17 @@ use ommatidia_train::{open_capture, save_linear, save_png};
 use serde::Serialize;
 use std::{
     io::Write,
+    num::NonZeroUsize,
     path::{Path, PathBuf},
     sync::Arc,
 };
 type EvaluationHistory = ([Vec<f32>; 2], Vec<f32>, Vec<ommatidia::temporal::Surface>);
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 
-const RESET_WINDOW_INTERVAL: usize = 2;
+const DEFAULT_RESET_INTERVAL: usize = 2;
 
-fn warmup_length(update: usize, start: usize) -> usize {
-    if update.is_multiple_of(RESET_WINDOW_INTERVAL) {
+fn warmup_length(update: usize, start: usize, reset_every: NonZeroUsize) -> usize {
+    if update.is_multiple_of(reset_every.get()) {
         0
     } else {
         start
@@ -420,6 +421,7 @@ fn main() -> Result<()> {
     let mut eval_only = false;
     let mut checkpoint_input = None::<PathBuf>;
     let mut eval_every = 500usize;
+    let mut reset_every = NonZeroUsize::new(DEFAULT_RESET_INTERVAL).unwrap();
     let mut device_id = None;
     let mut weights = graph::LossWeights::default();
     let mut evaluation = EvaluationOptions::default();
@@ -430,6 +432,7 @@ fn main() -> Result<()> {
                 "transport --data TRAIN.omd --eval-data DEV.omd --out DIR
   --steps N [4000] --unroll N [2] --channels N [16] --seed N [7]
   --lr F [0.0003] --eval-every N [500] --device-id ID
+  --reset-every N [2] (training: empty history each Nth window; 1 resets every window)
   --checkpoint FILE (weights-only warm start, or evaluation input)
   --eval-only (loads checkpoint sidecar; evaluation resolution may differ)
   --reset-history (eval-only diagnostic: reset the model before every frame)
@@ -470,6 +473,7 @@ seeds/catalog families must be disjoint. Use a separate final audit split."
             "--seed" => seed = v.parse()?,
             "--lr" => rate = v.parse()?,
             "--eval-every" => eval_every = v.parse()?,
+            "--reset-every" => reset_every = v.parse()?,
             "--checkpoint" => checkpoint_input = Some(v.into()),
             "--device-id" => device_id = Some(ommatidia::gpu::parse_device_id(&v)?),
             "--compressed-weight" => weights.compressed = v.parse()?,
@@ -569,7 +573,7 @@ seeds/catalog families must be disjoint. Use a separate final audit split."
                 "cpu_corpus":"original f16 capture records; per-frame f32 expansion with no requantization",
                 "window_sampling":{
                     "sequence":"uniform", "start":"uniform among complete unrolls",
-                    "reset_every_updates":RESET_WINDOW_INTERVAL, "reset_phase_zero_based":0,
+                    "reset_every_updates":reset_every.get(), "reset_phase_zero_based":0,
                     "otherwise":"warm from sequence start using current weights"
                 },
                 "training":train.provenance, "development":holdout.provenance,
@@ -588,7 +592,7 @@ seeds/catalog families must be disjoint. Use a separate final audit split."
             let start = rng.below((train.length - unroll + 1) as u32) as usize;
             let offset = sequence * train.length;
             // Simulate cuts at varied times, retaining full causal warmup otherwise.
-            let warmup = warmup_length(update, start);
+            let warmup = warmup_length(update, start, reset_every);
             for record in &train.frames[offset..offset + warmup] {
                 learned.advance(&record.frame(config)?)?;
             }
@@ -690,10 +694,11 @@ mod tests {
         let mut cut_scenes = [0; 40];
         let mut cut_starts = [false; 63];
         let mut forced_cuts = 0;
+        let reset_every = NonZeroUsize::new(DEFAULT_RESET_INTERVAL).unwrap();
         for update in 0..4000 {
             let sequence = rng.below(cut_scenes.len() as u32) as usize;
             let start = rng.below(63) as usize;
-            let warmup = warmup_length(update, start);
+            let warmup = warmup_length(update, start, reset_every);
             if update % 2 == 0 {
                 assert_eq!(warmup, 0);
                 cut_scenes[sequence] += 1;
@@ -702,11 +707,27 @@ mod tests {
             } else {
                 assert_eq!(warmup, start);
             }
-            assert_eq!(warmup_length(update, 0), 0);
+            assert_eq!(warmup_length(update, 0, reset_every), 0);
         }
         assert_eq!(forced_cuts, 2000);
         assert!(cut_scenes.iter().all(|&count| count > 0));
         assert!(cut_starts.iter().all(|&seen| seen));
+    }
+
+    #[test]
+    fn explicit_reset_interval_controls_warmup_without_changing_start() {
+        assert!("0".parse::<NonZeroUsize>().is_err());
+        for interval in [1, 2, 4] {
+            let reset_every = NonZeroUsize::new(interval).unwrap();
+            for update in 0..16 {
+                for start in 0..64 {
+                    assert_eq!(
+                        warmup_length(update, start, reset_every),
+                        if update % interval == 0 { 0 } else { start },
+                    );
+                }
+            }
+        }
     }
 
     #[test]
