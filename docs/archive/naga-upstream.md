@@ -1,4 +1,9 @@
-# Phase 0: upstream compiler port for owner review
+# Deferred upstream compiler port
+
+Owner decision, 2026-09-27: publication is deferred as a non-blocking follow-up.
+Ommatidia keeps the tested in-tree compiler fix and its pinned dependencies;
+neither Phase 0 completion nor further training waits for upstream publication.
+The patch below remains available for future human review, not approved to push.
 
 Prepared against `kvark/wgpu` branch `claude/fix-spirv-layout-decoration-Bn4Oc`,
 commit `731fd87244c891f19c53b77826731fe809a32f9b`, the current head of

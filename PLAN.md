@@ -1,9 +1,9 @@
 # Plan: one end-to-end reconstruction model (config v4)
 
-Status: adopted, 2026-09-27; Phase 0 in progress. Owner: kvark.
+Status: adopted, 2026-09-27; Phase 0 complete, Phase 1 next. Owner: kvark.
 Read all of §0–§3 before starting. Open decisions for the owner are in §12.
 
-Implementation starts from `origin/main` at `232a278`, after the owner merged
+Implementation started from `origin/main` at `232a278`, after the owner merged
 PRs #21 (this plan) and #22 (the rebaseline). No duplicate merge is needed.
 `TASK.md` was deliberately removed; its closure and original gate are preserved
 in [the archived sprint](docs/archive/quality-week.md). Run summaries go in
@@ -189,17 +189,25 @@ Goal: a correct `main` to build on.
     `initial-linear-build/` did from `049a7bd`.
 - [x] Push a tag `archive/experiments-2026-09-25` → `e0922c6`. At planning time that commit was
   reachable only through PR #20's ref. Update the pointers in README and `docs/design.md`.
-- [ ] Naga: port the in-tree patch's handling of SPIR-V below 1.4 into gfx-rs/wgpu#9295,
-  which answers the reviewer's open question. Keep `patches/` until a pinned upstream
-  revision contains the fix.
+- [x] Naga: prepare the in-tree patch's handling of SPIR-V below 1.4 for
+  gfx-rs/wgpu#9295. Keep the tested `patches/` and Cargo pins until a pinned
+  upstream revision contains the fix.
   - Local port at `target/naga-pr9295` (base `731fd872`): targeted SPIR-V
     validation, all-feature Clippy and the Naga suite pass. See the
-    [review handoff](docs/archive/naga-upstream.md). Upstream publication awaits
-    owner review under wgpu's contribution policy; no upstream branch has changed.
+    [review handoff](docs/archive/naga-upstream.md); no upstream branch has changed.
+  - **Owner decision, 2026-09-27:** upstream publication is deferred as a
+    non-blocking follow-up, not a Phase 0 completion gate. Human review is still
+    required before any later publication. The local fix and correctness gates
+    remain in force; publication is not a prerequisite for training.
 
 Done when: `main` builds with the documented steps; fmt, clippy, unit tests and CI
 (including the LavaPipe job) are green; and every README number is reproducible from
 archived code.
+
+Completed 2026-09-27: the owner merged [PR #23](https://github.com/kvark/ommatidia/pull/23)
+into `main` at `a153c1e`. All five [post-merge CI jobs](https://github.com/kvark/ommatidia/actions/runs/36298665573)
+pass, including LavaPipe. The merged tree matches the tested PR; the recorded
+release build and exact archived-result reproductions remain valid.
 
 ## 5. Phase 1: measure, and fix the evaluation contract (1 day)
 
