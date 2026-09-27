@@ -1,6 +1,6 @@
 # Plan: one end-to-end reconstruction model (config v4)
 
-Status: adopted, 2026-09-27; Phases 0–1 complete, Phase 2 in progress. Owner: kvark.
+Status: adopted, 2026-09-27; Phases 0–2 complete, Phase 3 next. Owner: kvark.
 Read all of §0–§3 before starting. Open decisions for the owner are in §12.
 
 Implementation started from `origin/main` at `232a278`, after the owner merged
@@ -344,13 +344,26 @@ is fallback F1 in Phase 5, used only if cold frames miss decision point A.
 - [x] Tag the last v3 commit `archive/v3-guide-residual`, then delete the v3 guide,
   decoder and zero-head baseline. Update the LavaPipe CI smoke (capture, train, reload)
   for v4.
-- [ ] **Smoke test.** Run 2,000 updates of the existing trainer (full frame, batch 1) on
+- [x] **Smoke test.** Run 2,000 updates of the existing trainer (full frame, batch 1) on
   the single-scene diagnostic. Loss must fall, outputs stay finite, and a reload
   reproduces results exactly.
 - [x] Rewrite `docs/design.md` for v4, at most one page.
 
 Done when: all tests pass (regular, plus GPU tests on RADV and LavaPipe with zero
 validation errors), no v3 code remains, and FLOPs per pixel are reported.
+
+Completed 2026-09-27 on `agent/v4-phase2-model`: 92 regular tests and all seven
+GPU gates pass on each backend, with zero validation errors. Fresh LavaPipe
+capture/train/reload and evaluator integration pass. The only model has 174,576
+parameters and 24,864 convolution FLOPs/output pixel. The 2,000-update diagnostic
+finishes with finite outputs; first/last 100-update mean loss falls
+0.005466 → 0.000416, and a separate reload reproduces all 64 frame scores and
+diagnostics exactly. [Commands, failures and verification](docs/experiments.md).
+The same-scene independent-noise diagnostic reaches 36.15 dB, but the different
+diagnostic scene is only 22.34 dB: this proves the learning/reload gate, not
+generalization. No checkpoint is promoted, the README gallery is unchanged,
+and confirmation is untouched. The v3 tag stays local under the branch-only
+publication rule; the owner still creates and merges PRs.
 
 ## 7. Phase 3: training loop v2 (2 days)
 

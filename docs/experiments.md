@@ -34,7 +34,12 @@ Only development selects models. Confirmation is reserved for Phase 6.
 | 2 | `v4-phase2/python-checks` | Catalog/crop/bootstrap/render tests and gallery verifier | 21 pass; historical gallery, crop selection and confirmation hashes unchanged. |
 | 2 | `v4-phase2/flip-reference-tests` | Official FLIP fixtures | Four pass; mean within the fixed 1e-4 tolerance. |
 | 2 | `v4-phase2/flip-without-baseline` | v4 learned-only evaluation with saved self-control | Pass; learned/control FLIP identical, no baseline files required. |
-| 2 | `v4-phase2/single-scene-2000` | From scratch, default width/latent/levels, four-frame BPTT, batch one | Running on the single-scene diagnostic; not a selection or confirmation run. |
+| 2 | `v4-phase2/single-scene-2000` | From scratch, default width/latent/levels, four-frame BPTT, batch one | 2,000 updates, 421.10 s; loss 0.014448 → 0.000405, all parameters finite and bit-exact after reload. Different diagnostic scene: 22.338 dB; not promoted. |
+| 2 | `v4-phase2/lavapipe-ci-train-reload` | Exact eight-update CI trainer settings on fresh captures | Pass; reloaded CSV byte-identical, zero validation errors. |
+| 2 | `v4-phase2/final-format` | Rust formatting on committed implementation | Pass. |
+| 2 | `v4-phase2/single-scene-reload` | New process, final diagnostic checkpoint, 64 different-scene frames | CSV and diagnostics byte-identical to final training evaluation; finite float outputs. |
+| 2 | `v4-phase2/single-scene-independent-noise` | Same fitted scene, independent input-noise capture; 64 frames | 36.147 dB, cold 35.506; not evidence of generalization. Every PNG and float output retained. |
+| 2 | `v4-phase2/verify-smoke` | Audit all updates, cold/warm loss windows, reload, outputs and protected hashes | Pass; first/last 100-update mean 0.005466 → 0.000416, 64 exact reload frames, 256 finite float images. Confirmation/gallery/crop hashes unchanged. |
 | 0, historical | `quality-week-2026-09-26/wide-cold-training` | 4,000 updates, width-32 v3 | Complete, rejected: development 29.385 dB vs parent 30.271; cold smooth ratio 0.820 vs original. |
 | 0, historical | `quality-week-2026-09-26/balanced-exposure-training` | 16,000 planned; 9,277 recorded | Interrupted, not resumed. Last complete eval at 8,000: 30.061 dB, cold/middle smooth ratios 0.941/0.468 vs original; not promoted. |
 | 0 | `v4-phase0/fmt` | Rust 1.92 formatting | Pass. |
@@ -111,3 +116,7 @@ Earlier sprint detail is [archived](archive/quality-week.md). The declared v3
 control is `89e81df0…`; neither interrupted-run snapshots nor width-32 weights
 initialize v4. [Phase 1 measurements](phase1-results.md) establish the control
 under both evaluation protocols, with full metrics, intervals and crop coverage.
+
+Phase 2 diagnostic checkpoint: `da4540def5f0d0d40d8c88122c26ecac57b8d406d9cff4221ef9eeaef2b72dab`
+at `runs/v4-phase2/single-scene-2000/model/model.safetensors`. It is a one-scene
+sanity fit, not the final candidate and not a warm-start source for production.
