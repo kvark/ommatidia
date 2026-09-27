@@ -155,15 +155,22 @@ impl Frame {
                 return Err(format!("missing observed HR {p:?}"));
             }
         }
+        // Resolve plane offsets once, not for every channel of every pixel.
+        let mut lr_offsets = [None; 11];
+        let mut hr_offsets = [None; 11];
+        for p in crate::dataset::ALL_PLANES {
+            lr_offsets[p as usize] = layout.lr_planes.channel_offset(p);
+            hr_offsets[p as usize] = layout.hr_planes.channel_offset(p);
+        }
         let lr = |p: Plane, c: usize, i: usize| {
-            sample
-                .lr_channel(&layout, p, c)
-                .map_or(0.0, |a| a[i].to_f32())
+            lr_offsets[p as usize].map_or(0.0, |offset| {
+                sample.lr[(offset + c) * layout.lr_texels() + i].to_f32()
+            })
         };
         let hr = |p: Plane, c: usize, i: usize| {
-            sample
-                .hr_channel(&layout, p, c)
-                .map_or(0.0, |a| a[i].to_f32())
+            hr_offsets[p as usize].map_or(0.0, |offset| {
+                sample.hr[(offset + c) * layout.hr_texels() + i].to_f32()
+            })
         };
         let mut rays = Vec::with_capacity(layout.lr_texels());
         for i in 0..layout.lr_texels() {

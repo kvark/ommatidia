@@ -1,14 +1,15 @@
 //! Train and evaluate the lobe-separated recurrent reconstructor on full sequences.
 use ommatidia::{
-    dataset::{Layout, Sample},
     metrics,
     transport::{Config, Frame, Target, graph, native},
 };
 use ommatidia_train::{
+    checkpoint::{Checkpoint, Settings},
+    corpus::Corpus,
     evaluation::{self, ControlRun},
-    open_capture,
-    profile::{Stage, TrainingProfile, Update},
+    sampler::{Prefetch, Sampler, learning_rate},
     save_linear, save_png,
+    training::Trainer,
 };
 use serde::Serialize;
 use std::{
@@ -21,110 +22,6 @@ use std::{
 type EvaluationHistory = (Vec<Vec<f32>>, Vec<f32>, Vec<ommatidia::temporal::Surface>);
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 
-const DEFAULT_RESET_INTERVAL: usize = 2;
-
-fn warmup_length(update: usize, start: usize, reset_every: NonZeroUsize) -> usize {
-    if update.is_multiple_of(reset_every.get()) {
-        0
-    } else {
-        start
-    }
-}
-
-struct Record {
-    layout: Layout,
-    sample: Sample,
-}
-impl Record {
-    fn low(&self) -> [u32; 2] {
-        [self.layout.lr_width, self.layout.lr_height]
-    }
-    fn frame(&self, config: Config) -> Result<Frame> {
-        Ok(Frame::from_sample(&self.sample, self.layout, config)?)
-    }
-    fn decode(&self, config: Config) -> Result<(Frame, Target)> {
-        Ok((
-            self.frame(config)?,
-            Target::from_sample(&self.sample, self.layout, config)?,
-        ))
-    }
-}
-
-struct Corpus {
-    frames: Vec<Record>,
-    length: usize,
-    provenance: serde_json::Value,
-}
-impl Corpus {
-    fn load(path: &Path, config: Config) -> Result<Self> {
-        let (mut reader, provenance) = open_capture(path)?;
-        let layout = *reader.layout();
-        let mut frames = Vec::new();
-        for index in 0..reader.len() {
-            let sample = reader.sample(index)?;
-            let record = Record { layout, sample };
-            let (_, target) = record.decode(config)?;
-            if target
-                .rgb
-                .iter()
-                .chain(&target.lobes)
-                .any(|v| !v.is_finite() || *v < 0.0)
-                || target.rgb.iter().all(|v| *v <= 1e-6)
-            {
-                return Err(format!("{} record {index}: invalid or entirely black reference; inspect the capture camera", path.display()).into());
-            }
-            // Retain original f16 records; expand only the frames being consumed.
-            frames.push(record);
-        }
-        Ok(Self {
-            frames,
-            length: reader.sequence_length(),
-            provenance,
-        })
-    }
-    fn combine(corpora: &mut [Self]) -> Result<Self> {
-        let first = corpora.first().ok_or("empty capture list")?;
-        if corpora
-            .iter()
-            .any(|c| c.length != first.length || c.frames[0].low() != first.frames[0].low())
-        {
-            return Err("capture sequence/extent mismatch".into());
-        }
-        let length = first.length;
-        let provenance = serde_json::json!({"captures":corpora.iter().map(|c|&c.provenance).collect::<Vec<_>>()});
-        Ok(Self {
-            frames: corpora
-                .iter_mut()
-                .flat_map(|c| std::mem::take(&mut c.frames))
-                .collect(),
-            length,
-            provenance,
-        })
-    }
-    fn disjoint(&self, other: &Self) -> Result<()> {
-        let ids = |p: &serde_json::Value| -> Result<Vec<u64>> {
-            Ok(p["scene_seeds"]
-                .as_array()
-                .ok_or("capture lacks scene-seed provenance; regenerate it")?
-                .iter()
-                .map(|v| v.as_u64().ok_or("invalid scene seed"))
-                .collect::<std::result::Result<_, _>>()?)
-        };
-        let a = ids(&self.provenance)?;
-        let b = ids(&other.provenance)?;
-        if a.iter().any(|v| b.contains(v)) {
-            return Err("training/evaluation scene seeds overlap".into());
-        }
-        let families =
-            |p: &serde_json::Value| p["family_ids"].as_array().cloned().unwrap_or_default();
-        let fa = families(&self.provenance);
-        let fb = families(&other.provenance);
-        if fa.iter().any(|f| fb.contains(f)) {
-            return Err("training/evaluation catalog families overlap".into());
-        }
-        Ok(())
-    }
-}
 #[derive(Clone, Default, Serialize)]
 struct Score {
     frames: usize,
@@ -334,8 +231,8 @@ fn evaluate(
 ) -> Result<serde_json::Value> {
     let mut report = serde_json::json!({
         "schema":2, "capture":corpus.provenance,
-        "extent":corpus.frames[0].low().map(|v| v * config.scale),
-        "sequence_length":corpus.length,"frames":corpus.frames.len(),
+        "extent":corpus.low.map(|v| v * config.scale),
+        "sequence_length":corpus.length,"frames":corpus.len(),
         "reset_every":options.reset_every,"save_linear":options.save_linear,
         "control_run":options.control_run,
         "history_mode":if options.reset_every.is_some() { "periodic-cuts" } else { "causal" },
@@ -384,8 +281,11 @@ fn evaluate(
         }
     }
     writeln!(rows)?;
-    for (index, record) in corpus.frames.iter().enumerate() {
-        let (frame, target) = record.decode(config)?;
+    for index in 0..corpus.len() {
+        let (frame, target) = corpus.decode(index, config)?;
+        if target.rgb.iter().all(|v| *v <= 1e-6) {
+            return Err("entirely black evaluation reference".into());
+        }
         let (frame, target) = (&frame, &target);
         let since_reset = evaluation::age(index % corpus.length, options.reset_every);
         let reset = since_reset == 0;
@@ -566,7 +466,9 @@ fn main() -> Result<()> {
     let mut profile_only = false;
     let mut checkpoint_input = None::<PathBuf>;
     let mut eval_every = 10_000usize;
-    let mut reset_every = NonZeroUsize::new(DEFAULT_RESET_INTERVAL).unwrap();
+    let mut batch_size = 8usize;
+    let mut crop = 64u32;
+    let mut stop_after = None::<usize>;
     let mut device_id = None;
     let mut weights = graph::LossWeights::default();
     let mut evaluation = EvaluationOptions::default();
@@ -577,9 +479,9 @@ fn main() -> Result<()> {
                 "transport --data TRAIN.omd --eval-data DEV.omd --out DIR
   --steps N [4000] --unroll N [4] --channels N [16] --seed N [7]
   --lr F [0.0003] --eval-every N [10000] (causal metrics, no images) --device-id ID
-  --train-reset-every N [2] (training: empty history each Nth window)
+  --batch N [8] --crop N [64] (LR pixels; persistent GPU cursors)\n  --stop-after N (checkpoint an interruption; --steps retains the planned schedule)
   --reset-every N [off] (evaluation: simulated cut each N frames, within each sequence)
-  --checkpoint FILE (evaluation input; optimizer-resume belongs to Phase 3)
+  --checkpoint FILE (evaluation, or true resume with matching training bundle)
   --eval-only (loads checkpoint sidecar; evaluation resolution may differ)
   --profile-only (training-loop measurement; save checkpoint/timings, skip evaluation)
   --reset-history (eval-only diagnostic: reset the model before every frame)
@@ -636,7 +538,9 @@ seeds/catalog families must be disjoint. Use a separate final audit split."
             "--seed" => seed = v.parse()?,
             "--lr" => rate = v.parse()?,
             "--eval-every" => eval_every = v.parse()?,
-            "--train-reset-every" => reset_every = v.parse()?,
+            "--batch" => batch_size = v.parse()?,
+            "--crop" => crop = v.parse()?,
+            "--stop-after" => stop_after = Some(v.parse()?),
             "--reset-every" => {
                 if evaluation.reset_every.replace(v.parse()?).is_some() {
                     return Err("specify only one evaluation reset option".into());
@@ -654,12 +558,6 @@ seeds/catalog families must be disjoint. Use a separate final audit split."
         }
     }
     weights.validate()?;
-    if checkpoint_input.is_some() && !eval_only {
-        return Err(
-            "training starts from scratch; optimizer/cursor resume is not available until Phase 3"
-                .into(),
-        );
-    }
     if profile_only && eval_only {
         return Err("--profile-only and --eval-only are mutually exclusive".into());
     }
@@ -705,12 +603,8 @@ seeds/catalog families must be disjoint. Use a separate final audit split."
     if eval.is_empty() {
         return Err("--eval-data required".into());
     }
-    let mut held_corpora = eval
-        .iter()
-        .map(|p| Corpus::load(p, config))
-        .collect::<Result<Vec<_>>>()?;
-    let holdout = Corpus::combine(&mut held_corpora)?;
-    let low = holdout.frames[0].low();
+    let holdout = Corpus::open(&eval, config)?;
+    let low = holdout.low;
     let inference_macs = graph::build(config, low, 0)?.macs();
     println!(
         "{inference_macs} convolution MACs/frame; {:.6} GFLOP/frame (forward convolutions only)",
@@ -726,164 +620,148 @@ seeds/catalog families must be disjoint. Use a separate final audit split."
         if data.is_empty() {
             return Err("--data required".into());
         }
-        let mut training = data
-            .iter()
-            .map(|p| Corpus::load(p, config))
-            .collect::<Result<Vec<_>>>()?;
-        for train in &training {
-            for held in &held_corpora {
-                train.disjoint(held)?;
-            }
+        let train = Arc::new(Corpus::open(&data, config)?);
+        train.disjoint(&holdout)?;
+        if train.low != low || unroll > train.length {
+            return Err("training/evaluation extent or unroll mismatch".into());
         }
-        let train = Corpus::combine(&mut training)?;
-        if unroll > train.length || train.frames.iter().any(|r| r.low() != low) {
-            return Err("unroll exceeds sequence or extents differ".into());
-        }
-        let network = graph::build(config, low, unroll)?;
-        println!(
-            "{} parameters; {} training / {} development frames",
-            network.params.iter().map(|p| p.len).sum::<usize>(),
-            train.frames.len(),
-            holdout.frames.len()
-        );
-        let mut session = ommatidia::gpu::training_session(&network.graph, Arc::clone(&context));
-        network.initialize(&mut session, seed);
-        // Training targets only, never development/audit images, set the radiance prior.
-        let mut means = [0.0_f64; 6];
-        let mut mean_pixels = 0usize;
-        for record in &train.frames {
-            let (frame, target) = record.decode(config)?;
-            let n = frame.surfaces.len();
-            mean_pixels += n;
-            for (c, sum) in means.iter_mut().enumerate() {
-                *sum += target.lobes[c * n..(c + 1) * n]
-                    .iter()
-                    .map(|v| f64::from(*v) * f64::from(frame.exposure))
-                    .sum::<f64>();
-            }
-        }
-        for v in &mut means {
-            *v /= mean_pixels as f64;
-        }
-        let bias: Vec<_> = means
-            .iter()
-            .flat_map(|v| {
-                std::iter::repeat_n(
-                    v.ln().clamp(-16.0, 11.0) as f32,
-                    config.scale.pow(2) as usize,
-                )
-            })
-            .collect();
-        session.set_parameter("head.radiance.bias", &bias);
-        std::fs::write(
-            out.join("model.transport.ron"),
-            ron::ser::to_string_pretty(&config, ron::ser::PrettyConfig::default())?,
+        let settings = Settings {
+            steps,
+            batch: batch_size,
+            unroll,
+            crop: [crop; 2],
+            margin: 4,
+            peak_rate: rate,
+            seed,
+            weights,
+            model: ommatidia_train::checkpoint::model_text(config)?,
+        };
+        let mut sampler = Sampler::new(
+            seed,
+            batch_size,
+            [crop; 2],
+            unroll,
+            low,
+            train.sequences.len(),
+            train.length,
         )?;
+        let last_step = stop_after.unwrap_or(steps);
+        if last_step == 0 || last_step > steps || steps > u32::MAX as usize {
+            return Err("invalid stop/schedule boundary".into());
+        }
+        let mut trainer = Trainer::new(
+            Arc::clone(&context),
+            config,
+            [crop; 2],
+            unroll,
+            batch_size,
+            4,
+        )?;
+        let (first_step, means) = if let Some(path) = &checkpoint_input {
+            let restored = Checkpoint::restore(path, &mut trainer, &settings, &train.identities())?;
+            sampler = restored.sampler;
+            (restored.step, restored.means)
+        } else {
+            let means = train.means()?;
+            trainer.initialize(seed, means);
+            (0, means)
+        };
+        if first_step >= last_step {
+            return Err("checkpoint already reaches the requested stop boundary".into());
+        }
+        trainer.share_parameters(&mut learned.session)?;
+        let parameters = trainer.network.params.iter().map(|p| p.len).sum::<usize>();
+        println!(
+            "{parameters} parameters; {} scenes; {batch_size} cursors, {unroll} frames, {crop}x{crop} LR crops",
+            train.sequences.len()
+        );
         std::fs::write(
             out.join("training.json"),
             serde_json::to_vec_pretty(&serde_json::json!({
-                "steps":steps, "unroll":unroll, "seed":seed, "learning_rate":rate,
-                "inference_macs":inference_macs, "inference_flops":2 * inference_macs,
-                "macs_scope":"dense forward convolutions per frame, padded taps included; excludes activations, warp, preparation and backward",
-                "profile_only":profile_only,
-                "evaluation":{"every":eval_every,"history_mode":"causal","pngs":false},
-                "loss_weights":weights, "optimizer_resumed":false, "corpus_mean_normalized_lobes":means,
-                "reload_check":"bitwise equality of every trained parameter before final evaluation",
-                "preparation":"native GPU observation packing and geometric warp maps; graph radiance/latent recurrence",
-                "cpu_corpus":"original f16 capture records; per-frame f32 expansion with no requantization",
-                "window_sampling":{
-                    "sequence":"uniform", "start":"uniform among complete unrolls",
-                    "reset_every_updates":reset_every.get(), "reset_phase_zero_based":0,
-                    "otherwise":"warm from sequence start using current weights"
-                },
-                "training":train.provenance, "development":holdout.provenance,
-                "parameters":network.params.iter().map(|p|p.len).sum::<usize>()
+                "settings":settings, "start_step":first_step, "stop_step":last_step,
+                "optimizer_resumed":checkpoint_input.is_some(), "corpus_mean_normalized_lobes":means,
+                "inference_macs":inference_macs, "inference_flops":2*inference_macs, "parameters":parameters,
+                "evaluation":{"every":eval_every,"history_mode":"causal","pngs":false,"shared_parameters":true},
+                "training":train.provenance, "development":holdout.provenance, "capture_identities":train.identities(),
+                "mapped_bytes":train.identities().iter().map(|i| i.bytes).sum::<usize>(),
+                "preparation":"GPU observation packing and geometric maps; GPU detached state carry",
+                "io":"immutable memory-mapped f16 crops, bounded one-worker prefetch; no requantization",
+                "sampling":"persistent 8-16-window crop lives, uniform fitting start, 0.1 extra reset probability; 2^U(-2,2) radiance gain per life",
+                "loss_margin_hr":4,"exposure":1,"gradient_clip_norm":1,
+                "resume":"Adam moments/step, full GPU state, consumed-batch sampler RNG/cursors and fixed schedule",
             }))?,
         )?;
-        let mut rng = ommatidia::rng::Rng::new(seed);
+        let prefetch = Prefetch::new(Arc::clone(&train), config, sampler.clone());
         let mut losses = std::fs::File::create(out.join("loss.csv"))?;
-        writeln!(losses, "update,loss,sequence,start,warmup_frames")?;
-        let mut profile_rows = std::fs::File::create(out.join("profile.csv"))?;
-        Update::write_header(&mut profile_rows)?;
-        let mut profile = TrainingProfile::default();
-        let mut steady_profile = TrainingProfile::default();
-        let started = std::time::Instant::now();
-        for update in 0..steps {
-            let update_start = Instant::now();
-            let mut timing = Update::default();
-            let stage = Instant::now();
-            session.wait();
-            learned.sync_parameters(&session);
-            learned.reset();
-            timing.record(Stage::ParameterSync, stage);
-            let sequence = rng.below((train.frames.len() / train.length) as u32) as usize;
-            let start = rng.below((train.length - unroll + 1) as u32) as usize;
-            let offset = sequence * train.length;
-            // Simulate cuts at varied times, retaining full causal warmup otherwise.
-            let warmup = warmup_length(update, start, reset_every);
-            for record in &train.frames[offset..offset + warmup] {
-                let stage = Instant::now();
-                let frame = record.frame(config)?;
-                timing.record(Stage::FrameDecode, stage);
-                let stage = Instant::now();
-                learned.advance(&frame)?;
-                timing.record(Stage::WarmupAdvance, stage);
+        writeln!(
+            losses,
+            "update,loss,learning_rate,cold_windows,windows,cold_fraction"
+        )?;
+        let mut rows = std::fs::File::create(out.join("profile.csv"))?;
+        writeln!(
+            rows,
+            "update,io_wait,worker_decode,upload,preparation_submit,step_wait,carry_wait,loss_read,total"
+        )?;
+        let mut totals = [0.0f64; 8];
+        let mut steady = [0.0f64; 8];
+        for update in first_step + 1..=last_step {
+            let start = Instant::now();
+            let batch = prefetch.receive()?;
+            let io = start.elapsed().as_secs_f64();
+            let lr = learning_rate(rate, update, steps);
+            let (loss, timing) = trainer.step(&batch, lr, weights)?;
+            sampler = batch.next_sampler.clone();
+            let cold = batch.windows.iter().filter(|w| w.reset).count();
+            let fraction = sampler.cold_windows as f64 / sampler.windows as f64;
+            writeln!(
+                losses,
+                "{update},{loss},{lr},{cold},{batch_size},{fraction}"
+            )?;
+            let total = start.elapsed().as_secs_f64();
+            let values = [
+                io,
+                batch.decode_seconds,
+                timing.upload,
+                timing.preparation_submit,
+                timing.step_wait,
+                timing.carry_wait,
+                timing.loss_read,
+                total,
+            ];
+            write!(rows, "{update}")?;
+            for value in values {
+                write!(rows, ",{value}")?;
             }
-            for slot in 0..unroll {
-                let stage = Instant::now();
-                let (frame, target) = train.frames[offset + start + slot].decode(config)?;
-                timing.record(Stage::FrameDecode, stage);
-                let (frame, target) = (&frame, &target);
-                let stage = Instant::now();
-                learned.advance(frame)?;
-                timing.record(Stage::SlotAdvance, stage);
-                let stage = Instant::now();
-                let prepared = learned.read_prepared(frame);
-                timing.record(Stage::ReadPrepared, stage);
-                let stage = Instant::now();
-                graph::feed(&mut session, &format!("f{slot}"), &prepared, target, slot);
-                graph::feed_rgb(&mut session, &format!("f{slot}"), frame, target, config);
-                timing.record(Stage::Feed, stage);
+            writeln!(rows)?;
+            for i in 0..8 {
+                totals[i] += values[i];
+                if update > first_step + 10 {
+                    steady[i] += values[i];
+                }
             }
-            let stage = Instant::now();
-            weights.feed(&mut session);
-            let fraction = update as f32 / steps as f32;
-            session.set_adam(
-                rate * (0.1 + 0.9 * 0.5 * (1.0 + (std::f32::consts::PI * fraction).cos())),
-                0.9,
-                0.999,
-                1e-8,
-            );
-            timing.record(Stage::Feed, stage);
-            let stage = Instant::now();
-            session.step();
-            session.wait();
-            timing.record(Stage::StepWait, stage);
-            let stage = Instant::now();
-            let loss = session.read_loss();
-            timing.record(Stage::LossReadback, stage);
-            if !loss.is_finite() {
-                return Err("training became non-finite".into());
-            }
-            writeln!(losses, "{},{loss},{sequence},{start},{warmup}", update + 1)?;
-            if update % 16 == 0 {
+            if update == first_step + 1 || update % 16 == 0 {
                 println!(
-                    "update {}/{steps}: loss {loss:.7}, {:.2} updates/s",
-                    update + 1,
-                    (update + 1) as f32 / started.elapsed().as_secs_f32()
+                    "update {update}/{steps}: loss {loss:.7}, {:.2} updates/s, cold {:.2}%",
+                    (update - first_step) as f64 / totals[7],
+                    fraction * 100.0
                 );
             }
-            timing.finish(update_start);
-            timing.write(&mut profile_rows, update + 1)?;
-            profile.add(&timing);
-            if update >= 10 {
-                steady_profile.add(&timing);
+            if trainer.session.adam_step_count() as usize != update {
+                return Err("expected exactly one Adam step per batch".into());
             }
-            if eval_every > 0 && (update + 1) % eval_every == 0 && update + 1 < steps {
-                let path = out.join(format!("step-{}.safetensors", update + 1));
-                session.save_checkpoint(&path)?;
-                learned.session.load_checkpoint(&path)?;
-                let dir = out.join(format!("dev-{}", update + 1));
+            if update % 5000 == 0 || update == last_step {
+                let directory = out.join("checkpoints").join(format!("step-{update:08}"));
+                Checkpoint::save(
+                    &directory,
+                    &mut trainer,
+                    settings.clone(),
+                    train.identities(),
+                    sampler.clone(),
+                    means,
+                )?;
+            }
+            if eval_every > 0 && update % eval_every == 0 && update < last_step {
+                let dir = out.join(format!("dev-{update}"));
                 std::fs::create_dir_all(&dir)?;
                 let report = evaluate(
                     &holdout,
@@ -896,36 +774,57 @@ seeds/catalog families must be disjoint. Use a separate final audit split."
                     dir.join("quality.json"),
                     serde_json::to_vec_pretty(&report)?,
                 )?;
-                println!(
-                    "development {}: {}",
-                    update + 1,
-                    serde_json::to_string(&report)?
-                );
+                println!("development {update}: {}", serde_json::to_string(&report)?);
             }
         }
-        let profile_report = serde_json::json!({
-            "scope":"non-overlapping host wall time; excludes corpus loading, session setup, checkpoints, evaluation and profile CSV writes; advance and step include their GPU waits",
-            "read_prepared_scope":"prepared-input and GPU-generated warp-map readback",
+        drop(prefetch);
+        let pixels = batch_size * unroll * (crop * config.scale).pow(2) as usize;
+        let valid_pixels = batch_size * unroll * (crop * config.scale - 8).pow(2) as usize;
+        let baseline = 131072.0 / 0.438300;
+        let report_timing = |count: usize, values: [f64; 8]| {
+            serde_json::json!({
+                "updates":count,"seconds":values[7],"updates_per_second":count as f64 / values[7],
+                "nominal_pixel_gradients_per_second":count as f64*pixels as f64/values[7],
+                "valid_pixel_gradients_per_second":count as f64*valid_pixels as f64/values[7],
+                "speedup_vs_phase1_valid":count as f64*valid_pixels as f64/values[7]/baseline,
+                "seconds_by_stage":{"io_wait":values[0],"worker_decode_overlapped":values[1],"upload":values[2],"preparation_submit":values[3],"step_wait":values[4],"carry_wait":values[5],"loss_read":values[6]},
+            })
+        };
+        let profile = serde_json::json!({
+            "scope":"host update wall time including I/O and CSV loss write; excludes initialization, checkpoint, evaluation and profile CSV write; worker decode overlaps GPU work",
             "device":context.device_information().device_name,
-            "low_extent":low, "unroll":unroll,
-            "training_frames":train.frames.len(), "training_sequences":train.frames.len() / train.length,
-            "all_updates":profile.report(), "after_first_10_updates":steady_profile.report(),
+            "phase1_pixel_gradients_per_second":baseline,"nominal_pixels_per_update":pixels,"valid_pixels_per_update":valid_pixels,
+            "all_updates":report_timing(last_step-first_step, totals),
+            "after_first_10_updates":if last_step-first_step > 10 { report_timing(last_step-first_step-10, steady) } else { serde_json::Value::Null },
+            "cold_fraction":sampler.cold_windows as f64 / sampler.windows as f64,
         });
         std::fs::write(
             out.join("profile.json"),
-            serde_json::to_vec_pretty(&profile_report)?,
+            serde_json::to_vec_pretty(&profile)?,
         )?;
-        println!(
-            "training profile: {}",
-            serde_json::to_string(&profile_report)?
-        );
-        session.save_checkpoint(&checkpoint)?;
-        // Verify the actual final training state, not two loads of the same file.
+        println!("training profile: {}", serde_json::to_string(&profile)?);
+        let final_dir = out.join("checkpoints").join(format!("step-{last_step:08}"));
+        for name in [
+            "model.safetensors",
+            "model.transport.ron",
+            "state.f32",
+            "trainer.json",
+        ] {
+            std::fs::copy(final_dir.join(name), out.join(name))?;
+        }
+        // Independent storage is essential: reloading a shared session would
+        // overwrite the live parameters and make this comparison tautological.
+        learned = native::Native::new(Arc::clone(&context), config, low)?;
         learned.session.load_checkpoint(&checkpoint)?;
-        let names: Vec<_> = network.params.iter().map(|p| p.name.as_str()).collect();
+        let names: Vec<_> = trainer
+            .network
+            .params
+            .iter()
+            .map(|p| p.name.as_str())
+            .collect();
         for ((name, live), loaded) in names
             .iter()
-            .zip(session.read_params(&names))
+            .zip(trainer.session.read_params(&names))
             .zip(learned.session.read_params(&names))
         {
             if live.len() != loaded.len()
@@ -1006,48 +905,6 @@ mod tests {
     }
 
     #[test]
-    fn training_cuts_preserve_random_frame_coverage_and_full_warmup() {
-        let mut rng = ommatidia::rng::Rng::new(31);
-        let mut cut_scenes = [0; 40];
-        let mut cut_starts = [false; 63];
-        let mut forced_cuts = 0;
-        let reset_every = NonZeroUsize::new(DEFAULT_RESET_INTERVAL).unwrap();
-        for update in 0..4000 {
-            let sequence = rng.below(cut_scenes.len() as u32) as usize;
-            let start = rng.below(63) as usize;
-            let warmup = warmup_length(update, start, reset_every);
-            if update % 2 == 0 {
-                assert_eq!(warmup, 0);
-                cut_scenes[sequence] += 1;
-                cut_starts[start] = true;
-                forced_cuts += 1;
-            } else {
-                assert_eq!(warmup, start);
-            }
-            assert_eq!(warmup_length(update, 0, reset_every), 0);
-        }
-        assert_eq!(forced_cuts, 2000);
-        assert!(cut_scenes.iter().all(|&count| count > 0));
-        assert!(cut_starts.iter().all(|&seen| seen));
-    }
-
-    #[test]
-    fn explicit_reset_interval_controls_warmup_without_changing_start() {
-        assert!("0".parse::<NonZeroUsize>().is_err());
-        for interval in [1, 2, 4] {
-            let reset_every = NonZeroUsize::new(interval).unwrap();
-            for update in 0..16 {
-                for start in 0..64 {
-                    assert_eq!(
-                        warmup_length(update, start, reset_every),
-                        if update % interval == 0 { 0 } else { start },
-                    );
-                }
-            }
-        }
-    }
-
-    #[test]
     fn lobe_diagnostics_preserve_subpixel_packing_and_observed_materials() {
         let config = Config::default();
         let low = [4, 8];
@@ -1090,19 +947,6 @@ mod tests {
                 );
             }
         }
-    }
-
-    #[test]
-    fn training_and_development_must_not_share_scenes_or_families() {
-        let corpus = |seed, family| Corpus {
-            frames: Vec::new(),
-            length: 8,
-            provenance: serde_json::json!({"scene_seeds":[seed],"family_ids":[family]}),
-        };
-        let training = corpus(7, "chair-a");
-        assert!(training.disjoint(&corpus(7, "chair-b")).is_err());
-        assert!(training.disjoint(&corpus(8, "chair-a")).is_err());
-        assert!(training.disjoint(&corpus(8, "chair-b")).is_ok());
     }
 
     #[test]

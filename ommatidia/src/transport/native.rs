@@ -40,6 +40,96 @@ struct Data {
     output: gpu::BufferPiece,
 }
 
+/// Reuse the runtime's exact observation/map shader with training input buffers.
+/// This runs no inference and never reads recurrent state back to the CPU.
+pub struct Packer {
+    context: Arc<gpu::Context>,
+    pipeline: gpu::ComputePipeline,
+    config: Config,
+    low: [u32; 2],
+}
+pub struct PackInput {
+    pub rays: gpu::BufferPiece,
+    pub surfaces: gpu::BufferPiece,
+    pub previous: gpu::BufferPiece,
+    pub jitter: [f32; 2],
+    pub exposure: f32,
+    pub ready: bool,
+}
+impl Packer {
+    pub fn new(context: Arc<gpu::Context>, config: Config, low: [u32; 2]) -> Result<Self, String> {
+        config.validate(low)?;
+        let shader = context.create_shader(gpu::ShaderDesc {
+            source: include_str!("prepare.wgsl"),
+            naga_module: None,
+        });
+        let pipeline = context.create_compute_pipeline(gpu::ComputePipelineDesc {
+            name: "training-observation-pack",
+            data_layouts: &[&<Data as gpu::ShaderData>::layout()],
+            compute: shader.at("pack"),
+        });
+        Ok(Self {
+            context,
+            pipeline,
+            config,
+            low,
+        })
+    }
+    pub fn record(
+        &self,
+        encoder: &mut gpu::CommandEncoder,
+        session: &meganeura::Session,
+        slot: usize,
+        input: &PackInput,
+    ) {
+        let get = |name| session.input_buffer(&format!("f{slot}.{name}")).unwrap();
+        let data = Data {
+            params: Params {
+                w: self.low[0],
+                h: self.low[1],
+                scale: self.config.scale,
+                state_channels: self.config.state_channels() as u32,
+                ready: u32::from(input.ready) | (u32::from(slot > 0) << 1),
+                exposure: input.exposure,
+                jitter: input.jitter,
+            },
+            rays: input.rays,
+            surfaces: input.surfaces,
+            previous: input.previous,
+            features: get("features"),
+            history: session.input_buffer("f0.history").unwrap(),
+            metadata: get("metadata"),
+            valid: get("valid"),
+            exposure: get("exposure"),
+            warp0: get("warp0"),
+            warp1: get("warp1"),
+            warp2: get("warp2"),
+            warp3: get("warp3"),
+            coeff0: get("coeff0"),
+            coeff1: get("coeff1"),
+            coeff2: get("coeff2"),
+            coeff3: get("coeff3"),
+            // Only used by the separate resolve entry point, absent here.
+            image: input.previous,
+            next: input.previous,
+            output: input.previous,
+        };
+        let mut pass = encoder.compute("training-observation-pack");
+        let mut commands = pass.with(&self.pipeline);
+        commands.bind(0, &data);
+        commands.dispatch([
+            (self.low[0] * self.config.scale).div_ceil(8),
+            (self.low[1] * self.config.scale).div_ceil(8),
+            1,
+        ]);
+    }
+}
+impl Drop for Packer {
+    fn drop(&mut self) {
+        self.context.destroy_compute_pipeline(&mut self.pipeline);
+    }
+}
+
 pub struct Native {
     context: Arc<gpu::Context>,
     pub session: meganeura::Session,

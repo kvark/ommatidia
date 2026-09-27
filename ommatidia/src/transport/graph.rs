@@ -7,7 +7,7 @@ use crate::neural::Builder;
 pub use crate::neural::Network;
 
 /// One objective: RGB, identifiable radiance lobes, energy, structure, and time.
-#[derive(Clone, Copy, Debug, serde::Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct LossWeights {
     pub compressed: f32,
     pub physical: f32,
@@ -156,6 +156,51 @@ pub fn build_with_debug(
     unroll: usize,
     debug_alpha: bool,
 ) -> Result<Network, String> {
+    build_impl(config, low, unroll, debug_alpha, 0)
+}
+
+/// Same model with a loss-only exclusion margin measured in HR pixels.
+pub fn build_training(
+    config: Config,
+    low: [u32; 2],
+    unroll: usize,
+    margin: u32,
+) -> Result<Network, String> {
+    if unroll == 0 {
+        return Err("training requires a positive unroll".into());
+    }
+    build_impl(config, low, unroll, false, margin)
+}
+
+/// Binary packed mask, shared by the objective and its independent tests.
+pub fn loss_mask(
+    config: Config,
+    low: [u32; 2],
+    channels: usize,
+    margin: u32,
+) -> Result<Vec<f32>, String> {
+    let high = low.map(|v| v * config.scale);
+    if high.iter().any(|v| margin >= v.div_ceil(2)) {
+        return Err("loss margin removes the whole crop".into());
+    }
+    let mut mask = vec![0.0; (high[0] * high[1]) as usize * channels];
+    for c in 0..channels {
+        for y in margin..high[1] - margin {
+            for x in margin..high[0] - margin {
+                mask[config.index(low, c, x as usize, y as usize)] = 1.0;
+            }
+        }
+    }
+    Ok(mask)
+}
+
+fn build_impl(
+    config: Config,
+    low: [u32; 2],
+    unroll: usize,
+    debug_alpha: bool,
+    margin: u32,
+) -> Result<Network, String> {
     config.validate(low)?;
     if unroll > 8 {
         return Err("unroll must be at most eight".into());
@@ -166,6 +211,41 @@ pub fn build_with_debug(
     let state_channels = config.state_channels() as u32;
     let state_len = config.state_channels() * n;
     let mut b = Builder::new();
+    let masks = if unroll > 0 && margin > 0 {
+        let rgb = loss_mask(config, low, 3, margin)?;
+        let norm = (rgb.len() as f32 / rgb.iter().sum::<f32>()).sqrt();
+        let rgb_normalized =
+            b.g.constant(rgb.iter().map(|v| v * norm).collect(), &[3 * n]);
+        let lobe = loss_mask(config, low, 6, margin)?;
+        let lobe_normalized =
+            b.g.constant(lobe.iter().map(|v| v * norm).collect(), &[6 * n]);
+        let mut coarse = Vec::new();
+        for c in 0..3 * slots as usize {
+            for y in 0..low[1] as usize / 4 {
+                for x in 0..low[0] as usize / 4 {
+                    let mut count = 0.0;
+                    for dy in 0..4 {
+                        for dx in 0..4 {
+                            count += rgb
+                                [(c * low[1] as usize + 4 * y + dy) * low[0] as usize + 4 * x + dx];
+                        }
+                    }
+                    coarse.push(if count > 0.0 { 16.0 / count } else { 0.0 });
+                }
+            }
+        }
+        let norm =
+            (coarse.len() as f32 / coarse.iter().filter(|v| **v > 0.0).count() as f32).sqrt();
+        let coarse_len = coarse.len();
+        let coarse = b.g.constant(
+            coarse.into_iter().map(|v| v * norm).collect(),
+            &[coarse_len],
+        );
+        let binary = b.g.constant(rgb, &[3 * n]);
+        Some((rgb_normalized, lobe_normalized, binary, coarse))
+    } else {
+        None
+    };
     let objective_weights: Option<[NodeId; 5]> = (unroll > 0).then(|| {
         let input = b.g.input("loss.weights", &[5]);
         split(&mut b.g, input, 5, 1, 1).try_into().unwrap()
@@ -297,22 +377,36 @@ pub fn build_with_debug(
             temporal_weight,
             lobe_weight,
         ] = objective_weights.unwrap();
-        let loss = b.g.mse_loss(encoded, encoded_target);
+        let loss = match masks {
+            Some((rgb, ..)) => scaled_mse(&mut b.g, encoded, encoded_target, rgb),
+            None => b.g.mse_loss(encoded, encoded_target),
+        };
         let mut loss = b.g.mul(loss, compressed_weight);
         // RGB alone cannot identify diffuse/specular energy: opposite lobe
         // errors can cancel after material composition but pollute recurrence.
         let encoded_lobes = compress(&mut b.g, image, exposure);
         let encoded_target_lobes = compress(&mut b.g, target, exposure);
-        let lobe_loss = b.g.mse_loss(encoded_lobes, encoded_target_lobes);
+        let lobe_loss = match masks {
+            Some((_, lobe, ..)) => scaled_mse(&mut b.g, encoded_lobes, encoded_target_lobes, lobe),
+            None => b.g.mse_loss(encoded_lobes, encoded_target_lobes),
+        };
         let lobe_loss = b.g.mul(lobe_loss, lobe_weight);
         loss = b.g.add(loss, lobe_loss);
-        let physical = scaled_mse(&mut b.g, spatial_image, spatial_target, spatial_scale);
+        let physical_scale = match masks {
+            Some((rgb, ..)) => b.g.mul(spatial_scale, rgb),
+            None => spatial_scale,
+        };
+        let physical = scaled_mse(&mut b.g, spatial_image, spatial_target, physical_scale);
         let physical = b.g.mul(physical, physical_weight);
         loss = b.g.add(loss, physical);
         // Coarse linear error catches broad energy drift.
         let error = b.g.neg(spatial_target);
         let error = b.g.add(spatial_image, error);
         let error = b.g.mul(error, spatial_scale);
+        let error = match masks {
+            Some((_, _, mask, _)) => b.g.mul(error, mask),
+            None => error,
+        };
         let block = 4;
         let channels = color_channels * slots;
         let mut kernel = vec![0.0; (channels * channels * block * block) as usize];
@@ -329,7 +423,10 @@ pub fn build_with_debug(
             vec![0.0; (channels * spatial / (block * block)) as usize],
             &[(channels * spatial / (block * block)) as usize],
         );
-        let lf = b.g.mse_loss(avg, zero);
+        let lf = match masks {
+            Some((_, _, _, coarse)) => scaled_mse(&mut b.g, avg, zero, coarse),
+            None => b.g.mse_loss(avg, zero),
+        };
         let lf = b.g.mul(lf, low_frequency_weight);
         loss = b.g.add(loss, lf);
         if let Some(old_target) = previous_target {
@@ -350,6 +447,10 @@ pub fn build_with_debug(
             let neg = b.g.neg(old_truth);
             let expected = b.g.add(truth, neg);
             let valid_rgb = rgb_weights(&mut b.g, valid2, slots, spatial);
+            let valid_rgb = match masks {
+                Some((_, lobe, ..)) => b.g.mul(valid_rgb, lobe),
+                None => valid_rgb,
+            };
             let tl = scaled_mse(&mut b.g, change, expected, valid_rgb);
             let tl = b.g.mul(tl, temporal_weight);
             loss = b.g.add(loss, tl);

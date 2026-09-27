@@ -6,7 +6,7 @@
 //! and short enough not to be worth a dependency.
 
 /// A seeded random stream.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct Rng {
     state: u64,
     increment: u64,

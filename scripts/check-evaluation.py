@@ -21,8 +21,17 @@ def main():
     args.out.mkdir(parents=True, exist_ok=False)
     base = [str(args.binary), "--eval-data", str(args.eval_data)]
     train = args.out / "train"
-    subprocess.run(base + ["--data", str(args.train_data), "--out", str(train),
-                          "--steps", "2", "--channels", "4", "--unroll", "2", "--eval-every", "1"], check=True)
+    settings = ["--data", str(args.train_data), "--steps", "2", "--channels", "4",
+                "--unroll", "2", "--batch", "2", "--crop", "16", "--eval-every", "1"]
+    subprocess.run(base + settings + ["--out", str(train)], check=True)
+    interrupted = args.out / "interrupted"
+    subprocess.run(base + settings + ["--out", str(interrupted), "--stop-after", "1"], check=True)
+    resumed = args.out / "resumed"
+    subprocess.run(base + settings + ["--out", str(resumed), "--checkpoint",
+                   str(interrupted / "model.safetensors")], check=True)
+    assert (resumed / "frames.csv").read_bytes() == (train / "frames.csv").read_bytes(), "interrupted resume changed metrics"
+    resumed_metadata = json.loads((resumed / "training.json").read_text())
+    assert resumed_metadata["optimizer_resumed"] and resumed_metadata["start_step"] == 1
     checkpoint = train / "model.safetensors"
     base += ["--eval-only", "--checkpoint", str(checkpoint), "--save-linear"]
     causal = args.out / "causal"
@@ -55,7 +64,7 @@ def main():
     rejected = subprocess.run(base + ["--out", str(args.out / "mismatched-control"),
         "--reset-every", "1", "--control-run", str(causal)], capture_output=True, text=True)
     assert rejected.returncode != 0 and "control run reset_every differs" in rejected.stderr, rejected.stderr
-    print("PASS: metrics-only periodic/final training evaluation, exact reload, zero control deltas, reset-1/16, mismatched-control rejection")
+    print("PASS: metrics-only periodic/final training evaluation, interrupted optimizer/cursor resume, exact reload, zero control deltas, reset-1/16, mismatched-control rejection")
 
 
 if __name__ == "__main__":
