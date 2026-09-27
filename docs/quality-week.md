@@ -908,6 +908,13 @@ development-selected candidate. Do not consume confirmation data merely because
 training loss or mean PSNR falls; a visibly useful, development-supported result
 and a new immutable selection record are still required.
 
+The debug gate passed with zero validation errors and 49 PNG/f32/frame-score
+files byte-identical after reload (`balanced-exposure-{smoke,reload}-run/`).
+The broad run is live in `balanced-exposure-training/`, writing
+`balanced-exposure-fit/`, with the recorded clean `d1da76d` release executable.
+Its initialization is the broad parent, not the smoke checkpoint. No quality
+improvement is claimed before the development evaluations complete.
+
 ## Progress and evidence
 
 - Initial validation reproduction:

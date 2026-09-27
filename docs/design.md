@@ -103,10 +103,12 @@ performance must be measured again before publication.
 CPU/WGSL preparation parity covers raw features, 24 frames of flat/sloped
 recurrence, invalid history, resets and HDR. A separate uninterrupted 40-frame
 check crosses the 16- and 32-frame diffuse limits and verifies state ages.
-The actual two-frame training graph
-is checked against
-Meganeura's f64 reference for its loss and every parameter gradient, including
-fused/unfused lowerings. A training-and-reload test must reduce loss.
+The two-frame training graph at 8×8 input is checked against Meganeura's f64
+reference for its loss and every parameter gradient, including fused/unfused
+lowerings. At the production 128×128 extent, two directional probes per tensor
+compare backward gradients with converged forward finite differences. The latter
+uses a one-frame loss and synthetic inputs, not an exhaustive gradient check on
+captured data. A training-and-reload test must reduce loss.
 
 Blade is pinned to `fbb4f28`, Meganeura to `ee3aea4`, and Naga to `323acfb` plus
 the tracked [workgroup-layout correction](../patches/README.md).
