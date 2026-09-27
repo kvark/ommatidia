@@ -21,7 +21,9 @@ class RegionTests(unittest.TestCase):
         scorer.validate_benchmark(benchmark)
         self.assertEqual(sum(d["sequences"] for d in benchmark["datasets"]), 10)
         self.assertEqual(len(benchmark["regions"]), 16)
-        self.assertEqual(sum(len(r["frames"]) for r in benchmark["regions"]), 24)
+        self.assertEqual(sum(len(r["frames"]) for r in benchmark["regions"]), 40)
+        self.assertEqual(benchmark["early_reference_extension"]["frames"], [3])
+        self.assertTrue(all(3 in r["frames"] for r in benchmark["regions"]))
         self.assertEqual({r["kind"] for r in benchmark["regions"]}, {"smooth", "edge", "texture"})
         for capture in benchmark["datasets"]:
             self.assertEqual(len(bytes.fromhex(capture["sha256"])), 32)
@@ -43,7 +45,10 @@ class RegionTests(unittest.TestCase):
             expected |= expand(source["regions"])
             self.assertEqual([(Path(d["path"]).resolve(), d["sequences"]) for d in source["datasets"]],
                              [((root / d["path"]).resolve(), d["sequences"]) for d in benchmark["datasets"]])
-        self.assertEqual(expand(benchmark["regions"]), expected)
+        self.assertEqual({entry for entry in expand(benchmark["regions"]) if entry[3] != 3}, expected)
+        for name, digest in benchmark["early_reference_extension"]["reference_png_sha256"].items():
+            if (root / name).is_file():
+                self.assertEqual(scorer.sha256(root / name), digest)
 
     def benchmark(self):
         return {"schema": 1, "extent": [4, 4], "sequence_length": 2,

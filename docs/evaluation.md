@@ -139,11 +139,15 @@ mean 0.159691 within 1e-4. The local CPU wheel gives 0.159714609385 (absolute er
 C++ fixture (0.76% of channels differ, at most 3/255); that additional diagnostic
 is disclosed, not used to replace the prescribed mean tolerance.
 
-Crop scoring retains the historical rectangles **and frame selections**. It adds
-reset-age breakdowns and supports `--before-role base` for guide/control ratios.
-No early crop was selected historically: early crop ratios are null, not a pass.
-The reset-16 protocol likewise has no warm frames. All-frame metric coverage is
-independent of the limited historical crop coverage.
+Crop scoring retains all historical rectangles and frame selections. The owner
+approved adding early coverage on 2026-09-27: reference-only inspection at frame 3
+confirmed the same sixteen rectangles still have their declared content. Their
+reference PNG hashes and selection method are in `docs/dev-crops.json`. These
+sixteen additions precede the complete protocol evaluations; no learned outputs
+were viewed to choose them. Scoring adds reset-age breakdowns and supports
+`--before-role base` for guide/control ratios. Cold edge/texture crops and reset-16
+warm frames remain absent (null, not a pass). Coverage is five of ten sequences,
+at ages 0/3/31 in causal runs, not exhaustive coverage of every early frame.
 
 On those verified outputs,
 `score-sequences --benchmark FILE --before BEFORE_OUTPUTS --after AFTER_OUTPUTS
