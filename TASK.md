@@ -19,17 +19,21 @@ over simply extending training.
 
 These are targets for the week, not claims about current results. Freeze the
 benchmark, crops, and metric definitions before selecting a new checkpoint.
+Use the sprint's starting checkpoint and its original inference implementation
+as the fixed baseline, as recorded in [the protocol](docs/quality-week.md).
 
-- **Visual quality:** target roughly 50% lower reconstruction-error MSE against
+- **Visual quality:** target at least 50% lower reconstruction-error MSE against
   high-sample references on predefined smooth-surface crops, measured in RGB
   after fixed `x/(1+x)` compression and before sRGB conversion or quantization.
+  The frozen aggregate error ratio must be at most 0.50; keep cold-start frames
+  in the measurement and report them separately from accumulated history.
   Preserve edges and material texture. Inspect worst frames as well as averages;
   reduced image variance alone is not evidence of successful denoising.
 - **Temporal quality:** no increased flicker, ghost trails, or disocclusion
   failures across held-out clips long enough to exercise history accumulation.
   Check both temporal metrics and videos.
 - **Numerical quality:** aim for approximately +1 dB on the frozen held-out set,
-  measured against the current checkpoint on identical inputs and evaluation
+  measured against the fixed baseline on identical inputs and evaluation
   settings. This is secondary: PSNR improvement alone does not pass the visual bar.
 - **Correctness:** pass numerical, gradient, recurrence, and checkpoint-reload
   checks, and resolve the outstanding Vulkan-validation failure. Numerical
@@ -105,11 +109,17 @@ pause scaling training and resolve the bottleneck first.
 - Real-time 1080p integration.
 - A collection of competing architectures.
 
+## End-of-week decision
+
 Time-box this sprint to seven working days. The quality targets are not a promise
 that longer training will reach them. At the end of the week, report the measured
 outcome, including failed gates and the diagnosed bottleneck; do not silently
 extend the sprint or expand its scope.
 
-Success means an immediately recognizable improvement in both still images and
-motion, supported by measurements. If the quality gates are not met, do not
-promote an inadequate checkpoint or claim the quality goal is complete.
+- **Pass:** an immediately recognizable improvement in still images and motion,
+  supported by the frozen quality gates and correctness checks. Publish one
+  checkpoint, its configuration and provenance, reproduction commands, README
+  comparisons, videos, and measured GPU time and memory.
+- **Miss:** retain the published checkpoint and report which gates failed, the
+  strongest diagnostic evidence, and the next specific hypothesis to test.
+  Do not promote an inadequate checkpoint or claim the quality goal is complete.
