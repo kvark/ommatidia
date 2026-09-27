@@ -2,7 +2,19 @@
   "schema": 1,
   "extent": [256, 256],
   "sequence_length": 64,
-  "selection": "Recovered unchanged from the closed sprint's dev-parent-f32-middle.json and dev-parent-f32-cold.json. Retains their exact rectangles, sequences and frame selections; no new prediction-based selection. Rectangles are x,y,width,height in output pixels. Historical coverage is eight smooth crops at frame 0 and sixteen smooth/edge/texture crops at frame 31, not every sequence or temporal stratum.",
+  "selection": "Historical selections recovered unchanged from the closed sprint's dev-parent-f32-middle.json and dev-parent-f32-cold.json: eight smooth crops at frame 0 and sixteen smooth/edge/texture crops at frame 31. The owner-approved reference-only extension adds frame 3 to each of the same sixteen rectangles. Rectangles are x,y,width,height in output pixels. Coverage is five of ten sequences; cold edge/texture crops and reset-16 warm frames are absent, not scored as zero.",
+  "early_reference_extension": {
+    "approved": "2026-09-27: owner requested reference-only early crops",
+    "frames": [3],
+    "method": "Chose age 3 within the early 1-7 stratum. Inspected only the five reference PNGs at this age; all existing rectangles retain their smooth, edge or texture classification, so no rectangle was moved. No learned or baseline images were viewed to choose these additions. Recorded before the complete protocol evaluations.",
+    "reference_png_sha256": {
+      "runs/v4-phase1/v3-control-causal/outputs/000-003-reference.png": "44d5ea1b80d2e5dd6e5121b9b0bea9d037594c23c7d0aaff559a6cd7bcd89cdb",
+      "runs/v4-phase1/v3-control-causal/outputs/002-003-reference.png": "31b39cafb425edfa985ee130c06625d1eabba10843584bb5a7c007b0a03f2163",
+      "runs/v4-phase1/v3-control-causal/outputs/004-003-reference.png": "0687bb6f311c38c1770174488dc21a6abf4a1c410c183b8c33468cbcdcfc9158",
+      "runs/v4-phase1/v3-control-causal/outputs/006-003-reference.png": "bec266e360baf8ea1c92e97e3277ad799c0892fd42ec427198e10a275ef451c3",
+      "runs/v4-phase1/v3-control-causal/outputs/008-003-reference.png": "6f78aacc46227f049b49895f66c41e938f55b1728f92d6d54bc676b5a397ab75"
+    }
+  },
   "source_reports": [
     "runs/quality-week-2026-09-26/dev-parent-f32-middle.json",
     "runs/quality-week-2026-09-26/dev-parent-f32-cold.json"
@@ -19,21 +31,21 @@
     {"name": "dev-catalog", "path": "runs/quality-week-2026-09-26/data/dev-catalog.omd", "sha256": "5d06e7a5a21a713795d5f17664b344e465154b662be7c9f11905f41523a47515", "sequences": 2}
   ],
   "regions": [
-    {"sequence": 0, "kind": "smooth", "name": "0-wall", "rect": [65, 91, 58, 40], "frames": [0, 31]},
-    {"sequence": 0, "kind": "smooth", "name": "0-ceiling", "rect": [118, 63, 64, 20], "frames": [0, 31]},
-    {"sequence": 0, "kind": "edge", "name": "0-box", "rect": [123, 96, 80, 100], "frames": [31]},
-    {"sequence": 2, "kind": "smooth", "name": "2-ceiling", "rect": [30, 3, 96, 10], "frames": [31]},
-    {"sequence": 2, "kind": "smooth", "name": "2-wall", "rect": [197, 43, 42, 53], "frames": [31]},
-    {"sequence": 2, "kind": "texture", "name": "2-floor", "rect": [184, 160, 60, 72], "frames": [31]},
-    {"sequence": 2, "kind": "edge", "name": "2-sphere", "rect": [89, 116, 76, 72], "frames": [31]},
-    {"sequence": 4, "kind": "smooth", "name": "4-wall", "rect": [140, 40, 45, 40], "frames": [0, 31]},
-    {"sequence": 4, "kind": "smooth", "name": "4-floor", "rect": [200, 220, 40, 20], "frames": [0, 31]},
-    {"sequence": 4, "kind": "edge", "name": "4-sphere", "rect": [142, 115, 97, 95], "frames": [31]},
-    {"sequence": 6, "kind": "smooth", "name": "6-ceiling", "rect": [24, 18, 72, 32], "frames": [0, 31]},
-    {"sequence": 6, "kind": "smooth", "name": "6-wall", "rect": [25, 95, 40, 20], "frames": [0, 31]},
-    {"sequence": 6, "kind": "edge", "name": "6-objects", "rect": [68, 125, 125, 71], "frames": [31]},
-    {"sequence": 8, "kind": "smooth", "name": "8-wall", "rect": [16, 16, 60, 30], "frames": [0, 31]},
-    {"sequence": 8, "kind": "smooth", "name": "8-floor", "rect": [192, 177, 40, 56], "frames": [0, 31]},
-    {"sequence": 8, "kind": "edge", "name": "8-chair", "rect": [52, 51, 141, 176], "frames": [31]}
+    {"sequence": 0, "kind": "smooth", "name": "0-wall", "rect": [65, 91, 58, 40], "frames": [0, 3, 31]},
+    {"sequence": 0, "kind": "smooth", "name": "0-ceiling", "rect": [118, 63, 64, 20], "frames": [0, 3, 31]},
+    {"sequence": 0, "kind": "edge", "name": "0-box", "rect": [123, 96, 80, 100], "frames": [3, 31]},
+    {"sequence": 2, "kind": "smooth", "name": "2-ceiling", "rect": [30, 3, 96, 10], "frames": [3, 31]},
+    {"sequence": 2, "kind": "smooth", "name": "2-wall", "rect": [197, 43, 42, 53], "frames": [3, 31]},
+    {"sequence": 2, "kind": "texture", "name": "2-floor", "rect": [184, 160, 60, 72], "frames": [3, 31]},
+    {"sequence": 2, "kind": "edge", "name": "2-sphere", "rect": [89, 116, 76, 72], "frames": [3, 31]},
+    {"sequence": 4, "kind": "smooth", "name": "4-wall", "rect": [140, 40, 45, 40], "frames": [0, 3, 31]},
+    {"sequence": 4, "kind": "smooth", "name": "4-floor", "rect": [200, 220, 40, 20], "frames": [0, 3, 31]},
+    {"sequence": 4, "kind": "edge", "name": "4-sphere", "rect": [142, 115, 97, 95], "frames": [3, 31]},
+    {"sequence": 6, "kind": "smooth", "name": "6-ceiling", "rect": [24, 18, 72, 32], "frames": [0, 3, 31]},
+    {"sequence": 6, "kind": "smooth", "name": "6-wall", "rect": [25, 95, 40, 20], "frames": [0, 3, 31]},
+    {"sequence": 6, "kind": "edge", "name": "6-objects", "rect": [68, 125, 125, 71], "frames": [3, 31]},
+    {"sequence": 8, "kind": "smooth", "name": "8-wall", "rect": [16, 16, 60, 30], "frames": [0, 3, 31]},
+    {"sequence": 8, "kind": "smooth", "name": "8-floor", "rect": [192, 177, 40, 56], "frames": [0, 3, 31]},
+    {"sequence": 8, "kind": "edge", "name": "8-chair", "rect": [52, 51, 141, 176], "frames": [3, 31]}
   ]
 }

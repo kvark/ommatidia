@@ -54,6 +54,16 @@ Only development selects models. Confirmation is reserved for Phase 6.
 | 1 | `v4-phase1/flip-smoke` | Score raw GPU outputs including saved control | Pass; learned and self-control FLIP identical. |
 | 1 | `v4-phase1/bootstrap-smoke` | Paired control/learned enriched CSVs | All defined differences and interval endpoints exactly zero; unsupported strata null. |
 | 1 | `v4-phase1/eval-fmt` | Rust formatting | Pass. |
+| 1 | `v4-phase1/v3-release-build` | Locked release control runtime, clean `cf37c0a` | Pass; build manifest retained with source/dependency revisions. |
+| 1 | `v4-phase1/archive-v3-control` | Preserve corrected v3 source, executable, build evidence and weights | Eleven files hash-checked in `runs/archive/v3-runtime/`; checkpoint remains `89e81df0…`. |
+| 1 | `v4-phase1/v3-control-causal` | 640 development frames, causal; historical crop definitions | 30.270709 dB, cold 26.267388; zero validation errors. Superseded by complete crop-coverage run below. |
+| 1 | `v4-phase1/v3-control-reset16` | 640 development frames, resets every 16; historical crops | 29.607780 dB, 40 resets; zero validation errors. Superseded by complete crop-coverage run below. |
+| 1 | `v4-phase1/v3-flip-causal` | Official LDR-FLIP, all 640 frames | Mean 0.10775234; cold 0.16870498, early 0.12633569, warm 0.10374383. |
+| 1 | `v4-phase1/v3-ci-causal` | 1,000 sequence resamples, v3 vs its zero-head guide | PSNR +2.1952 dB [1.8758, 2.5867]; FLIP −0.02385 [−0.03108, −0.01717]. Not a v4 comparison. |
+| 1 | `v4-phase1/v3-crops-causal` | 24 historical selections, v3 vs zero-head guide | Smooth/edge/texture MSE ratios 0.238/0.773/0.139; no early coverage. Superseded by reference-only extension. |
+| 1 | `v4-phase1/flip-smoke-causal` | Official FLIP on separate causal smoke run | Pass; same learned scores as saved-control smoke. |
+| 1 | `v4-phase1/bootstrap-two-runs-smoke` | Compare two separately scored evaluation directories | All defined differences and interval endpoints zero; undefined strata null. |
+| 1 | `v4-phase1/early-crop-tests` | Owner-approved frame-3 reference-only extension | Ten tests pass; all 24 historical selections preserved, sixteen early selections added with reference hashes. |
 
 After the owner merged PR #23, [CI run 36298665573](https://github.com/kvark/ommatidia/actions/runs/36298665573)
 passed all five jobs on `main` at `a153c1e`, including LavaPipe and Linux/macOS/Windows

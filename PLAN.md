@@ -254,6 +254,8 @@ Goal: know where training time goes, and have the metrics that will decide v4.
   references only (`export-references`).
   Recovered all 24 region/frame selections exactly; source hashes and the historical
   coverage limits (frames 0/31, five of ten sequences) are in `docs/dev-crops.json`.
+  Owner approved an early extension: reference-only inspection adds frame 3 to
+  the sixteen unchanged rectangles, before the complete protocol evaluations.
 - [ ] **v3 control.**
   - Build and archive the v3 release runtime (`runs/archive/v3-runtime/`, with a recorded
     build manifest).
