@@ -29,6 +29,8 @@ cargo run --release -p ommatidia-train --bin transport -- \
 Repeat `--data` and `--eval-data` to combine captures with equal dimensions and
 sequence lengths. Training samples sequences uniformly across the combined
 corpus (larger captures contribute more). Evaluation can use another resolution.
+The [Phase 4 corpus procedure](training-corpus.md) records exact membership,
+capture reproduction and admission checks for the expansion to 200 scenes.
 Default training uses eight persistent cursors, each with a fixed 64² LR crop
 and four-frame gradient windows. Each life reserves 8–16 windows where possible;
 its start is uniform among positions that fit that lifetime. Cursors respawn

@@ -6,6 +6,22 @@ Only development selects models. Confirmation is reserved for Phase 6.
 
 | Phase | Run | Budget / purpose | Outcome |
 |---|---|---|---|
+| 4 | `v4-phase4/final-script-tests` | Final arrangement of all Phase 4 verifier fixtures | Eight pass, including header corruption, late-frame visibility failures and numerical admission rejection. |
+| 4 | `v4-phase4/loader-smoke` | Actual mapped-loader admission of the first four-scene capture | Pass: matching hashes, all reference means valid, 180 cold/middle/final crop+gain decodes; no model evaluation or optimizer update. |
+| 4 | `v4-phase4/numerics-tests` | Extend data-verifier tests to truncated files, NaN/Inf, negative and black references | Eight tests pass in the pinned evaluation environment; CI includes them. |
+| 4 | `v4-phase4/data-smoke` | Full numerical scan of the first new static capture | Pass: 256 finite records, nonnegative/nonblack references; peak reference radiance 40.6875. |
+| 4 | `v4-phase4/script-tests-final` | Add fixed-header size/contract rejection | Seven tests pass; subsequently extended with numerical admission fixtures. |
+| 4 | `v4-phase4/format` | Workspace formatting with CPU-only loader admission utility | Pass. |
+| 4 | `v4-phase4/loader-build` | Build CPU-only `check-corpus` against the Phase 3 loader | Pass; no model architecture or training-loop changes. |
+| 4 | `v4-phase4/loader-clippy` | Release Clippy for the admission utility, warnings denied | Pass. |
+| 4 | `v4-phase4/capture-static-00` | Four fresh static scenes × 64 frames | Complete, 118.8 s; zero reported validation errors (release capture). |
+| 4 | `v4-phase4/capture-camera-00` | Four fresh camera-motion scenes × 64 frames | Complete, 118.7 s; nonzero LR/HR motion, zero reported validation errors (release capture). |
+| 4 | `v4-phase4/capture-objects-00` | Four fresh object-motion scenes × 64 frames | Complete; final full-corpus admission pending. |
+| 4 | `v4-phase4/capture-lights-00` | Four fresh moving-light scenes × 64 frames | Running. |
+| 4 | `v4-phase4/script-tests` | Seed derivation, nested ancestry, command preservation, visibility, no-overwrite and hash rejection | Six tests pass. |
+| 4 | `v4-phase4/preflight-run` | Before capture: seed/family splits, protected hashes, archived executable and space | Pass: 160 new seeds disjoint from 305 prior seeds across 943 provenance sources; exact archive binary; 42,077,260,288 capture bytes planned. |
+| 4 | `v4-phase4/capture-run` | Sequential orchestration of 40 recorded four-scene capture batches | Running; per-batch results recorded separately. No training/evaluation. |
+| 4 | `v4-phase4/clean-debug` | Make room for the planned 160-scene capture | Removed 49.8 GiB of regenerable debug build artifacts only; 59 GiB free, release runtimes/data/evidence preserved. |
 | 3 | `v4-phase3/final-gallery-check` | README/gallery consistency after throughput/docs update | Pass; historical images, checkpoint and frozen selections unchanged. |
 | 3 | `v4-phase3/causal-comparison` | Reference-hashed paired comparison against frozen v3; 1,000 sequence resamples | PSNR −5.632 dB [−6.523, −4.935]; FLIP +0.124952 [+0.106281, +0.144641]. This smoke checkpoint is not promoted; temporal difference inconclusive. |
 | 3 | `v4-phase3/flip-causal` | Official FLIP on independently reloaded 640-frame development output | Mean 0.232705, cold 0.304717, warm 0.229213; all float outputs finite/nonnegative. Not promoted. |

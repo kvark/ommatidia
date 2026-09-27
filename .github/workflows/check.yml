@@ -91,6 +91,7 @@ jobs:
         run: |
           python3 -m venv target/evaluation-env
           target/evaluation-env/bin/pip install -r scripts/evaluation-requirements.txt
+          target/evaluation-env/bin/python scripts/test-phase4-corpus.py
           target/evaluation-env/bin/python scripts/test-flip.py --reference-dir target/flip-reference
       - name: Check published result evidence
         working-directory: ommatidia
