@@ -22,7 +22,7 @@ def main():
     base = [str(args.binary), "--eval-data", str(args.eval_data)]
     train = args.out / "train"
     subprocess.run(base + ["--data", str(args.train_data), "--out", str(train),
-                          "--steps", "2", "--channels", "4", "--eval-every", "1"], check=True)
+                          "--steps", "2", "--channels", "4", "--unroll", "2", "--eval-every", "1"], check=True)
     checkpoint = train / "model.safetensors"
     base += ["--eval-only", "--checkpoint", str(checkpoint), "--save-linear"]
     causal = args.out / "causal"

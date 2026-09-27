@@ -11,13 +11,10 @@ struct Params {
     w: u32,
     h: u32,
     scale: u32,
-    level: u32,
+    state_channels: u32,
     ready: u32,
     exposure: f32,
-    diffuse_frames: f32,
-    specular_frames: f32,
     jitter: [f32; 2],
-    pad: [u32; 2],
 }
 #[derive(blade_macros::ShaderData)]
 struct Data {
@@ -25,12 +22,19 @@ struct Data {
     rays: gpu::BufferPiece,
     surfaces: gpu::BufferPiece,
     previous: gpu::BufferPiece,
-    candidates: gpu::BufferPiece,
     features: gpu::BufferPiece,
     history: gpu::BufferPiece,
-    prior: gpu::BufferPiece,
-    moments: gpu::BufferPiece,
-    ages: gpu::BufferPiece,
+    metadata: gpu::BufferPiece,
+    valid: gpu::BufferPiece,
+    exposure: gpu::BufferPiece,
+    warp0: gpu::BufferPiece,
+    warp1: gpu::BufferPiece,
+    warp2: gpu::BufferPiece,
+    warp3: gpu::BufferPiece,
+    coeff0: gpu::BufferPiece,
+    coeff1: gpu::BufferPiece,
+    coeff2: gpu::BufferPiece,
+    coeff3: gpu::BufferPiece,
     image: gpu::BufferPiece,
     next: gpu::BufferPiece,
     output: gpu::BufferPiece,
@@ -42,10 +46,8 @@ pub struct Native {
     pub network: graph::Network,
     config: Config,
     low: [u32; 2],
-    pipelines: [gpu::ComputePipeline; 4],
+    pipelines: [gpu::ComputePipeline; 2],
     state: [gpu::Buffer; 2],
-    moments: gpu::Buffer,
-    ages: gpu::Buffer,
     rays: gpu::Buffer,
     surfaces: gpu::Buffer,
     output: gpu::Buffer,
@@ -77,7 +79,7 @@ impl Native {
             naga_module: None,
         });
         let layout = <Data as gpu::ShaderData>::layout();
-        let pipelines = ["seed", "atrous", "pack", "resolve"].map(|name| {
+        let pipelines = ["pack", "resolve"].map(|name| {
             context.create_compute_pipeline(gpu::ComputePipelineDesc {
                 name,
                 data_layouts: &[&layout],
@@ -93,11 +95,15 @@ impl Native {
             })
         };
         let state = [
-            buffer("lobe-state-a", (n * std::mem::size_of::<State>()) as u64),
-            buffer("lobe-state-b", (n * std::mem::size_of::<State>()) as u64),
+            buffer(
+                "recurrent-state-a",
+                (n * config.state_channels() * 4) as u64,
+            ),
+            buffer(
+                "recurrent-state-b",
+                (n * config.state_channels() * 4) as u64,
+            ),
         ];
-        let moments = buffer("lobe-moments", (n * 16) as u64);
-        let ages = buffer("lobe-ages", (n * 8) as u64);
         let rays = buffer(
             "observation-upload",
             (low[0] * low[1]) as u64 * std::mem::size_of::<Ray>() as u64,
@@ -115,8 +121,6 @@ impl Native {
             low,
             pipelines,
             state,
-            moments,
-            ages,
             rays,
             surfaces,
             output,
@@ -142,7 +146,7 @@ impl Native {
         self.session.memory_summary().total_allocated_bytes()
             + low_texels * std::mem::size_of::<Ray>()
             + high_texels
-                * (2 * std::mem::size_of::<State>() + std::mem::size_of::<Surface>() + 16 + 8 + 16)
+                * (2 * self.config.state_channels() * 4 + std::mem::size_of::<Surface>() + 16)
     }
     pub fn sync_parameters(&mut self, source: &meganeura::Session) {
         let names: Vec<_> = self
@@ -161,33 +165,37 @@ impl Native {
         surfaces: gpu::BufferPiece,
         output: gpu::BufferPiece,
         jitter: [f32; 2],
-        level: u32,
+        exposure: f32,
     ) -> Data {
         Data {
             params: Params {
                 w: self.low[0],
                 h: self.low[1],
                 scale: self.config.scale,
-                level,
+                state_channels: self.config.state_channels() as u32,
                 ready: u32::from(self.ready),
-                exposure: self.config.exposure,
-                diffuse_frames: self.config.diffuse_frames,
-                specular_frames: self.config.specular_frames,
+                exposure,
                 jitter,
-                pad: [0; 2],
             },
             rays,
             surfaces,
             previous: self.state[self.current].into(),
             next: self.state[1 - self.current].into(),
-            moments: self.moments.into(),
-            ages: self.ages.into(),
             output,
-            candidates: self.session.input_buffer("f0.candidates").unwrap(),
             features: self.session.input_buffer("f0.features").unwrap(),
             history: self.session.input_buffer("f0.history").unwrap(),
-            prior: self.session.input_buffer("f0.prior").unwrap(),
-            image: self.session.output_buffer(0).unwrap(),
+            metadata: self.session.input_buffer("f0.metadata").unwrap(),
+            valid: self.session.input_buffer("f0.valid").unwrap(),
+            exposure: self.session.input_buffer("f0.exposure").unwrap(),
+            warp0: self.session.input_buffer("f0.warp0").unwrap(),
+            warp1: self.session.input_buffer("f0.warp1").unwrap(),
+            warp2: self.session.input_buffer("f0.warp2").unwrap(),
+            warp3: self.session.input_buffer("f0.warp3").unwrap(),
+            coeff0: self.session.input_buffer("f0.coeff0").unwrap(),
+            coeff1: self.session.input_buffer("f0.coeff1").unwrap(),
+            coeff2: self.session.input_buffer("f0.coeff2").unwrap(),
+            coeff3: self.session.input_buffer("f0.coeff3").unwrap(),
+            image: self.session.output_buffer(2).unwrap(),
         }
     }
     fn dispatch(&self, encoder: &mut gpu::CommandEncoder, stage: usize, data: &Data) {
@@ -207,23 +215,12 @@ impl Native {
         rays: gpu::BufferPiece,
         surfaces: gpu::BufferPiece,
         jitter: [f32; 2],
+        exposure: f32,
     ) {
         self.dispatch(
             encoder,
             0,
-            &self.data(rays, surfaces, self.output.into(), jitter, 0),
-        );
-        for level in 1..SCALES {
-            self.dispatch(
-                encoder,
-                1,
-                &self.data(rays, surfaces, self.output.into(), jitter, level as u32),
-            );
-        }
-        self.dispatch(
-            encoder,
-            2,
-            &self.data(rays, surfaces, self.output.into(), jitter, 0),
+            &self.data(rays, surfaces, self.output.into(), jitter, exposure),
         );
     }
     /// Record after the network submission; output is `width*height` linear RGBA f32.
@@ -235,8 +232,8 @@ impl Native {
     ) {
         self.dispatch(
             encoder,
-            3,
-            &self.data(self.rays.into(), surfaces, output, [0.0; 2], 0),
+            1,
+            &self.data(self.rays.into(), surfaces, output, [0.0; 2], 1.0),
         );
         self.current = 1 - self.current;
         self.ready = true;
@@ -288,6 +285,7 @@ impl Native {
             self.rays.into(),
             self.surfaces.into(),
             frame.jitter,
+            frame.exposure,
         );
         let sync = self.context.submit(&mut encoder);
         if !self
@@ -330,15 +328,15 @@ impl Native {
         Ok(())
     }
     /// Offline readback after a completed process/resolve. These are the actual
-    /// per-lobe reprojection masks fed to the predictor, not learned gate values.
+    /// geometric reprojection validity, not a learned alpha or rejection test.
     pub fn read_history_validity(&self) -> Vec<f32> {
         let n = (self.low[0] * self.low[1] * self.config.scale.pow(2)) as usize;
-        self.read_features()[42 * n..44 * n].to_vec()
+        self.read_input("f0.valid", n)
     }
     /// Offline parity check of the actual inputs prepared by WGSL.
     pub fn read_features(&self) -> Vec<f32> {
-        let n = (self.low[0] * self.low[1] * self.config.scale.pow(2)) as usize;
-        self.read_input("f0.features", FEATURES * n)
+        let lr = (self.low[0] * self.low[1]) as usize;
+        self.read_input("f0.features", self.config.observation_channels() * lr)
     }
     fn read_input(&self, name: &str, len: usize) -> Vec<f32> {
         let buffer = self
@@ -353,36 +351,43 @@ impl Native {
         self.session.read_buffer(buffer, &mut values);
         values
     }
-    /// Offline training readback immediately after `advance(frame)`. `previous`
-    /// is the state before that step (empty after reset). Reuse native
-    /// preparation; only the differentiable gather maps need CPU expansion.
-    pub fn read_prepared(&self, frame: &Frame, previous: &[State]) -> cpu::Prepared {
+    /// Offline training readback after `advance(frame)`. Maps are generated by
+    /// WGSL, not reconstructed on the CPU. Phase 3 replaces this readback loop.
+    pub fn read_prepared(&self, frame: &Frame) -> cpu::Prepared {
         assert_eq!(frame.low, self.low);
         let n = frame.surfaces.len();
-        let features = self.read_features();
-        let validity = features[42 * n..44 * n].to_vec();
-        let (indices, coefficients) = cpu::history_maps(frame, previous, self.config);
+        let state_len = n * self.config.state_channels();
         cpu::Prepared {
-            features,
-            validity,
-            candidates: self.read_input("f0.candidates", SCALES * 6 * n),
-            history: self.read_input("f0.history", 6 * n),
-            prior: self.read_input("f0.prior", CANDIDATES * 2 * n),
-            moments: unsafe {
-                std::slice::from_raw_parts(self.moments.data().cast::<[f32; 4]>(), n).to_vec()
-            },
-            ages: unsafe {
-                std::slice::from_raw_parts(self.ages.data().cast::<[f32; 2]>(), n).to_vec()
-            },
-            indices,
-            coefficients,
+            features: self.read_features(),
+            validity: self.read_history_validity(),
+            history: self.read_input("f0.history", state_len),
+            metadata: self.read_input("f0.metadata", 7 * n),
+            exposure: self.read_input("f0.exposure", 1)[0],
+            indices: std::array::from_fn(|k| {
+                self.read_input(&format!("f0.warp{k}"), state_len)
+                    .into_iter()
+                    .map(f32::to_bits)
+                    .collect()
+            }),
+            coefficients: std::array::from_fn(|k| {
+                self.read_input(&format!("f0.coeff{k}"), state_len)
+            }),
         }
     }
     /// Only call after waiting for the resolve submission.
-    pub fn read_state(&self) -> Vec<State> {
+    pub fn read_state(&self) -> State {
         let n = (self.low[0] * self.low[1] * self.config.scale.pow(2)) as usize;
-        unsafe {
-            std::slice::from_raw_parts(self.state[self.current].data().cast::<State>(), n).to_vec()
+        if !self.ready {
+            return State::default();
+        }
+        State {
+            values: unsafe {
+                std::slice::from_raw_parts(
+                    self.state[self.current].data().cast::<f32>(),
+                    n * self.config.state_channels(),
+                )
+                .to_vec()
+            },
         }
     }
 }
@@ -392,13 +397,11 @@ impl Drop for Native {
         for p in &mut self.pipelines {
             self.context.destroy_compute_pipeline(p);
         }
-        for b in self.state.into_iter().chain([
-            self.moments,
-            self.ages,
-            self.rays,
-            self.surfaces,
-            self.output,
-        ]) {
+        for b in self
+            .state
+            .into_iter()
+            .chain([self.rays, self.surfaces, self.output])
+        {
             self.context.destroy_buffer(b);
         }
     }

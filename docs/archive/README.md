@@ -7,6 +7,7 @@
 |---|---|---|
 | `archive/experiments-2026-09-25` | `e0922c639194eefff09334c800b99971de7c81af` | Retired architectures, preserved in Git only. |
 | `archive/v3-published-runtime` | `049a7bde6bea1a61bac45c3b5966163ddb252467` | Pre-fix v3 source underlying the retained README gallery. |
+| `archive/v3-guide-residual` (local tag) | `763644cd8de1696723161c2687a829fd0b117214` | Last v3 tree, including the verified Phase 1 control. Only feature branches are pushed; this merged source commit is already reachable from `main`. |
 
 ## Reproduce the retained gallery
 

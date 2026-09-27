@@ -1,5 +1,5 @@
-//! Shared local spatial core with lobe-specific reconstruction heads.
-//! Short unrolls differentiate through radiance reprojection, not camera geometry.
+//! One biased U-Net predicts spatial radiance, history gates and recurrent latent.
+//! Reprojection of both radiance and latent is differentiated through the unroll.
 use super::*;
 use meganeura::{Graph, NodeId};
 
@@ -53,9 +53,14 @@ fn filled(g: &mut Graph, x: NodeId, value: f32) -> NodeId {
     let shape = g.node(x).ty.shape.clone();
     g.constant(vec![value; shape.iter().product()], &shape)
 }
-fn compress(g: &mut Graph, x: NodeId, e: f32) -> NodeId {
+fn broadcast(g: &mut Graph, scalar: NodeId, len: usize) -> NodeId {
+    let x = g.reshape(scalar, &[1, 1]);
+    let x = g.broadcast_inner(x, len);
+    g.reshape(x, &[len])
+}
+fn compress(g: &mut Graph, x: NodeId, e: NodeId) -> NodeId {
     let x = g.relu(x);
-    let scale = filled(g, x, e);
+    let scale = broadcast(g, e, g.node(x).ty.num_elements());
     let v = g.mul(x, scale);
     let one = filled(g, v, 1.0);
     let den = g.add(v, one);
@@ -81,12 +86,12 @@ fn rgb_weights(g: &mut Graph, weight: NodeId, slots: u32, spatial: u32) -> NodeI
     let s = g.concat(s, w[1], 1, 2 * slots, slots, spatial);
     g.concat(d, s, 1, 3 * slots, 3 * slots, spatial)
 }
-fn warp(g: &mut Graph, image: NodeId, maps: &[(NodeId, NodeId); 4], n: usize) -> NodeId {
-    let table = g.reshape(image, &[6 * n, 1]);
+fn warp(g: &mut Graph, image: NodeId, maps: &[(NodeId, NodeId); 4], len: usize) -> NodeId {
+    let table = g.reshape(image, &[len, 1]);
     let mut sum = None;
     for &(indices, coefficients) in maps {
         let tap = g.embedding(indices, table);
-        let tap = g.reshape(tap, &[6 * n]);
+        let tap = g.reshape(tap, &[len]);
         let tap = g.mul(tap, coefficients);
         sum = Some(match sum {
             None => tap,
@@ -103,34 +108,54 @@ fn scaled_mse(g: &mut Graph, a: NodeId, b: NodeId, scale: NodeId) -> NodeId {
 
 fn decode(
     g: &mut Graph,
-    spatial: NodeId,
+    z: NodeId,
     history: NodeId,
-    history_weight: NodeId,
-    residual: NodeId,
-    exposure: f32,
+    alpha_rgb: NodeId,
+    exposure: NodeId,
 ) -> NodeId {
-    // `spatial` already contains its (1-h) weight. Correct only this incoming
-    // observation, then accumulate it; a post-blend residual is added again
-    // every frame and amplifies a stationary bias by the history length.
-    // Keep the innovation signed so dimming can remove obsolete history.
-    let one = filled(g, history_weight, 1.0);
-    let negative = g.neg(history_weight);
+    // Pinned Meganeura's Clamp is inference-only. Explicit piecewise selection
+    // has the same value and derivative (away from the two nondifferentiable
+    // endpoints). Greater has zero derivative. Unlike subtracting nested ReLUs,
+    // this preserves logits inside the interval bit-for-bit in f32.
+    let low = filled(g, z, -16.0);
+    let high = filled(g, z, 11.0);
+    let below = g.greater(low, z);
+    let above = g.greater(z, high);
+    let outside = g.add(below, above);
+    let neg = g.neg(outside);
+    let one = filled(g, z, 1.0);
+    let inside = g.add(one, neg);
+    let interior = g.mul(inside, z);
+    let bottom = g.mul(below, low);
+    let top = g.mul(above, high);
+    let boundary = g.add(bottom, top);
+    let z = g.add(interior, boundary);
+    let spatial = g.exp(z);
+    let scale = broadcast(g, exposure, g.node(spatial).ty.num_elements());
+    let spatial = g.div(spatial, scale);
+    let one = filled(g, alpha_rgb, 1.0);
+    let negative = g.neg(alpha_rgb);
     let incoming_weight = g.add(one, negative);
-    let floor = filled(g, spatial, 1.0 / exposure);
-    let floor = g.mul(incoming_weight, floor);
-    let amplitude = g.add(spatial, floor);
-    let scale = filled(g, spatial, 0.1);
-    let amplitude = g.mul(amplitude, scale);
-    let correction = g.mul(residual, amplitude);
-    let corrected = g.add(spatial, correction);
-    let retained = g.mul(history_weight, history);
-    let accumulated = g.add(corrected, retained);
-    g.relu(accumulated)
+    let incoming = g.mul(incoming_weight, spatial);
+    let retained = g.mul(alpha_rgb, history);
+    g.add(incoming, retained)
 }
 
 /// `unroll == 0` builds inference; positive values build a tied-weight training
-/// graph. Geometry, rejection maps and moments are detached, radiance is not.
+/// graph. Geometry is detached, radiance and latent are not. Outputs are
+/// `[lobes, latent, state]` for inference and `[loss, lobes, latent, state]`
+/// for training. Meganeura differentiates only output zero (the scalar loss).
 pub fn build(config: Config, low: [u32; 2], unroll: usize) -> Result<Network, String> {
+    build_with_debug(config, low, unroll, false)
+}
+
+/// Append the final frame's two alpha planes for diagnostics, never as an input.
+pub fn build_with_debug(
+    config: Config,
+    low: [u32; 2],
+    unroll: usize,
+    debug_alpha: bool,
+) -> Result<Network, String> {
     config.validate(low)?;
     if unroll > 8 {
         return Err("unroll must be at most eight".into());
@@ -138,6 +163,8 @@ pub fn build(config: Config, low: [u32; 2], unroll: usize) -> Result<Network, St
     let slots = config.scale.pow(2);
     let spatial = low[0] * low[1];
     let n = (slots * spatial) as usize;
+    let state_channels = config.state_channels() as u32;
+    let state_len = config.state_channels() * n;
     let mut b = Builder::new();
     let objective_weights: Option<[NodeId; 5]> = (unroll > 0).then(|| {
         let input = b.g.input("loss.weights", &[5]);
@@ -146,67 +173,109 @@ pub fn build(config: Config, low: [u32; 2], unroll: usize) -> Result<Network, St
     let mut previous = None;
     let mut previous_target = None;
     let mut total_loss = None;
+    let mut final_outputs = Vec::new();
     for frame in 0..unroll.max(1) {
         let tag = format!("f{frame}");
-        let features = b.g.input(&format!("{tag}.features"), &[FEATURES * n]);
+        let features = b.g.input(
+            &format!("{tag}.features"),
+            &[config.observation_channels() * spatial as usize],
+        );
+        let exposure = b.g.input(&format!("{tag}.exposure"), &[1]);
+        let valid = b.g.input(&format!("{tag}.valid"), &[n]);
+        let metadata = b.g.input(&format!("{tag}.metadata"), &[7 * n]);
         let maps = std::array::from_fn(|k| {
-            if frame == 0 {
-                (0, 0)
-            } else {
-                (
-                    b.g.input_u32(&format!("{tag}.warp{k}"), &[6 * n]),
-                    b.g.input(&format!("{tag}.coeff{k}"), &[6 * n]),
-                )
-            }
+            (
+                b.g.input_u32(&format!("{tag}.warp{k}"), &[state_len]),
+                b.g.input(&format!("{tag}.coeff{k}"), &[state_len]),
+            )
         });
-        let history = match previous {
-            Some(image) => warp(&mut b.g, image, &maps, n),
-            None => b.g.input(&format!("{tag}.history"), &[6 * n]),
+        let previous_state = match previous {
+            Some(state) => state,
+            None => b.g.input(&format!("{tag}.history"), &[state_len]),
         };
-        let hc = compress(&mut b.g, history, config.exposure);
-        let input =
-            b.g.concat(features, hc, 1, FEATURES as u32 * slots, 6 * slots, spatial);
+        let warped = warp(&mut b.g, previous_state, &maps, state_len);
+        let history =
+            b.g.split_a(warped, 1, 6 * slots, (state_channels - 6) * slots, spatial);
+        let rest =
+            b.g.split_b(warped, 1, 6 * slots, (state_channels - 6) * slots, spatial);
+        let state_features = b.g.split_a(
+            rest,
+            1,
+            (config.latent_channels + 4) * slots,
+            3 * slots,
+            spatial,
+        );
+        let hc = compress(&mut b.g, history, exposure);
+        let recurrent = b.g.concat(
+            hc,
+            state_features,
+            1,
+            6 * slots,
+            (config.latent_channels + 4) * slots,
+            spatial,
+        );
+        let recurrent = b.g.concat(
+            recurrent,
+            valid,
+            1,
+            (config.latent_channels + 10) * slots,
+            slots,
+            spatial,
+        );
+        let input = b.g.concat(
+            features,
+            recurrent,
+            1,
+            config.observation_channels() as u32,
+            (config.latent_channels + 11) * slots,
+            spatial,
+        );
         let features = b.encode(
             input,
             "adapter.observation",
-            (FEATURES as u32 + 6) * slots,
+            config.input_channels() as u32,
             low,
             config.channels,
+            config.levels,
         );
-        let residual = b.conv(
+        let shape = [config.channels, low[0], low[1]];
+        let z = b.head(features, "head.radiance", shape, 6 * slots, 0.0);
+        let a = b.head(features, "head.alpha", shape, 2 * slots, 4.0_f32.ln());
+        let s = b.head(
             features,
-            "head.radiance",
-            [config.channels, low[0], low[1]],
-            6 * slots,
+            "head.latent",
+            shape,
+            config.latent_channels * slots,
+            0.0,
+        );
+        let latent = b.g.tanh(s);
+        let alpha = b.g.sigmoid(a);
+        let valid2 = b.g.concat(valid, valid, 1, slots, slots, spatial);
+        let alpha = b.g.mul(alpha, valid2);
+        let alpha_rgb = rgb_weights(&mut b.g, alpha, slots, spatial);
+        let image = decode(&mut b.g, z, history, alpha_rgb, exposure);
+        let state = b.g.concat(
+            image,
+            latent,
             1,
-            true,
+            6 * slots,
+            config.latent_channels * slots,
+            spatial,
         );
-        let prior = b.g.input(&format!("{tag}.prior"), &[CANDIDATES * 2 * n]);
-        let ws = split(&mut b.g, prior, CANDIDATES as u32, 2 * slots, spatial);
-        let candidates = b.g.input(&format!("{tag}.candidates"), &[SCALES * 6 * n]);
-        let candidates = split(&mut b.g, candidates, SCALES as u32, 6 * slots, spatial);
-        let mut image = None;
-        for k in 0..SCALES {
-            let w = ws[k];
-            let wrgb = rgb_weights(&mut b.g, w, slots, spatial);
-            let part = b.g.mul(wrgb, candidates[k]);
-            image = Some(match image {
-                None => part,
-                Some(a) => b.g.add(a, part),
-            });
+        let state = b.g.concat(
+            state,
+            metadata,
+            1,
+            (6 + config.latent_channels) * slots,
+            7 * slots,
+            spatial,
+        );
+        previous = Some(state);
+        final_outputs = vec![image, latent, state];
+        if debug_alpha {
+            final_outputs.push(alpha);
         }
-        let history_weight = rgb_weights(&mut b.g, ws[SCALES], slots, spatial);
-        let image = decode(
-            &mut b.g,
-            image.unwrap(),
-            history,
-            history_weight,
-            residual,
-            config.exposure,
-        );
-        previous = Some(image);
         if unroll == 0 {
-            b.g.set_outputs(vec![image]);
             break;
         }
         let target = b.g.input(&format!("{tag}.target"), &[6 * n]);
@@ -217,10 +286,10 @@ pub fn build(config: Config, low: [u32; 2], unroll: usize) -> Result<Network, St
         let rgb = b.g.add(diffuse, lobes[1]);
         let spatial_image = b.g.add(rgb, emission);
         let spatial_target = b.g.input(&format!("{tag}.rgb.target"), &[3 * n]);
-        let spatial_scale = filled(&mut b.g, spatial_image, config.exposure);
+        let spatial_scale = broadcast(&mut b.g, exposure, 3 * n);
         let color_channels = 3;
-        let encoded = compress(&mut b.g, spatial_image, config.exposure);
-        let encoded_target = compress(&mut b.g, spatial_target, config.exposure);
+        let encoded = compress(&mut b.g, spatial_image, exposure);
+        let encoded_target = compress(&mut b.g, spatial_target, exposure);
         let [
             compressed_weight,
             physical_weight,
@@ -232,8 +301,8 @@ pub fn build(config: Config, low: [u32; 2], unroll: usize) -> Result<Network, St
         let mut loss = b.g.mul(loss, compressed_weight);
         // RGB alone cannot identify diffuse/specular energy: opposite lobe
         // errors can cancel after material composition but pollute recurrence.
-        let encoded_lobes = compress(&mut b.g, image, config.exposure);
-        let encoded_target_lobes = compress(&mut b.g, target, config.exposure);
+        let encoded_lobes = compress(&mut b.g, image, exposure);
+        let encoded_target_lobes = compress(&mut b.g, target, exposure);
         let lobe_loss = b.g.mse_loss(encoded_lobes, encoded_target_lobes);
         let lobe_loss = b.g.mul(lobe_loss, lobe_weight);
         loss = b.g.add(loss, lobe_loss);
@@ -264,21 +333,37 @@ pub fn build(config: Config, low: [u32; 2], unroll: usize) -> Result<Network, St
         let lf = b.g.mul(lf, low_frequency_weight);
         loss = b.g.add(loss, lf);
         if let Some(old_target) = previous_target {
-            let reference_history = warp(&mut b.g, old_target, &maps, n);
-            let current = compress(&mut b.g, image, config.exposure);
-            let old = compress(&mut b.g, history, config.exposure);
-            let truth = compress(&mut b.g, target, config.exposure);
-            let old_truth = compress(&mut b.g, reference_history, config.exposure);
+            let reference_history = warp(&mut b.g, old_target, &maps, state_len);
+            let reference_history = b.g.split_a(
+                reference_history,
+                1,
+                6 * slots,
+                (state_channels - 6) * slots,
+                spatial,
+            );
+            let current = compress(&mut b.g, image, exposure);
+            let old = compress(&mut b.g, history, exposure);
+            let truth = compress(&mut b.g, target, exposure);
+            let old_truth = compress(&mut b.g, reference_history, exposure);
             let neg = b.g.neg(old);
             let change = b.g.add(current, neg);
             let neg = b.g.neg(old_truth);
             let expected = b.g.add(truth, neg);
-            let valid = b.g.input(&format!("{tag}.temporal_mask"), &[6 * n]);
-            let tl = scaled_mse(&mut b.g, change, expected, valid);
+            let valid_rgb = rgb_weights(&mut b.g, valid2, slots, spatial);
+            let tl = scaled_mse(&mut b.g, change, expected, valid_rgb);
             let tl = b.g.mul(tl, temporal_weight);
             loss = b.g.add(loss, tl);
         }
-        previous_target = Some(target);
+        let zeros =
+            b.g.constant(vec![0.0; state_len - 6 * n], &[state_len - 6 * n]);
+        previous_target = Some(b.g.concat(
+            target,
+            zeros,
+            1,
+            6 * slots,
+            (state_channels - 6) * slots,
+            spatial,
+        ));
         total_loss = Some(match total_loss {
             None => loss,
             Some(s) => b.g.add(s, loss),
@@ -287,8 +372,9 @@ pub fn build(config: Config, low: [u32; 2], unroll: usize) -> Result<Network, St
     if let Some(loss) = total_loss {
         let divisor = b.g.scalar(unroll as f32);
         let loss = b.g.div(loss, divisor);
-        b.g.set_outputs(vec![loss]);
+        final_outputs.insert(0, loss);
     }
+    b.g.set_outputs(final_outputs);
     Ok(Network {
         graph: b.g,
         params: b.params,
@@ -305,25 +391,17 @@ pub fn feed(
 ) {
     LossWeights::default().feed(session);
     session.set_input(&format!("{tag}.features"), &p.features);
-    session.set_input(&format!("{tag}.candidates"), &p.candidates);
-    session.set_input(&format!("{tag}.prior"), &p.prior);
+    session.set_input(&format!("{tag}.exposure"), &[p.exposure]);
+    session.set_input(&format!("{tag}.valid"), &p.validity);
+    session.set_input(&format!("{tag}.metadata"), &p.metadata);
     if frame == 0 {
         session.set_input(&format!("{tag}.history"), &p.history);
-    } else {
-        for k in 0..4 {
-            session.set_input_u32(&format!("{tag}.warp{k}"), &p.indices[k]);
-            session.set_input(&format!("{tag}.coeff{k}"), &p.coefficients[k]);
-        }
+    }
+    for k in 0..4 {
+        session.set_input_u32(&format!("{tag}.warp{k}"), &p.indices[k]);
+        session.set_input(&format!("{tag}.coeff{k}"), &p.coefficients[k]);
     }
     session.set_input(&format!("{tag}.target"), &target.lobes);
-    if frame != 0 {
-        let n = p.history.len() / 6;
-        let mut mask = vec![0.0; 6 * n];
-        for c in 0..6 {
-            mask[c * n..(c + 1) * n].copy_from_slice(&p.validity[c / 3 * n..(c / 3 + 1) * n]);
-        }
-        session.set_input(&format!("{tag}.temporal_mask"), &mask);
-    }
 }
 
 /// Material inputs are exact observations already available to the runtime.
@@ -361,50 +439,54 @@ mod tests {
 
     fn decoder() -> Graph {
         let mut g = Graph::new();
-        let spatial = g.input("spatial", &[1]);
+        let z = g.input("z", &[1]);
         let history = g.input("history", &[1]);
-        let h = g.input("h", &[1]);
-        let residual = g.input("residual", &[1]);
-        let out = decode(&mut g, spatial, history, h, residual, 1.0);
+        let alpha = g.input("alpha", &[1]);
+        let exposure = g.input("exposure", &[1]);
+        let out = decode(&mut g, z, history, alpha, exposure);
         g.set_outputs(vec![out]);
         g
     }
 
     #[test]
-    fn residual_is_accumulated_once_in_a_long_stationary_history() {
+    fn direct_decoder_matches_scalar_and_exposure_units() {
         let g = decoder();
-        for cap in [1.0_f32, 8.0, 32.0] {
-            for residual in [-20.0_f32, -1.0, 1.0, 10.0] {
-                let mut previous = 0.0_f32;
-                let mut feeds = Feeds::new();
-                for step in 1..=256 {
-                    let h = 1.0 - 1.0 / (step as f32).min(cap);
-                    feeds.set("spatial", &[1.0 - h]);
-                    feeds.set("history", &[previous]);
-                    feeds.set("h", &[h]);
-                    feeds.set("residual", &[residual]);
-                    previous = evaluate_outputs(&g, &feeds).unwrap()[0].data[0] as f32;
-                    assert!(
-                        (previous - (1.0 + 0.2 * residual).max(0.0)).abs() < 1e-5,
-                        "cap {cap}, residual {residual}, step {step}: {previous}"
-                    );
-                }
+        for alpha in [0.0_f32, 0.8, 1.0] {
+            for k in [1.0_f32, 8.0] {
+                let mut f = Feeds::new();
+                f.set("z", &[0.25]);
+                f.set("history", &[3.0 * k]);
+                f.set("alpha", &[alpha]);
+                f.set("exposure", &[2.0 / k]);
+                let actual = evaluate_outputs(&g, &f).unwrap()[0].data[0];
+                let expected =
+                    k as f64 * ((1.0 - alpha as f64) * 0.25_f64.exp() / 2.0 + alpha as f64 * 3.0);
+                assert!((actual - expected).abs() < 1e-5);
             }
         }
     }
 
     #[test]
-    fn signed_innovation_can_remove_obsolete_history_without_negative_output() {
-        let g = decoder();
-        let mut feeds = Feeds::new();
-        feeds.set("spatial", &[0.25]);
-        feeds.set("history", &[2.0]);
-        feeds.set("h", &[0.75]);
-        feeds.set("residual", &[-100.0]);
-        assert_eq!(evaluate_outputs(&g, &feeds).unwrap()[0].data[0], 0.0);
-        feeds.set("residual", &[0.0]);
-        assert_eq!(evaluate_outputs(&g, &feeds).unwrap()[0].data[0], 1.75);
-        feeds.set("residual", &[-30.0]);
-        assert!((evaluate_outputs(&g, &feeds).unwrap()[0].data[0] - 0.25).abs() < 1e-6);
+    fn log_clamp_stays_bounded_and_has_the_piecewise_derivative() {
+        let mut g = Graph::new();
+        let z = g.parameter("z", &[1]);
+        let zero = g.constant(vec![0.0], &[1]);
+        let one = g.constant(vec![1.0], &[1]);
+        let out = decode(&mut g, z, zero, zero, one);
+        g.set_outputs(vec![out]);
+        let backward = meganeura::autodiff::differentiate(&g);
+        for value in [-1e20_f32, -17.0, -15.0, 0.25, 10.0, 12.0, 1e20] {
+            let mut feeds = Feeds::new();
+            feeds.set("z", &[value]);
+            let got = evaluate_outputs(&backward, &feeds).unwrap();
+            let want = f64::from(value).clamp(-16.0, 11.0).exp();
+            assert!((got[0].data[0] - want).abs() <= 1e-12 * want);
+            let grad = if (-16.0..11.0).contains(&value) {
+                want
+            } else {
+                0.0
+            };
+            assert!((got[1].data[0] - grad).abs() <= 1e-12 * want);
+        }
     }
 }

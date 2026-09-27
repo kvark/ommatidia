@@ -1,5 +1,5 @@
 //! Recurrent, lobe-separated neural reconstruction from sparse path samples.
-//! One radiance-residual U-Net; GPU preparation and history stay scene-linear.
+//! One direct-radiance recurrent U-Net; output and radiance history are scene-linear.
 pub mod dataset;
 pub mod gpu;
 pub mod metrics;

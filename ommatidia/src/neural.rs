@@ -1,9 +1,10 @@
-//! Local image pyramid for the recurrent radiance-residual reconstructor.
+//! Biased local image pyramid for the recurrent direct-radiance reconstructor.
 use meganeura::{Graph, NodeId};
 use std::collections::BTreeMap;
 
 pub enum InitKind {
     Zeros,
+    Constant(f32),
     Kaiming { fan_in: usize },
 }
 pub struct ParamInit {
@@ -45,6 +46,7 @@ impl Network {
         for p in &self.params {
             let values: Vec<_> = match &p.kind {
                 InitKind::Zeros => vec![0.0; p.len],
+                InitKind::Constant(value) => vec![*value; p.len],
                 InitKind::Kaiming { fan_in } => (0..p.len)
                     .map(|_| rng.normal() * (2.0 / *fan_in as f32).sqrt())
                     .collect(),
@@ -97,8 +99,8 @@ impl Builder {
     ) -> NodeId {
         let [input, w, h] = shape;
         let kernel = if zero { 1 } else { 3 };
-        let weight = self.parameter(name, out, input, kernel, zero);
-        self.g.conv2d(
+        let weight = self.parameter(&format!("{name}.weight"), out, input, kernel, zero);
+        let result = self.g.conv2d(
             x,
             weight,
             1,
@@ -110,15 +112,32 @@ impl Builder {
             kernel,
             stride,
             kernel / 2,
-        )
+        );
+        let bias = self.parameter(&format!("{name}.bias"), out, 1, 1, true);
+        self.g
+            .add_per_channel(result, bias, out, w.div_ceil(stride) * h.div_ceil(stride))
+    }
+    pub(crate) fn head(
+        &mut self,
+        x: NodeId,
+        name: &str,
+        shape: [u32; 3],
+        out: u32,
+        bias: f32,
+    ) -> NodeId {
+        let output = self.conv(x, name, shape, out, 1, true);
+        self.params
+            .iter_mut()
+            .find(|p| p.name == format!("{name}.bias"))
+            .unwrap()
+            .kind = InitKind::Constant(bias);
+        output
     }
     fn block(&mut self, x: NodeId, name: &str, shape: [u32; 3]) -> NodeId {
         let a = self.g.silu(x);
         let a = self.conv(a, &format!("{name}.a"), shape, shape[0], 1, false);
         let a = self.g.silu(a);
         let a = self.conv(a, &format!("{name}.b"), shape, shape[0], 1, false);
-        let scale = filled(&mut self.g, a, 0.1);
-        let a = self.g.mul(a, scale);
         self.g.add(x, a)
     }
     pub(crate) fn encode(
@@ -128,21 +147,52 @@ impl Builder {
         input_channels: u32,
         low: [u32; 2],
         c: u32,
+        levels: u32,
     ) -> NodeId {
         let [w, h] = low;
         let stem = self.conv(input, adapter, [input_channels, w, h], c, 1, false);
-        let a = self.block(stem, "core.level0", [c, w, h]);
-        let b = self.conv(a, "core.down1", [c, w, h], 2 * c, 2, false);
-        let b = self.block(b, "core.level1", [2 * c, w / 2, h / 2]);
-        let d = self.conv(b, "core.down2", [2 * c, w / 2, h / 2], 4 * c, 2, false);
-        let d = self.block(d, "core.level2", [4 * c, w / 4, h / 4]);
-        let up = self.g.upsample_2x(d, 1, 4 * c, h / 4, w / 4);
-        let up = self.g.concat(up, b, 1, 4 * c, 2 * c, w * h / 4);
-        let up = self.conv(up, "core.up1", [6 * c, w / 2, h / 2], 2 * c, 1, false);
-        let up = self.g.upsample_2x(up, 1, 2 * c, h / 2, w / 2);
-        let up = self.g.concat(up, a, 1, 2 * c, c, w * h);
-        let up = self.conv(up, "core.up0", [3 * c, w, h], c, 1, false);
-        self.g.silu(up)
+        let mut x = self.block(stem, "core.level0", [c, w, h]);
+        let mut skips = vec![x];
+        for level in 1..levels {
+            let factor = 1 << (level - 1);
+            x = self.conv(
+                x,
+                &format!("core.down{level}"),
+                [c * factor, w / factor, h / factor],
+                2 * c * factor,
+                2,
+                false,
+            );
+            x = self.block(
+                x,
+                &format!("core.level{level}"),
+                [2 * c * factor, w / (2 * factor), h / (2 * factor)],
+            );
+            skips.push(x);
+        }
+        for level in (0..levels - 1).rev() {
+            let factor = 1 << level;
+            x = self
+                .g
+                .upsample_2x(x, 1, 2 * c * factor, h / (2 * factor), w / (2 * factor));
+            x = self.g.concat(
+                x,
+                skips[level as usize],
+                1,
+                2 * c * factor,
+                c * factor,
+                w * h / (factor * factor),
+            );
+            x = self.conv(
+                x,
+                &format!("core.up{level}"),
+                [3 * c * factor, w / factor, h / factor],
+                c * factor,
+                1,
+                false,
+            );
+        }
+        self.g.silu(x)
     }
     pub(crate) fn new() -> Self {
         Self {
@@ -151,11 +201,6 @@ impl Builder {
             shared: BTreeMap::new(),
         }
     }
-}
-
-fn filled(g: &mut Graph, x: NodeId, value: f32) -> NodeId {
-    let shape = g.node(x).ty.shape.clone();
-    g.constant(vec![value; shape.iter().product()], &shape)
 }
 
 #[cfg(test)]

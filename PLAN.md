@@ -1,6 +1,6 @@
 # Plan: one end-to-end reconstruction model (config v4)
 
-Status: adopted, 2026-09-27; Phases 0–1 complete, Phase 2 next. Owner: kvark.
+Status: adopted, 2026-09-27; Phases 0–1 complete, Phase 2 in progress. Owner: kvark.
 Read all of §0–§3 before starting. Open decisions for the owner are in §12.
 
 Implementation started from `origin/main` at `232a278`, after the owner merged
@@ -308,13 +308,13 @@ Direct prediction is the default because it is the simplest form of "one model",
 OIDN shows direct U-Nets denoise well given enough capacity and data. Kernel prediction
 is fallback F1 in Phase 5, used only if cold frames miss decision point A.
 
-- [ ] **Config v4** (`ommatidia/src/transport/mod.rs`):
+- [x] **Config v4** (`ommatidia/src/transport/mod.rs`):
   - Drop `diffuse_frames` and `specular_frames`; add `latent_channels` and `levels`.
   - `Frame` gains `exposure: f32`. `Surface` gains F0; `SpecularF0` is already captured
     at LR and HR.
   - `State` becomes lobes + latent + normal/depth + albedo.
   - Reject v3 configs with a clear error; no compatibility mode.
-- [ ] **Graph** (`ommatidia/src/transport/graph.rs`):
+- [x] **Graph** (`ommatidia/src/transport/graph.rs`):
   - A new `build()` following the frame step.
   - Keep the warp inside the graph for training and inference, as a gather via
     `embedding` the way `warp()` does today.
@@ -324,15 +324,15 @@ is fallback F1 in Phase 5, used only if cold frames miss decision point A.
     needs to carry state; confirm Meganeura allows loss plus extra outputs in training
     mode.
   - Add α as an optional debug output.
-- [ ] **Runtime.**
+- [x] **Runtime.**
   - `prepare.wgsl` shrinks to `pack` (features plus warp indices and coefficients,
     computed on the GPU) and `resolve`.
   - Delete `seed`, `atrous`, moments, ages, prior and candidates.
   - `native.rs` keeps its host API shape (`record_prepare`, the session step,
     `record_resolve`, `process`), plus exposure.
-- [ ] **CPU reference** (`ommatidia/src/transport/cpu.rs`): scalar pack, warp and resolve
+- [x] **CPU reference** (`ommatidia/src/transport/cpu.rs`): scalar pack, warp and resolve
   that match the WGSL.
-- [ ] **Tests.** Adapt `ommatidia/tests/transport.rs`:
+- [x] **Tests.** Adapt `ommatidia/tests/transport.rs`:
   - CPU/WGSL parity over features, warp, a recurrence of 24 or more frames, reset and HDR;
   - the f64 check of the loss and every parameter's gradient, fused and unfused;
   - bit-exact reload.
@@ -341,13 +341,13 @@ is fallback F1 in Phase 5, used only if cold frames miss decision point A.
   - α = 0 gives exactly the spatial estimate;
   - `valid = 0` ignores history;
   - radiance ×k with exposure ×1/k gives output ×k within 1e-5.
-- [ ] Tag the last v3 commit `archive/v3-guide-residual`, then delete the v3 guide,
+- [x] Tag the last v3 commit `archive/v3-guide-residual`, then delete the v3 guide,
   decoder and zero-head baseline. Update the LavaPipe CI smoke (capture, train, reload)
   for v4.
 - [ ] **Smoke test.** Run 2,000 updates of the existing trainer (full frame, batch 1) on
   the single-scene diagnostic. Loss must fall, outputs stay finite, and a reload
   reproduces results exactly.
-- [ ] Rewrite `docs/design.md` for v4, at most one page.
+- [x] Rewrite `docs/design.md` for v4, at most one page.
 
 Done when: all tests pass (regular, plus GPU tests on RADV and LavaPipe with zero
 validation errors), no v3 code remains, and FLOPs per pixel are reported.
