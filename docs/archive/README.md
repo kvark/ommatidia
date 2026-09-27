@@ -50,6 +50,8 @@ are byte-identical to their originals, including the six README images.
 Evidence: `runs/v4-phase0/published-reproduction/` and
 `runs/v4-phase0/published-reproduction.json`. This verifies historical results;
 it is not a v4 result, a new checkpoint selection, or a confirmation evaluation.
+The older regression sets also reproduce exactly: another 256 frame evaluations
+and 768 PNGs, recorded in `runs/v4-phase0/published-regression-reproduction/`.
 
 The model/data/binary archives remain workstation artifacts, not Git LFS assets
 or public downloads. Published hashes and source tags do not imply otherwise.
