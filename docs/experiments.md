@@ -29,6 +29,15 @@ Only development selects models. Confirmation is reserved for Phase 6.
 | 0 | `v4-phase0/naga-snapshot-check` | Compare snapshots; assemble/validate changed SPIR-V | Only three shader snapshots and their sidecars change; all three modules pass `spirv-val`. |
 | 0 | `v4-phase0/naga-port-gpu-with-nextest` | Full upstream GPU suite with isolated test tools | 1,915 pass, nine fail, 19 skipped: eight need DXC; one OpenGL expected failure unexpectedly passes. |
 | 0 | `v4-phase0/naga-gpu-failures-baseline` | Rerun failing families on unmodified PR head `731fd872` | 27 pass and the same nine fail; no newly introduced failure in these families. Full suite is not green. |
+| 1 | `v4-phase1/profile-unit` | Profile accounting and MAC tests | One new assertion failed: training MACs also include the low-frequency-loss convolution; corrected the assertion. |
+| 1 | `v4-phase1/profile-unit-fixed` | Workspace tests | 86 pass; eight GPU checks run separately. |
+| 1 | `v4-phase1/profile-build` | Release trainer | Pass; source snapshot omitted the then-untracked profiling module. Re-recorded below. |
+| 1 | `v4-phase1/profile-build-complete-source` | Release trainer, full tracked source diff | Pass; complete profiling source retained. |
+| 1 | `v4-phase1/profile-radv` | Eight debug GPU checks, RX 7900 XT | Eight pass, zero validation errors. |
+| 1 | `v4-phase1/profile-lavapipe` | Eight debug GPU checks | Eight pass, zero validation errors. |
+| 1 | `v4-phase1/profile-clippy` | Workspace/all targets, warnings denied | Pass. |
+| 1 | `v4-phase1/crop-recovery-tests` | Crop schema and exact historical recovery | Ten pass; all 24 crop/frame selections match. |
+| 1 | `v4-phase1/profile-200` | 200 updates, original 40 scenes, RX 7900 XT | 2.282 updates/s; readback/history maps 63.00%, step/wait 3.69%; R1 not triggered. [Table](training-profile.md). |
 
 After the owner merged PR #23, [CI run 36298665573](https://github.com/kvark/ommatidia/actions/runs/36298665573)
 passed all five jobs on `main` at `a153c1e`, including LavaPipe and Linux/macOS/Windows

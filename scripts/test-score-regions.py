@@ -15,6 +15,36 @@ spec.loader.exec_module(scorer)
 
 
 class RegionTests(unittest.TestCase):
+    def test_development_crops_are_valid_and_identify_all_captures(self):
+        root = Path(__file__).resolve().parents[1]
+        benchmark = json.loads((root / "docs/dev-crops.json").read_text())
+        scorer.validate_benchmark(benchmark)
+        self.assertEqual(sum(d["sequences"] for d in benchmark["datasets"]), 10)
+        self.assertEqual(len(benchmark["regions"]), 16)
+        self.assertEqual(sum(len(r["frames"]) for r in benchmark["regions"]), 24)
+        self.assertEqual({r["kind"] for r in benchmark["regions"]}, {"smooth", "edge", "texture"})
+        for capture in benchmark["datasets"]:
+            self.assertEqual(len(bytes.fromhex(capture["sha256"])), 32)
+            self.assertTrue(Path(capture["path"]).name.startswith("dev-"))
+
+    def test_development_crops_match_the_available_archived_definitions(self):
+        root = Path(__file__).resolve().parents[1]
+        benchmark = json.loads((root / "docs/dev-crops.json").read_text())
+        reports = [root / path for path in benchmark["source_reports"]]
+        if not all(path.is_file() for path in reports):
+            self.skipTest("historical reports are workstation artifacts")
+        def expand(regions):
+            return {(r["name"], r["kind"], r["sequence"], frame, tuple(r["rect"]))
+                    for r in regions for frame in r["frames"]}
+        expected = set()
+        for path in reports:
+            self.assertEqual(scorer.sha256(path), benchmark["source_report_sha256"][str(path.relative_to(root))])
+            source = json.loads(path.read_text())["benchmark"]
+            expected |= expand(source["regions"])
+            self.assertEqual([(Path(d["path"]).resolve(), d["sequences"]) for d in source["datasets"]],
+                             [((root / d["path"]).resolve(), d["sequences"]) for d in benchmark["datasets"]])
+        self.assertEqual(expand(benchmark["regions"]), expected)
+
     def benchmark(self):
         return {"schema": 1, "extent": [4, 4], "sequence_length": 2,
                 "datasets": [{"name": "static", "path": "data.omd", "sha256": "placeholder", "sequences": 1}],

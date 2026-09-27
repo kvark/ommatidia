@@ -60,6 +60,25 @@ fn shader_parses() {
 }
 
 #[test]
+fn v3_macs_match_the_published_width16_budget() {
+    let config = Config::default();
+    let inference = graph::build(config, [128, 128], 0).unwrap();
+    assert_eq!(inference.macs(), 1_044_381_696);
+    assert_eq!(
+        inference.params.iter().map(|p| p.len).sum::<usize>(),
+        188_160
+    );
+    let small = graph::build(config, [8, 8], 0).unwrap().macs();
+    assert_eq!(small * 16 * 16, inference.macs());
+    // Each training slot also convolves the 12-channel RGB error for its loss.
+    let loss_macs = 12 * 12 * 4 * 4 * 2 * 2;
+    assert_eq!(
+        graph::build(config, [8, 8], 2).unwrap().macs(),
+        2 * (small + loss_macs)
+    );
+}
+
+#[test]
 #[ignore = "requires a GPU with timestamp support"]
 fn timed_execution_matches_uninstrumented_outputs() {
     let context = gpu_context(true);

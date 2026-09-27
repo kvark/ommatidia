@@ -2,6 +2,8 @@
 use ommatidia::dataset::{InputSource, Reader};
 use std::{io::Write, path::Path};
 
+pub mod profile;
+
 pub type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 
 fn validate_capture(provenance: &serde_json::Value) -> Result<()> {

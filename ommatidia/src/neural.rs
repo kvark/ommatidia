@@ -17,6 +17,29 @@ pub struct Network {
     pub params: Vec<ParamInit>,
 }
 impl Network {
+    /// Forward dense-convolution MACs, including every batch/unroll slot and
+    /// padded kernel tap. Excludes activations, warps, preparation and backward.
+    pub fn macs(&self) -> u64 {
+        self.graph
+            .nodes()
+            .iter()
+            .map(|node| match node.op {
+                meganeura::graph::Op::Conv2d {
+                    in_channels,
+                    kernel_h,
+                    kernel_w,
+                    ..
+                } => {
+                    node.ty.shape.iter().map(|&v| v as u64).product::<u64>()
+                        * u64::from(in_channels)
+                        * u64::from(kernel_h)
+                        * u64::from(kernel_w)
+                }
+                _ => 0,
+            })
+            .sum()
+    }
+
     pub fn initialize(&self, session: &mut meganeura::Session, seed: u64) {
         let mut rng = crate::rng::Rng::new(seed);
         for p in &self.params {
@@ -133,4 +156,24 @@ impl Builder {
 fn filled(g: &mut Graph, x: NodeId, value: f32) -> NodeId {
     let shape = g.node(x).ty.shape.clone();
     g.constant(vec![value; shape.iter().product()], &shape)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn macs_use_output_shapes_including_batch_stride_and_padding() {
+        let mut graph = Graph::new();
+        let input = graph.input("image", &[2 * 3 * 8 * 12]);
+        let kernel = graph.parameter("kernel", &[5 * 3 * 3 * 3]);
+        let result = graph.conv2d(input, kernel, 2, 3, 8, 12, 5, 3, 3, 2, 1);
+        let result = graph.silu(result);
+        graph.set_outputs(vec![result]);
+        let network = Network {
+            graph,
+            params: Vec::new(),
+        };
+        assert_eq!(network.macs(), 2 * 5 * 4 * 6 * 3 * 3 * 3);
+    }
 }

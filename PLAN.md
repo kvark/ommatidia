@@ -1,6 +1,6 @@
 # Plan: one end-to-end reconstruction model (config v4)
 
-Status: adopted, 2026-09-27; Phase 0 complete, Phase 1 next. Owner: kvark.
+Status: adopted, 2026-09-27; Phase 0 complete, Phase 1 in progress. Owner: kvark.
 Read all of §0–§3 before starting. Open decisions for the owner are in §12.
 
 Implementation started from `origin/main` at `232a278`, after the owner merged
@@ -160,8 +160,8 @@ update.
   - Every decision uses a bootstrap 95% confidence interval over sequences.
   - Add a second seed when the interval straddles a threshold.
   - Spend no more than half a day on a question worth less than 0.1 dB.
-- **Git.** Work on a feature branch and open one PR per phase against `main`. Never push
-  directly to `main`; the owner approves merges.
+- **Git.** Commit and push only to the working feature branch. The owner creates
+  PRs and performs merges. Never push directly to `main`, create PRs, or merge them.
 - **Stop and report to the owner** on any of these:
   - the Phase 1 profiling finding in R1;
   - decision point A;
@@ -213,7 +213,7 @@ release build and exact archived-result reproductions remain valid.
 
 Goal: know where training time goes, and have the metrics that will decide v4.
 
-- [ ] **Profile the v3 training loop.** Time each part:
+- [x] **Profile the v3 training loop.** Time each part:
   - frame decode;
   - the warm-up `advance` loop;
   - per-slot `advance`;
@@ -225,7 +225,9 @@ Goal: know where training time goes, and have the metrics that will decide v4.
   Run 200 updates on the 40-scene corpus on the RX 7900 XT and put the table in the PR.
   **If `step()` plus `wait` alone exceeds 50% of the time, report to the owner before
   Phase 3**: the bottleneck is then inside Meganeura, not the loop.
-- [ ] **FLOPs.** Add `Network::macs()` in `ommatidia/src/neural.rs` (sum the conv
+  Measured: 438.30 ms/update; readback/history maps 63.00%, step/wait 3.69%.
+  R1 not triggered. [Table for the owner's PR](docs/training-profile.md).
+- [x] **FLOPs.** Add `Network::macs()` in `ommatidia/src/neural.rs` (sum the conv
   multiply-accumulates from shapes). Print it at startup and store it in `training.json`.
   Check that v3 at width 16 on a 128×128 LR grid gives 1.05 G multiply-accumulates
   (2.09 GFLOP) per frame.
@@ -246,10 +248,12 @@ Goal: know where training time goes, and have the metrics that will decide v4.
 - [ ] **Confidence intervals.** Write a script that compares two runs' `frames.csv`: mean
   difference and 95% bootstrap interval (1,000 resamples of sequences). Cover PSNR,
   ꟻLIP, temporal MSE, energy, and the cold/early/warm splits.
-- [ ] **Development crops.** Commit the development rectangles the sprint used (recorded
+- [x] **Development crops.** Commit the development rectangles the sprint used (recorded
   in `dev-*-{middle,cold}.json` under `runs/`) as `docs/dev-crops.json`, using the schema
   of `quality-benchmark.json`. If they cannot be recovered, define new ones from
   references only (`export-references`).
+  Recovered all 24 region/frame selections exactly; source hashes and the historical
+  coverage limits (frames 0/31, five of ten sequences) are in `docs/dev-crops.json`.
 - [ ] **v3 control.**
   - Build and archive the v3 release runtime (`runs/archive/v3-runtime/`, with a recorded
     build manifest).
