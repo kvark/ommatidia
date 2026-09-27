@@ -20,7 +20,7 @@ scores, and include resets, rejected history and longer-than-training rollouts.
 cargo build --release --workspace
 cargo run --release -p ommatidia-train --bin transport -- \
   --data data/train.omd --eval-data data/dev.omd --out runs/model \
-  --steps 4000 --channels 16 --unroll 4 --lr 0.0003
+  --steps 5000 --channels 16 --unroll 4 --batch 8 --crop 64 --lr 0.0003
 cargo run --release -p ommatidia-train --bin transport -- \
   --checkpoint runs/model/model.safetensors --eval-only \
   --eval-data data/audit.omd --out runs/audit
@@ -29,22 +29,34 @@ cargo run --release -p ommatidia-train --bin transport -- \
 Repeat `--data` and `--eval-data` to combine captures with equal dimensions and
 sequence lengths. Training samples sequences uniformly across the combined
 corpus (larger captures contribute more). Evaluation can use another resolution.
-Unroll starts are uniform over complete windows. By default every other update resets
-history at that sampled start, providing varied cold-start examples rather than
-only the first frame of each scene. Other updates warm the full prefix using
-current weights. The sampling policy is recorded in `training.json`; `loss.csv`
-includes the sequence, start and actual warmup length for every update.
-`--train-reset-every N` makes this positive interval explicit (default 2). With
-`--train-reset-every 1 --unroll 1`, every sampled frame is a cold training example.
-This training control does not change causal evaluation; `--reset-history` is a
-separate evaluation-only diagnostic (equivalent to `--reset-every 1`). Test accumulated output as well as cold
-starts before retaining weights trained without warm history.
-Prefer training at the target evaluation resolution: identical parameter shapes
-do not imply identical pixel-footprint or history statistics.
-Training starts from scratch; `--checkpoint` is currently evaluation-only.
-Phase 3 will add optimizer/cursor resume, never weights-only warm starts.
-The serialized config, training provenance and intermediate checkpoints
-are saved with the run. Existing final checkpoints are not overwritten.
+Default training uses eight persistent cursors, each with a fixed 64² LR crop
+and four-frame gradient windows. Each life reserves 8–16 windows where possible;
+its start is uniform among positions that fit that lifetime. Cursors respawn
+cold, and each window additionally resets with probability 0.1. Actual cold
+window counts/fractions are in `loss.csv`; the target is 10–20% (tiny CI sequences
+necessarily reset more often). A per-life radiance gain of `2^U(-2,2)` scales
+inputs, targets and emission together, without changing exposure from 1.
+There is no prefix warm-up, no CPU history/feature round trip, and no geometric
+augmentation. Out-of-crop warp taps are dropped/renormalized; losses exclude a
+four-pixel HR margin and normalize over the retained pixels.
+
+One clipped Adam update uses the mean gradient over the cursors, with a 500-step
+linear warm-up then cosine decay to 10%. Read-only memory maps and a bounded
+prefetch worker load crops only. **Do not modify or truncate captures while a
+trainer or evaluator has them mapped.** Evaluation remains full-frame and causal;
+`--reset-history`/`--reset-every` are evaluation-only diagnostics. Train captures
+should retain the evaluation's pixel footprint even though the loss uses crops.
+
+Training starts from scratch. Every 5,000 steps and at the requested stop point,
+`checkpoints/step-NNNNNNNN/` saves weights, Adam moments/step, cursor GPU states,
+sampler RNG/positions, schedule settings and ordered capture hashes. The final
+bundle is also copied beside `training.json`. `--checkpoint FILE` resumes only
+a complete matching bundle; it rejects weights-only warm starts or changed data
+and schedule settings. Use a new output directory and repeat the same training
+arguments, including the original total `--steps`; `--stop-after N` simulates an
+interruption without changing that schedule. Existing checkpoints are not overwritten.
+The [measured profile](training-profile.md#phase-3-cursor-loop) excludes startup,
+checkpointing and evaluation, and counts only supervised pixels as gradients.
 
 ## What the numbers mean
 

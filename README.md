@@ -12,6 +12,10 @@ and emission, learning history blending and a latent recurrent state. At 2x scal
 it has 174,576 parameters and 1.63 GFLOP/frame at 128×128 → 256×256. Inputs include 1-spp
 low-resolution radiance, motion/jitter and output-resolution primary surfaces.
 
+The GPU-cursor training loop reaches **7.41 million valid pixel-gradients/s,
+24.77× the earlier loop**, on the RX 7900 XT. This is training throughput, not
+a quality claim; [measurement and accounting](docs/training-profile.md#phase-3-cursor-loop).
+
 ## Measured results
 
 These retained pictures and numbers use the **pre-fix v3 decoder**, not today's
@@ -67,7 +71,7 @@ cargo +1.92.0 test --workspace --locked
 cargo build --release --workspace
 cargo run --release -p ommatidia-train --bin transport -- \
   --data data/train.omd --eval-data data/dev.omd --out runs/model \
-  --steps 4000 --channels 16 --unroll 4 --lr 0.0003
+  --steps 5000 --channels 16 --unroll 4 --batch 8 --crop 64 --lr 0.0003
 ```
 
 [Architecture and runtime](docs/design.md) ·
@@ -87,9 +91,10 @@ architecture switches or compatibility interpretations of their weights.
 The retained runtime is `ommatidia::transport::native::Native`, config version 4.
 It rejects v3 weights; use the archived executable to reproduce the gallery.
 
-v4 passes 92 regular tests and seven GPU gates on both RADV and LavaPipe with
+v4 passes 94 regular tests and ten GPU gates on both RADV and LavaPipe with
 zero validation errors, including recurrent HDR/reset parity, f64 gradients,
-production-size directional gradients and exact reload. Fresh LavaPipe captures
+production-size directional gradients, mean-gradient accumulation, GPU cursor
+carry, optimizer/cursor resume and exact reload. Fresh LavaPipe captures
 also pass the trainer/evaluator integration smoke. [Recorded runs](docs/experiments.md).
 The pinned compiler correction addresses a reproduced Workgroup-array layout
 failure, not all possible compiler bugs.
