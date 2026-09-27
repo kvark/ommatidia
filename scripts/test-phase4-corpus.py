@@ -29,6 +29,13 @@ class CorpusTests(unittest.TestCase):
         self.assertEqual(changed, ["capture", "--samples", "4", "--seed", "9", "--out", "new.omd"])
         self.assertEqual(original[4], "7")
 
+    def test_visibility_f32_json_roundtrip(self):
+        self.assertTrue(corpus.same_f32(0.019226074, 0.01922607421875))
+        bits = struct.unpack("<I", struct.pack("<f", 0.019226074))[0]
+        adjacent = struct.unpack("<f", struct.pack("<I", bits + 1))[0]
+        self.assertFalse(corpus.same_f32(0.019226074, adjacent))
+        self.assertFalse(corpus.same_f32(float("nan"), float("nan")))
+
     def test_full_trajectory_visibility(self):
         good = {"scenes": [{"index": i, "kind": "object", "sources": ["abo"],
                             "ids": ["asset"], "families": ["family"], "camera_attempts": 1,

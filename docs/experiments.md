@@ -6,6 +6,9 @@ Only development selects models. Confirmation is reserved for Phase 6.
 
 | Phase | Run | Budget / purpose | Outcome |
 |---|---|---|---|
+| 4 | `v4-phase4/preflight-coverage-all-families` | Audit exact required seed groups, chronology and full held-out catalog | Pass: all training/dev/audit/confirmation/diagnostic/ancestry records covered before capture; 22 training families disjoint from all 12 held-out families (8 ABO, 4 unused legacy interiors). |
+| 4 | `v4-phase4/preflight-coverage` | Independently audit required preflight coverage | Required seed groups/chronology pass; ancillary count assertion fails because the root catalog includes unused legacy interiors as well as 8 held-out ABO families. No data/split failure. |
+| 4 | `v4-phase4/visibility-roundtrip-tests` | Compare coverage sidecars by exact float32 bits despite different JSON decimal encodings | Nine tests pass; one-ULP differences still fail. No capture or threshold change. |
 | 4 | `v4-phase4/final-script-tests` | Final arrangement of all Phase 4 verifier fixtures | Eight pass, including header corruption, late-frame visibility failures and numerical admission rejection. |
 | 4 | `v4-phase4/loader-smoke` | Actual mapped-loader admission of the first four-scene capture | Pass: matching hashes, all reference means valid, 180 cold/middle/final crop+gain decodes; no model evaluation or optimizer update. |
 | 4 | `v4-phase4/numerics-tests` | Extend data-verifier tests to truncated files, NaN/Inf, negative and black references | Eight tests pass in the pinned evaluation environment; CI includes them. |
@@ -14,10 +17,17 @@ Only development selects models. Confirmation is reserved for Phase 6.
 | 4 | `v4-phase4/format` | Workspace formatting with CPU-only loader admission utility | Pass. |
 | 4 | `v4-phase4/loader-build` | Build CPU-only `check-corpus` against the Phase 3 loader | Pass; no model architecture or training-loop changes. |
 | 4 | `v4-phase4/loader-clippy` | Release Clippy for the admission utility, warnings denied | Pass. |
-| 4 | `v4-phase4/capture-static-00` | Four fresh static scenes × 64 frames | Complete, 118.8 s; zero reported validation errors (release capture). |
-| 4 | `v4-phase4/capture-camera-00` | Four fresh camera-motion scenes × 64 frames | Complete, 118.7 s; nonzero LR/HR motion, zero reported validation errors (release capture). |
-| 4 | `v4-phase4/capture-objects-00` | Four fresh object-motion scenes × 64 frames | Complete; final full-corpus admission pending. |
-| 4 | `v4-phase4/capture-lights-00` | Four fresh moving-light scenes × 64 frames | Running. |
+| 4 | `v4-phase4/capture-static-00` | Four fresh static scenes × 64 frames | Complete, 119.8 s wall; release capture, 0 logged validation errors. |
+| 4 | `v4-phase4/capture-camera-00` | Four fresh camera scenes × 64 frames | Complete, 119.2 s wall; release capture, 0 logged validation errors. |
+| 4 | `v4-phase4/capture-objects-00` | Four fresh objects scenes × 64 frames | Complete, 120.9 s wall; release capture, 0 logged validation errors. |
+| 4 | `v4-phase4/capture-lights-00` | Four fresh lights scenes × 64 frames | Complete, 128.3 s wall; release capture, 0 logged validation errors. |
+| 4 | `v4-phase4/capture-catalog-00` | Four fresh catalog scenes × 64 frames | Complete, 178.2 s wall; release capture, 0 logged validation errors. All 256 visibility samples pass, minimum 1.927%. |
+| 4 | `v4-phase4/capture-static-01` | Four fresh static scenes × 64 frames | Complete, 98.6 s wall; release capture, 0 logged validation errors. |
+| 4 | `v4-phase4/capture-camera-01` | Four fresh camera scenes × 64 frames | Complete, 115.1 s wall; release capture, 0 logged validation errors. |
+| 4 | `v4-phase4/capture-objects-01` | Four fresh objects scenes × 64 frames | Complete, 118.7 s wall; release capture, 0 logged validation errors. |
+| 4 | `v4-phase4/capture-lights-01` | Four fresh lights scenes × 64 frames | Complete, 115.1 s wall; release capture, 0 logged validation errors. |
+| 4 | `v4-phase4/capture-catalog-01` | Four fresh catalog scenes × 64 frames | Complete, 180.8 s wall; release capture, 0 logged validation errors. All 256 visibility samples pass, minimum 10.681%. |
+| 4 | `v4-phase4/capture-static-02` | Four fresh static scenes × 64 frames | Running. |
 | 4 | `v4-phase4/script-tests` | Seed derivation, nested ancestry, command preservation, visibility, no-overwrite and hash rejection | Six tests pass. |
 | 4 | `v4-phase4/preflight-run` | Before capture: seed/family splits, protected hashes, archived executable and space | Pass: 160 new seeds disjoint from 305 prior seeds across 943 provenance sources; exact archive binary; 42,077,260,288 capture bytes planned. |
 | 4 | `v4-phase4/capture-run` | Sequential orchestration of 40 recorded four-scene capture batches | Running; per-batch results recorded separately. No training/evaluation. |
