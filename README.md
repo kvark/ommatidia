@@ -64,7 +64,7 @@ these are fresh scenes using the same four audit families as the previous report
 ## Build and train
 
 Rust 1.92+. Place `ommatidia` and `blade` in sibling directories.
-Cargo pins Blade to `fbb4f28` and Meganeura to `ee3aea4`; only Blade has a local
+Cargo pins Blade to `fbb4f28` and Meganeura to `7c29497`; only Blade has a local
 sibling override. Keep Blade's shader directory at the same revision.
 Naga also needs the tracked [workgroup-layout correction](patches/README.md);
 the preparation command below installs it into the ignored build directory.
@@ -82,6 +82,17 @@ cargo run --release -p ommatidia-train --bin transport -- \
 [Data, metrics and reproduction](docs/evaluation.md) ·
 [External asset capture](docs/catalog.md)
 
+The [Blade integration example](ommatidia/examples/blade.rs) records preparation,
+Meganeura inference and resolve into the renderer's own encoder, with one
+submission and no intermediate CPU wait:
+
+```sh
+cargo +1.92.0 run -p ommatidia --example blade --locked -- 0x744c
+```
+
+The device ID is optional. This headless scheduling example uses synthetic
+observations and initialized weights; it does not demonstrate trained quality.
+
 ## Scope
 
 This is a reconstruction research prototype, not demonstrated DLSS parity.
@@ -95,10 +106,10 @@ architecture switches or compatibility interpretations of their weights.
 The retained runtime is `ommatidia::transport::native::Native`, config version 4.
 It rejects v3 weights; use the archived executable to reproduce the gallery.
 
-v4 passes 94 regular tests and ten GPU gates on both RADV and LavaPipe with
+v4 passes 94 regular tests and eleven GPU gates on both RADV and LavaPipe with
 zero validation errors, including recurrent HDR/reset parity, f64 gradients,
 production-size directional gradients, mean-gradient accumulation, GPU cursor
-carry, optimizer/cursor resume and exact reload. Fresh LavaPipe captures
+carry, optimizer/cursor resume, caller-encoder parity and exact reload. Fresh LavaPipe captures
 also pass the trainer/evaluator integration smoke. [Recorded runs](docs/experiments.md).
 The pinned compiler correction addresses a reproduced Workgroup-array layout
 failure, not all possible compiler bugs.

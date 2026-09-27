@@ -6,6 +6,15 @@ Only development selects models. Confirmation is reserved for Phase 6.
 
 | Phase | Run | Budget / purpose | Outcome |
 |---|---|---|---|
+| Integration | `blade-encoder/format` | Format caller-encoder example, API documentation and parity test | Pass. |
+| Integration | `blade-encoder/build` | Build all workspace targets with Meganeura `7c29497`; debug assertions, debug symbols disabled | Pass. |
+| Integration | `blade-encoder/radv-gpu` | Full reconstruction GPU suite, including caller-encoder recurrence/cuts; debug RADV | Failed validation: new test reused caller command buffers without frame fences; corrected test lifetime handling. |
+| Integration | `blade-encoder/lavapipe-gpu` | Same reconstruction GPU suite on debug LavaPipe | Failed validation and SIGSEGV from the same test command-buffer reuse error. Superseded by fenced run. |
+| Integration | `blade-encoder/checks` | Workspace regular tests, all-target Clippy, formatting and published-gallery verification | Pass: 94 regular tests, Clippy/fmt/gallery. GPU checks recorded separately. |
+| Integration | `blade-encoder/fenced-build` | Format and rebuild corrected caller-encoder parity test and standalone example | Pass. |
+| Integration | `blade-encoder/radv-fenced` | Nine reconstruction GPU gates, two cursor/resume gates and standalone example; debug RADV | Pass: eleven gates and example, zero validation errors; caller-encoder output is bit-exact across recurrence/cuts. |
+| Integration | `blade-encoder/lavapipe-fenced` | Same eleven GPU gates and standalone example; debug LavaPipe | Pass: eleven gates and example, zero validation errors; caller-encoder output is bit-exact across recurrence/cuts. |
+| Integration | `blade-encoder/final-checks` | Final all-target Clippy, workspace tests, formatting and gallery check after fence correction | Pass: 94 regular tests, Clippy/fmt/gallery; model, training data and published quality results unchanged. |
 | 4 | `v4-phase4/final-checks` | Workspace fmt, release all-target Clippy/tests, corpus fixtures and published-gallery verifier | Pass: 94 regular Rust tests, nine corpus tests; fmt/Clippy/gallery pass. Unchanged GPU gates were not rerun. |
 | 4 | `v4-phase4/completion-audit` | Requirement-by-requirement cross-check of command identity, preflight chronology, hashes, counts and run coverage | Pass: all 40 batches, 200 scenes, 2,560 visibility samples and 9,000 loader probes agree; all 61 runs have ledger entries, including the superseded ancillary audit failure. |
 | 4 | `v4-phase4/restore-admission-build` | Restore standalone admission executable after workspace-test feature unification | Pass; byte-identical to the executable used by the successful full loader check. |

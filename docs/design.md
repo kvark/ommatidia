@@ -56,9 +56,18 @@ convolution MACs = 1.62949 GFLOP/frame = 24,864 FLOPs/output pixel**.
 These are dense forward-convolution counts, not timing measurements; they omit
 activations, warps and backward. The archived v3 count was 2.08876 GFLOP/frame.
 
-The renderer submits `Native::record_prepare(..., jitter, exposure)`, the shared
-Meganeura inference session, then `record_resolve`, in queue order. Only packing
-and RGB/state resolve remain in WGSL. Reset on cuts; recreate on extent changes.
+The renderer records `Native::record_prepare(..., jitter, exposure)`,
+`native.session.record(&mut encoder)`, then `record_resolve` into its own started
+Blade encoder (`manual_barriers: false`) on the shared context. Renderer passes
+can produce observations before them and consume reconstructed RGBA afterward,
+without intermediate submissions or CPU waits. Submit once and call
+`native.session.track_submission(sync)` so later host access and destruction
+wait for the caller's GPU work. Keep the renderer's normal frame fences before
+reusing command buffers or host-visible uploads; tracking does not wait by itself.
+Submit recorded frames in order: resolve advances history bookkeeping when
+recorded, so do not discard recorded frames. See the
+[runnable example](../ommatidia/examples/blade.rs). Only packing and RGB/state
+resolve remain in WGSL. Reset on cuts; recreate on extent changes.
 `process` is an offline upload/readback convenience, not a latency benchmark.
 Inference keeps the verified f32/unfused policy and pinned Naga layout fix.
 Tests independently check CPU/WGSL packing and taps, 24-frame recurrent HDR/reset

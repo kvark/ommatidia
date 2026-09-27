@@ -1,6 +1,9 @@
 //! GPU-resident preparation, local neural reconstruction, and per-lobe state.
 //! The renderer-facing record methods accept GPU buffers; `process` is a
 //! synchronous upload/readback convenience for offline quality tests only.
+//! Record preparation, `session.record(encoder)`, and resolve on the renderer's
+//! started encoder with automatic barriers. After submitting, call
+//! `session.track_submission(sync)` before any host access or destruction.
 use super::*;
 use blade_graphics as gpu;
 use std::sync::Arc;
@@ -298,7 +301,9 @@ impl Native {
             1,
         ]);
     }
-    /// Submit this preparation before calling `session.step()` on the same context.
+    /// Record before `session.record(encoder)` on the same started encoder/context,
+    /// with automatic barriers (`manual_barriers: false`). No submission is needed
+    /// between preparation, inference and resolve.
     pub fn record_prepare(
         &self,
         encoder: &mut gpu::CommandEncoder,
@@ -313,7 +318,10 @@ impl Native {
             &self.data(rays, surfaces, self.output.into(), jitter, exposure),
         );
     }
-    /// Record after the network submission; output is `width*height` linear RGBA f32.
+    /// Record after `session.record(encoder)`; output is HR `width*height` linear RGBA f32.
+    /// Advances CPU-side history bookkeeping: submit recorded frames in order, do
+    /// not discard them. Pass the final submission's sync point to
+    /// `session.track_submission` before host access or dropping this runtime.
     pub fn record_resolve(
         &mut self,
         encoder: &mut gpu::CommandEncoder,

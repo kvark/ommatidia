@@ -17,7 +17,7 @@ blade-graphics = { version = "0.9", git = "https://github.com/kvark/blade", rev 
 blade-render = { version = "0.6", git = "https://github.com/kvark/blade", rev = "fbb4f28c4869e81ae15de58925945b423b9c1ac5" }
 blade-asset = { version = "0.2.2", git = "https://github.com/kvark/blade", rev = "fbb4f28c4869e81ae15de58925945b423b9c1ac5" }
 blade-macros = { version = "0.3", git = "https://github.com/kvark/blade", rev = "fbb4f28c4869e81ae15de58925945b423b9c1ac5" }
-meganeura = { version = "0.3", git = "https://github.com/kvark/meganeura", rev = "ee3aea42da8e3e7b63d4083d0ea35b09848872ad" }
+meganeura = { version = "0.3", git = "https://github.com/kvark/meganeura", rev = "7c29497fcab1071e8171dc34f27698c807bd378d" }
 bytemuck = { version = "1", features = ["derive"] }
 half = { version = "2", features = ["bytemuck"] }
 log = "0.4"
