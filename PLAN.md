@@ -193,8 +193,9 @@ Goal: a correct `main` to build on.
   which answers the reviewer's open question. Keep `patches/` until a pinned upstream
   revision contains the fix.
   - Local port at `target/naga-pr9295` (base `731fd872`): targeted SPIR-V
-    validation and all-feature Clippy pass. Upstream publication awaits owner
-    review under wgpu's contribution policy; no upstream branch has been changed.
+    validation, all-feature Clippy and the Naga suite pass. See the
+    [review handoff](docs/archive/naga-upstream.md). Upstream publication awaits
+    owner review under wgpu's contribution policy; no upstream branch has changed.
 
 Done when: `main` builds with the documented steps; fmt, clippy, unit tests and CI
 (including the LavaPipe job) are green; and every README number is reproducible from
