@@ -79,7 +79,16 @@ it is explicitly labeled a diagnostic, not the causal production result.
 
 For frozen comparisons, save unquantized images with `--save-linear` and first
 verify the recorded dataset/benchmark hashes with `scripts/score-regions.py` as
-described in the [quality protocol](quality-week.md). On those verified outputs,
+described in the [quality protocol](quality-week.md). For a selected learned
+candidate, also pass `--selection FILE`, and include that freeze file as an
+input when recording its evaluation. The scorer checks the selected checkpoint,
+actual `model.transport.ron` sidecar, executable and clean build revision; the
+build must precede selection, and selection must precede evaluation. It rejects
+partial or reset-every-frame candidate evaluations. A follow-up freeze records
+both `benchmark_sha256` and `confirmation_benchmark_sha256`. These are identity
+and chronology checks, not proof of sound checkpoint selection or visual quality.
+
+On those verified outputs,
 `score-sequences --benchmark FILE --before BEFORE_OUTPUTS --after AFTER_OUTPUTS
 --out NEW_DIRECTORY` recomputes the same temporal metric for every frame and
 sequence. It reads observed capture motion and rejects differing references;
