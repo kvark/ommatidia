@@ -608,6 +608,30 @@ Do not extend the budget or consume the confirmation audit unless development
 evidence justifies freezing a new candidate. The single architecture and frozen
 audit/confirmation contracts remain unchanged.
 
+The all-cold stage completed with all 4,000 windows reset, covering all 40
+sequences and all 64 start positions. It is **rejected as a quality candidate**.
+The final checkpoint is
+`ffd989e44a15047ec5b13c666e01f447186f9e22d03003776096796f2f8f06b2`.
+
+| Update | Causal dev PSNR | Cold-start PSNR | Middle smooth MSE ratio | Cold smooth MSE ratio |
+|---|---:|---:|---:|---:|
+| Parent | 30.27080 | 26.26738 | 0.30318 | 0.85163 |
+| 1,000 | 29.82490 | 26.18200 | 0.33909 | 0.97255 |
+| 2,000 | 29.87633 | 26.38318 | 0.31041 | 0.78841 |
+| 3,000 | 29.65549 | 26.35033 | 0.35042 | 0.84288 |
+| 4,000 | 29.67396 | 26.39434 | 0.33251 | 0.83546 |
+
+Crop ratios use the original published implementation as the denominator, not
+the parent. The modest cold gain does not compensate for accumulated regressions:
+the final model improves only 21/640 frames over its parent, and 610/640 over
+the original baseline. Its worst regression against the original is 0.476 dB.
+Energy ratio rises from 1.00423 to 1.02403; the second lighting sequence's final
+frame falls from 29.42091 to 27.52758 dB. Temporal MSE is 0.000360410 versus
+the parent's 0.000358526. Native chronological sheets show remaining colored
+outliers and broader brightness errors. This is sheet inspection, not a claim
+of video playback. Evidence: `all-cold-training/`, `dev-allcold*-{middle,cold}.json`
+and `dev-allcold4000-videos/`. No confirmation predictions were generated.
+
 Before changing capacity or training duration, compare cold-start fitting on
 the training scenes with development generalization. A lossless diagnostic
 keeps frame zero of every existing training/development sequence (40 training,
@@ -619,6 +643,34 @@ Report case-level RGB and lobe errors, not just the pooled mean. Training target
 have 1,024 samples and development targets 4,096, so this is a diagnostic gap,
 not an exactly matched reference-noise experiment. These derived records never
 enter training or the locked audits.
+
+The probe completed: training PSNR moves 26.95408 → 27.18130 dB, improving all
+40 selected training observations, while development moves 26.26738 → 26.39434,
+improving nine of ten. Training diffuse-illumination MSE falls only 4.6% and
+specular MSE 4.7%. Thus the broad model still has a fitting limitation, not just
+a large held-out generalization gap. This does not yet distinguish optimization
+from capacity. All 50 references and fixed guides match between evaluations;
+all ten development predictions/references match the full causal evaluations'
+frame-zero files byte-for-byte. Evidence: `cold-corpus-{parent,allcold}-run/` and
+`cold-corpus-report.json`, verified by `cold-corpus-score-run-v2/`.
+
+### Bounded optimization control
+
+Before changing capacity, repeat the diverse all-cold stage at learning rate
+0.0003 instead of 0.0001. This rate substantially improved the controlled
+same-scene independent-noise test; the broad cold fitting gain at 0.0001 was
+small. This is an optimization hypothesis, not evidence that a larger step will
+solve denoising or preserve recurrence.
+
+Start independently from the same broad parent (`89e81df0…51bbe`), with fresh
+Adam, seed 31, the same ordered 40 training / 10 development scenes, unchanged
+16/8 history, loss weights, `--unroll 1 --reset-every 1`, cosine schedule and
+4,000-update budget. Only the initial learning rate changes. Evaluate full
+causal development at the same 1,000-update intervals and repeat the fixed
+cold fitting probe afterward. Compare with both the lower-rate control and the
+parent; reject cold-only gains accompanied by accumulated bias or lighting
+regressions. Do not extend this run or evaluate confirmation without a justified,
+development-frozen candidate. Retain the single architecture.
 
 ## Progress and evidence
 

@@ -82,7 +82,9 @@ pause scaling training and resolve the bottleneck first.
 - [x] Add targeted training data where the tests expose a coverage gap.
       Now 40 diverse 64-frame training scenes and 10 disjoint development
       scenes, covering static lighting, camera/object/light motion and assets.
-      The bounded follow-up tests more varied cold-start supervision.
+      All-cold supervision gave only a small fitting gain and damaged causal
+      quality; it was rejected. A matched, bounded learning-rate control tests
+      optimization before any capacity change. See the protocol.
 - [x] Run bounded, hypothesis-driven experiments, selecting checkpoints on the
       development set rather than the final audit.
       Selected the reset-balanced model plus the signed-decoder follow-up, with
