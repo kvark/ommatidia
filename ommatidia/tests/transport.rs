@@ -224,6 +224,144 @@ fn inference_matches_reference_with_nonzero_head() {
 
 #[test]
 #[ignore = "requires Vulkan or Metal; set MEGANEURA_DEVICE_ID to select the adapter"]
+fn production_extent_gradient_directions_match_finite_differences() {
+    use ommatidia::neural::InitKind;
+
+    let config = Config {
+        channels: std::env::var("OMMATIDIA_TEST_CHANNELS")
+            .map(|v| v.parse().expect("OMMATIDIA_TEST_CHANNELS must be a u32"))
+            .unwrap_or(Config::default().channels),
+        ..Config::default()
+    };
+    let context = gpu_context(false);
+    let model = graph::build(config, [128, 128], 1).unwrap();
+    let mut training = ommatidia::gpu::training_session(&model.graph, Arc::clone(&context));
+    // Forward-only compilation of the scalar objective: finite differences do
+    // not use autodiff or any backward kernel. This supplements, not replaces,
+    // the small independent f64 loss/every-parameter-gradient test.
+    let mut forward = ommatidia::gpu::inference_session(&model.graph, context);
+    let mut rng = ommatidia::rng::Rng::new(71);
+    let mut parameters = Vec::new();
+    for param in &model.params {
+        let scale = match param.kind {
+            InitKind::Kaiming { fan_in } => (2.0 / fan_in as f32).sqrt(),
+            InitKind::Zeros => 0.02,
+        };
+        let values: Vec<_> = (0..param.len).map(|_| scale * rng.normal()).collect();
+        training.set_parameter(&param.name, &values);
+        forward.set_parameter(&param.name, &values);
+        parameters.push(values);
+    }
+    let (frame, target) = fixture_at_extent(config, [128, 128], 0, 19);
+    let prepared = cpu::prepare(&frame, &[], config);
+    let feed = |session: &mut meganeura::Session| {
+        // Re-upload so each forward probe explicitly receives identical inputs.
+        graph::feed(session, "f0", &prepared, &target, 0);
+        graph::feed_rgb(session, "f0", &frame, &target, config);
+    };
+    feed(&mut training);
+    training.step();
+    training.wait();
+    feed(&mut forward);
+    forward.step();
+    forward.wait();
+    let base = training.read_loss();
+    let inference_loss = forward.read_loss();
+    assert!(base.is_finite() && inference_loss.is_finite());
+    assert!((base - inference_loss).abs() <= 1e-5 * (1.0 + base.abs()));
+    println!(
+        "128x128 width={}: training loss={base}, forward loss={inference_loss}",
+        config.channels
+    );
+
+    for (param, values) in model.params.iter().zip(&parameters) {
+        let mut gradient = vec![0.0; param.len];
+        training.read_param_grad(&param.name, &mut gradient);
+        assert!(gradient.iter().all(|v| v.is_finite()));
+        let norm = gradient
+            .iter()
+            .map(|&g| f64::from(g).powi(2))
+            .sum::<f64>()
+            .sqrt();
+        assert!(
+            norm > 1e-8,
+            "{} has an uninformative gradient norm {norm}",
+            param.name
+        );
+        for probe in 0..2 {
+            // Gradient-aligned probes avoid loss-change cancellation. The
+            // second also perturbs every coordinate in an independent direction.
+            let random_scale = 0.5 / (param.len as f64).sqrt();
+            let mut direction: Vec<f32> = gradient
+                .iter()
+                .map(|&g| {
+                    let random = if probe == 0 {
+                        0.0
+                    } else if rng.uniform() < 0.5 {
+                        -random_scale
+                    } else {
+                        random_scale
+                    };
+                    (f64::from(g) / norm + random) as f32
+                })
+                .collect();
+            let length = direction
+                .iter()
+                .map(|&v| f64::from(v).powi(2))
+                .sum::<f64>()
+                .sqrt();
+            for d in &mut direction {
+                *d = (f64::from(*d) / length) as f32;
+            }
+            let expected: f64 = gradient
+                .iter()
+                .zip(&direction)
+                .map(|(&g, &d)| f64::from(g) * f64::from(d))
+                .sum();
+            let mut finite = Vec::new();
+            for h in [0.02f32, 0.01, 0.005] {
+                let mut losses = Vec::new();
+                for sign in [-1.0, 1.0] {
+                    let shifted: Vec<_> = values
+                        .iter()
+                        .zip(&direction)
+                        .map(|(&v, &d)| v + sign * h * d)
+                        .collect();
+                    forward.set_parameter(&param.name, &shifted);
+                    feed(&mut forward);
+                    forward.step();
+                    forward.wait();
+                    let loss = forward.read_loss();
+                    assert!(loss.is_finite());
+                    losses.push(f64::from(loss));
+                }
+                finite.push((losses[1] - losses[0]) / (2.0 * f64::from(h)));
+            }
+            let coarse = (4.0 * finite[1] - finite[0]) / 3.0;
+            let fine = (4.0 * finite[2] - finite[1]) / 3.0;
+            println!(
+                "{} probe={probe}: gradient={expected:.8e}, finite={finite:?}, extrapolated={fine:.8e}",
+                param.name
+            );
+            // Fixed before observing results. Require step-size convergence as
+            // well as agreement; a noisy/nonconverged probe cannot pass.
+            assert!(
+                (fine - coarse).abs() <= 0.01 * expected.abs() + 1e-7,
+                "{} probe {probe}: finite differences did not converge",
+                param.name
+            );
+            assert!(
+                (fine - expected).abs() <= 0.02 * expected.abs() + 1e-7,
+                "{} probe {probe}: gradient mismatch",
+                param.name
+            );
+        }
+        forward.set_parameter(&param.name, values);
+    }
+}
+
+#[test]
+#[ignore = "requires Vulkan or Metal; set MEGANEURA_DEVICE_ID to select the adapter"]
 fn two_frame_training_matches_reference() {
     use meganeura::reference::{Feeds, gpu, gradients};
     use ommatidia::neural::InitKind;
