@@ -11,6 +11,7 @@ Only development selects models. Confirmation is reserved for Phase 6.
 | 0 | `v4-phase0/fmt` | Rust 1.92 formatting | Pass. |
 | 0 | `v4-phase0/clippy` | Workspace/all targets, warnings denied | Pass. |
 | 0 | `v4-phase0/unit` | Workspace Rust tests | 83 pass; eight GPU checks run separately. |
+| 0 | `v4-phase0/release-workspace-build` | Rust 1.92, locked release workspace | Pass; runtime/build/test sources match `origin/main` at `232a278`. |
 | 0 | `v4-phase0/lavapipe-tests` | Eight debug GPU checks | Eight pass, zero validation errors. |
 | 0 | `v4-phase0/radv-tests` | Eight debug GPU checks, RX 7900 XT | Eight pass, zero validation errors. |
 | 0 | `v4-phase0/python-tests` | Catalog/crop/render tests and README verifier | 14 tests pass; published evidence agrees. |
@@ -28,6 +29,9 @@ Only development selects models. Confirmation is reserved for Phase 6.
 | 0 | `v4-phase0/naga-snapshot-check` | Compare snapshots; assemble/validate changed SPIR-V | Only three shader snapshots and their sidecars change; all three modules pass `spirv-val`. |
 | 0 | `v4-phase0/naga-port-gpu-with-nextest` | Full upstream GPU suite with isolated test tools | 1,915 pass, nine fail, 19 skipped: eight need DXC; one OpenGL expected failure unexpectedly passes. |
 | 0 | `v4-phase0/naga-gpu-failures-baseline` | Rerun failing families on unmodified PR head `731fd872` | 27 pass and the same nine fail; no newly introduced failure in these families. Full suite is not green. |
+
+Ommatidia [CI run 36293853401](https://github.com/kvark/ommatidia/actions/runs/36293853401)
+passed all five jobs at `992c2a1`, including LavaPipe and Linux/macOS/Windows builds.
 
 Earlier sprint detail is [archived](archive/quality-week.md). The declared v3
 control is `89e81df0…`; neither interrupted-run snapshots nor width-32 weights
