@@ -672,6 +672,36 @@ parent; reject cold-only gains accompanied by accumulated bias or lighting
 regressions. Do not extend this run or evaluate confirmation without a justified,
 development-frozen candidate. Retain the single architecture.
 
+The rate control completed and is **rejected**, checkpoint
+`73e1c99ae2b5c70bfab158808076090b1a7c6e4e116e5e342496c185795659dc`.
+All 4,000 sampled sequence/start/reset triples exactly match the lower-rate run.
+The last 1,000 updates' mean training loss falls 4.3% relative to that control,
+but the extra fitting does not preserve causal reconstruction.
+
+| Update | Causal dev PSNR | Cold-start PSNR | Middle smooth MSE ratio | Cold smooth MSE ratio |
+|---|---:|---:|---:|---:|
+| 1,000 | 29.52780 | 26.00347 | 0.41513 | 1.02193 |
+| 2,000 | 29.70778 | 26.46294 | 0.40558 | 0.80421 |
+| 3,000 | 29.16658 | 26.45310 | 0.41580 | 0.87640 |
+| 4,000 | 29.23355 | 26.50591 | 0.38619 | 0.81874 |
+
+Final causal PSNR is 1.03725 dB below the broad parent; energy ratio is 1.03002.
+Only 22/640 frames improve over the parent, and 559/640 over the original
+baseline. The worst original-baseline regression is 1.50370 dB. Lighting
+sequence 7 ends at 26.90378 dB versus the parent's 29.42091. Temporal MSE is
+0.000370022, also worse than the parent's 0.000358526. The inspected worst
+frame retains broad brightness and reflection errors.
+
+The fixed fitting probe gives 26.95408 → 27.37951 dB on the 40 training
+observations and 26.26738 → 26.50591 on the ten development observations.
+Every training observation improves, but two development cold starts regress.
+References/fixed guides match, and extracted development predictions again
+match causal frame-zero outputs exactly. Evidence: `cold-rate-training/`,
+`dev-coldrate*-{middle,cold}.json`, and `cold-rate-probe-report.json`.
+The higher rate therefore does not solve the fitting/recurrence trade-off;
+it does not establish that all optimization improvements are exhausted.
+No confirmation predictions were generated.
+
 ### Conditional same-family capacity control
 
 If the completed rate control still gives little broad cold-fitting improvement
@@ -693,6 +723,73 @@ and an eight-frame causal diagnostic. Require identical references and maximum
 absolute RGB difference divided by `1 + abs(parent RGB)` at most 1e-5. Verify
 debug training/reload with zero Vulkan-validation errors. Do not train the
 expanded model if those initialization/correctness checks fail.
+Also run the existing independent loss/directional-gradient and every-parameter
+GPU/reference check at width 32, using `OMMATIDIA_TEST_CHANNELS=32` for the
+ignored `two_frame_training_matches_reference` test. Its default still tests
+the retained configuration; this diagnostic override changes no model code.
+
+The initial GPU parity check **failed**: normalized maximum error was
+0.00368326 on the 50 cold frames and 0.000942414 on the eight causal frames,
+both above the unchanged 1e-5 tolerance. References were byte-identical.
+Evidence: `wide-cold-parity.json` and `wide-causal-parity.json`. No broad
+width-32 training run is authorized by these results. The independent width-32
+directional-gradient, loss, and every-parameter GPU/reference tests pass under
+default and unfused lowering (`wide-gradient-check/`, zero validation errors).
+An eight-update debug learning/reload smoke test also passes, with all 49
+output/metric files identical after reload; its weights are not a broad-training
+initialization.
+
+Execution precision explains most of the discrepancy: Meganeura's default
+`CoopPolicy::Auto` can choose f16-input inference kernels, while derivative
+dispatches retain full precision. Explicit `NativeF32` passes the eight-frame
+causal probe but leaves one of 9,830,400 cold RGB values just outside tolerance.
+Separately disabling dispatch fusion changes the remaining rounding difference.
+The complete probes, rerun for both widths with identical runtime settings, give:
+
+| Inference policy | Cold maximum normalized error | Causal maximum normalized error | Gate |
+|---|---:|---:|---|
+| Automatic precision, fused | 0.00368326 | 0.000942414 | Fail |
+| Native f32, fused | 0.0000108303 | 0.00000196753 | Fail |
+| Native f32, unfused | 0.00000858246 | 0.00000243788 | Pass |
+
+All reference images match exactly; the tolerance remains 1e-5. Preserve all
+failed runs. Evidence: `f32-{cold,causal}-parity.json` and
+`unfused-{cold,causal}-parity.json`, their evaluation/build manifests, and the
+original runtime snapshots. The four-frame `unfused-subset-parity.json` was a
+diagnostic on the failing case, not a substitute for the complete 50-frame gate.
+Retain explicit f32, unfused inference for the controlled training comparison;
+training's derivative/lowering policy is unchanged. This is not evidence of
+an upstream contract violation: automatic reduced precision was permitted.
+
+The width-16 parent itself changes by only +0.00000127 dB on the 50 cold frames
+and -0.00046542 dB on the eight causal frames versus its original automatic
+runtime. The precision choice is not a meaningful quality improvement. Before
+comparing the wider trial against the lower-rate control, also re-evaluate
+that control and the parent on all 640 development frames with the same new
+runtime. Measure final GPU time/memory again; previous automatic-policy timing
+does not apply.
+
+The tiny full-model f64 inference check passes at both widths, but did not
+exercise reduced-input kernels. A production-extent identity convolution on
+the explicitly selected RX 7900 XT reproduces f16 input rounding under `Auto`
+(`auto-precision-regression-rx7900/`, expected failure: 0.000100017 absolute
+error). Native tests previously passed `None` to device selection, ignoring
+`MEGANEURA_DEVICE_ID`; they now parse it at the test boundary and print the
+actual adapter. Earlier native-test runs therefore do not establish coverage
+on a requested hardware adapter. The independent gradient checker already
+honored the environment, and CLI capture/training/evaluation explicitly selected
+the device. Re-run the complete debug GPU suite on the selected RX 7900 XT and
+LavaPipe, plus width-32 debug learning/reload, before broad training.
+
+Those checks now pass: all seven ignored GPU tests on the explicitly selected
+RX 7900 XT and on LavaPipe, with zero Vulkan-validation errors
+(`f32-unfused-numerics-{rx7900,lavapipe}/`). The identity convolution has zero
+error under the retained policy; maximum tiny-model f64 inference discrepancy
+is below 5.8e-8. Width-32 debug smoke/reload also passes, with all 49 PNG/f32/CSV
+files byte-identical (`wide-f32-{smoke,reload}-run/`). The independent width-32
+gradient test remains the earlier `wide-gradient-check/`; training code did not
+change. Rust 1.92 regular tests (83), Clippy, formatting, eight crop tests, three
+catalog tests and the unchanged published-result verifier pass.
 
 For a bounded capacity test, use the same broad parent function, fresh Adam,
 seed 31, ordered 40 training / 10 development scenes, unroll 1, reset interval

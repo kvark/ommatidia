@@ -2,6 +2,17 @@ use ommatidia::transport::{self, State, cpu, graph, native};
 use std::sync::Arc;
 include!("fixtures/transport.rs");
 
+fn gpu_context(timing: bool) -> Arc<blade_graphics::Context> {
+    let device_id = std::env::var("MEGANEURA_DEVICE_ID")
+        .ok()
+        .map(|value| ommatidia::gpu::parse_device_id(&value))
+        .transpose()
+        .expect("invalid MEGANEURA_DEVICE_ID");
+    let context = ommatidia::gpu::create_context(device_id, timing);
+    println!("test adapter: {}", context.device_information().device_name);
+    context
+}
+
 #[test]
 fn contract_and_target_isolation() {
     let config = Config::default();
@@ -51,7 +62,7 @@ fn shader_parses() {
 #[test]
 #[ignore = "requires a GPU with timestamp support"]
 fn timed_execution_matches_uninstrumented_outputs() {
-    let context = ommatidia::gpu::create_context(None, true);
+    let context = gpu_context(true);
     let config = Config {
         channels: 2,
         ..Config::default()
@@ -113,12 +124,119 @@ fn lobe_supervision_detects_errors_that_cancel_in_rgb() {
 
 #[test]
 #[ignore = "requires Vulkan or Metal; set MEGANEURA_DEVICE_ID to select the adapter"]
+fn inference_convolution_preserves_f32_operands() {
+    // The tiny full-model fixture can miss the large-grid cooperative path.
+    // A center-tap identity convolution at the production spatial extent must
+    // retain this f32 value, which rounds to 1.0 in f16.
+    let context = gpu_context(false);
+    let mut graph = meganeura::Graph::new();
+    let input = graph.input("input", &[16 * 128 * 128]);
+    let weight = graph.parameter("weight", &[16 * 16 * 9]);
+    let output = graph.conv2d(input, weight, 1, 16, 128, 128, 16, 3, 3, 1, 1);
+    graph.set_outputs(vec![output]);
+    let mut session = ommatidia::gpu::inference_session(&graph, context);
+    let value = 1.0001f32;
+    for dispatch in &session.plan().dispatches {
+        println!("identity convolution dispatch: {:?}", dispatch.shader);
+    }
+    session.set_input("input", &vec![value; 16 * 128 * 128]);
+    let mut weights = vec![0.0; 16 * 16 * 9];
+    for channel in 0..16 {
+        weights[(channel * 16 + channel) * 9 + 4] = 1.0;
+    }
+    session.set_parameter("weight", &weights);
+    session.step();
+    session.wait();
+    let mut actual = vec![0.0; 16 * 128 * 128];
+    session.read_output_by_index(0, &mut actual);
+    assert!(actual.iter().all(|v| v.is_finite()));
+    let error = actual
+        .into_iter()
+        .map(|got| (got - value).abs())
+        .fold(0.0, f32::max);
+    println!("identity convolution maximum absolute error: {error}");
+    assert!(
+        error <= 1e-6,
+        "inference changed the input precision: {error}"
+    );
+}
+
+#[test]
+#[ignore = "requires Vulkan or Metal; set MEGANEURA_DEVICE_ID to select the adapter"]
+fn inference_matches_reference_with_nonzero_head() {
+    use meganeura::reference::{Feeds, evaluate_outputs};
+    use ommatidia::neural::InitKind;
+
+    let context = gpu_context(false);
+    // Exercise the retained width and its capacity control through the actual
+    // production session helper. A zero head would hide core precision errors.
+    for channels in [16, 32] {
+        let config = Config {
+            channels,
+            ..Config::default()
+        };
+        let model = graph::build(config, [8, 8], 0).unwrap();
+        let mut session = ommatidia::gpu::inference_session(&model.graph, Arc::clone(&context));
+        let mut feeds = Feeds::new();
+        let mut rng = ommatidia::rng::Rng::new(71);
+        for param in &model.params {
+            let scale = match param.kind {
+                InitKind::Kaiming { fan_in } => (2.0 / fan_in as f32).sqrt(),
+                InitKind::Zeros => 0.02,
+            };
+            let values: Vec<_> = (0..param.len).map(|_| scale * rng.normal()).collect();
+            feeds.set(&param.name, &values);
+            session.set_parameter(&param.name, &values);
+        }
+        let mut previous = Vec::new();
+        for step in 0..2 {
+            let (frame, _) = fixture(config, step, 19);
+            let p = cpu::prepare(&frame, &previous, config);
+            for (name, values) in [
+                ("f0.features", &p.features),
+                ("f0.candidates", &p.candidates),
+                ("f0.prior", &p.prior),
+                ("f0.history", &p.history),
+            ] {
+                feeds.set(name, values);
+                session.set_input(name, values);
+            }
+            let expected = evaluate_outputs(&model.graph, &feeds).unwrap();
+            session.step();
+            session.wait();
+            let mut actual = vec![0.0; expected[0].len()];
+            session.read_output_by_index(0, &mut actual);
+            assert!(actual.iter().all(|v| v.is_finite()));
+            let error = actual
+                .iter()
+                .zip(&expected[0].data)
+                .map(|(&got, &want)| (f64::from(got) - want).abs() / (1.0 + want.abs()))
+                .fold(0.0, f64::max);
+            println!("inference width={channels}, frame={step}: normalized error {error}");
+            assert!(error <= 1e-5, "inference/reference mismatch: {error}");
+            // Identical, independently prepared inputs test cold and valid
+            // history; the native recurrence tests cover GPU state evolution.
+            let image = cpu::reconstruct(&p);
+            previous = cpu::commit(&frame, &p, &image, config).0;
+        }
+    }
+}
+
+#[test]
+#[ignore = "requires Vulkan or Metal; set MEGANEURA_DEVICE_ID to select the adapter"]
 fn two_frame_training_matches_reference() {
     use meganeura::reference::{Feeds, gpu, gradients};
     use ommatidia::neural::InitKind;
 
     {
-        let config = Config::default();
+        let config = Config {
+            // Shape-specific diagnostics can exercise the same graph at the
+            // proposed width before changing the retained default.
+            channels: std::env::var("OMMATIDIA_TEST_CHANNELS")
+                .map(|v| v.parse().expect("OMMATIDIA_TEST_CHANNELS must be a u32"))
+                .unwrap_or(Config::default().channels),
+            ..Config::default()
+        };
         let model = graph::build(config, [8, 8], 2).unwrap();
         let mut feeds = Feeds::new();
         let mut rng = ommatidia::rng::Rng::new(71);
@@ -200,7 +318,7 @@ fn two_frame_training_matches_reference() {
 #[test]
 #[ignore = "requires Vulkan or Metal"]
 fn native_history_caps_match_cpu_after_continuous_accumulation() {
-    let context = ommatidia::gpu::create_context(None, false);
+    let context = gpu_context(false);
     let surface = Surface {
         normal_depth: [0.0, 0.0, 1.0, 3.0],
         albedo_roughness: [0.5, 0.5, 0.5, 1.0],
@@ -250,7 +368,7 @@ fn native_history_caps_match_cpu_after_continuous_accumulation() {
 #[test]
 #[ignore = "requires Vulkan or Metal"]
 fn native_multiscale_recurrence_reset_and_hdr() {
-    let context = ommatidia::gpu::create_context(None, false);
+    let context = gpu_context(false);
     let config = Config::default();
     let mut native = native::Native::new(context, config, [8, 8]).unwrap();
     let mut old = Vec::new();
@@ -366,7 +484,7 @@ fn native_multiscale_recurrence_reset_and_hdr() {
 #[test]
 #[ignore = "requires Vulkan or Metal"]
 fn two_frame_bptt_learns_and_reloads() {
-    let context = ommatidia::gpu::create_context(None, false);
+    let context = gpu_context(false);
     let config = Config::default();
     let model = graph::build(config, [8, 8], 2).unwrap();
     let mut session = ommatidia::gpu::training_session(&model.graph, Arc::clone(&context));
