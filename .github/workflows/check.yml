@@ -130,6 +130,9 @@ jobs:
       - name: Check gradients, raw features, recurrence, HDR and reload
         working-directory: ommatidia
         run: python3 scripts/record-run.py target/ci-gpu -- cargo +1.92.0 test -p ommatidia --test transport --locked -- --ignored --nocapture --test-threads=1
+      - name: Check GPU cursors, accumulation boundary and exact resume
+        working-directory: ommatidia
+        run: python3 scripts/record-run.py target/ci-cursors -- cargo +1.92.0 test -p ommatidia-train --test cursors --locked -- --ignored --nocapture --test-threads=1
       - name: Check capture independence from cached textures
         working-directory: ommatidia
         run: bash scripts/check-cache.sh
@@ -148,7 +151,7 @@ jobs:
           python3 scripts/record-run.py target/ci-train -- \
             cargo +1.92.0 run -p ommatidia-train --bin transport --locked -- \
             --data target/train.omd --eval-data target/dev.omd --out target/smoke \
-            --steps 8 --channels 4 --unroll 2 --eval-every 0
+            --steps 8 --channels 4 --unroll 2 --batch 2 --crop 16 --eval-every 0
           python3 scripts/record-run.py target/ci-reload -- \
             cargo +1.92.0 run -p ommatidia-train --bin transport --locked -- \
             --eval-data target/dev.omd --out target/reload --eval-only \

@@ -1,6 +1,6 @@
 # Plan: one end-to-end reconstruction model (config v4)
 
-Status: adopted, 2026-09-27; Phases 0–2 complete, Phase 3 next. Owner: kvark.
+Status: adopted, 2026-09-27; Phases 0–2 complete, Phase 3 in progress. Owner: kvark.
 Read all of §0–§3 before starting. Open decisions for the owner are in §12.
 
 Implementation started from `origin/main` at `232a278`, after the owner merged
@@ -406,12 +406,18 @@ Design:
 
 Tests:
 
-- [ ] Accumulating B identical micro-batches equals one micro-batch's gradient;
+- [x] Accumulating B identical micro-batches equals one micro-batch's gradient;
   accumulating B different ones equals the mean of their separate gradients.
-- [ ] State carry: running T frames as T/k carried steps, with no gradient, matches one
+- [x] State carry: running T frames as T/k carried steps, with no gradient, matches one
   long causal inference within 1e-5.
-- [ ] Taps outside the crop are invalid, and the loss margin is applied.
-- [ ] Report steps per second and pixel-gradients per second against the Phase 1 baseline.
+- [x] Taps outside the crop are invalid, and the loss margin is applied.
+- [x] Report steps per second and pixel-gradients per second against the Phase 1 baseline.
+
+Progress, 2026-09-27: the 200-update profile reaches 16.074 updates/s and
+7.407 million valid interior pixel-gradients/s, **24.769×** Phase 1; cold windows
+are 16.31%. [Measured accounting](docs/training-profile.md#phase-3-cursor-loop).
+GPU carry, accumulation, resume and evaluator smoke pass on RADV/LavaPipe.
+The 5,000-step run and development evaluation remain pending; no promotion.
 
 Done when: the tests pass; throughput is at least 10×; a 5,000-step run on the 40-scene
 corpus finishes with a development evaluation; and the CI smoke and reload still pass.

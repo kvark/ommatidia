@@ -127,6 +127,146 @@ fn shader_parses_and_validates() {
     .validate(&module)
     .unwrap();
 }
+
+#[test]
+fn crop_margin_excludes_every_spatial_loss_and_normalizes_interior() {
+    let config = Config {
+        channels: 1,
+        ..Config::default()
+    };
+    let (frame, mut target) = fixture(config, 0, 1);
+    let low = frame.low;
+    let n = frame.surfaces.len();
+    let model = graph::build_training(config, low, 1, 4).unwrap();
+    let mut feeds = Feeds::new();
+    feeds.fill_random(&model.graph, 7, 0.0);
+    observation_feeds(
+        &mut feeds,
+        "f0",
+        &cpu::prepare(&frame, &State::default(), config),
+        true,
+    );
+    target_feeds(&mut feeds, "f0", &frame, &target, config);
+    feeds.set("loss.weights", &graph::LossWeights::default().values());
+    let loss = evaluate_outputs(&model.graph, &feeds).unwrap()[0].data[0];
+    let mask = graph::loss_mask(config, low, 6, 4).unwrap();
+    assert_eq!(mask.iter().sum::<f32>(), 6.0 * 8.0 * 8.0);
+    for (i, v) in target.lobes.iter_mut().enumerate() {
+        if mask[i] == 0.0 {
+            *v = 12.0;
+        }
+    }
+    for i in 0..n {
+        if mask[config.index(low, 0, i % 16, i / 16)] == 0.0 {
+            target.rgb[3 * i..3 * i + 3].fill(14.0);
+        }
+    }
+    target_feeds(&mut feeds, "f0", &frame, &target, config);
+    assert_eq!(
+        evaluate_outputs(&model.graph, &feeds).unwrap()[0].data[0],
+        loss
+    );
+    target.rgb[(8 * 16 + 8) * 3] += 1.0;
+    target_feeds(&mut feeds, "f0", &frame, &target, config);
+    assert_ne!(
+        evaluate_outputs(&model.graph, &feeds).unwrap()[0].data[0],
+        loss
+    );
+    assert!(graph::build_training(config, low, 1, 8).is_err());
+}
+
+#[test]
+#[ignore = "requires Vulkan or Metal"]
+fn accumulated_microbatch_gradient_is_the_mean_not_the_sum() {
+    let context = gpu_context(false);
+    let config = Config {
+        channels: 1,
+        ..Config::default()
+    };
+    let model = graph::build_training(config, [8; 2], 2, 4).unwrap();
+    let mut session = ommatidia::gpu::training_session(&model.graph, context);
+    let parameters = nonzero_parameters(&model);
+    for (p, v) in model.params.iter().zip(&parameters) {
+        session.set_parameter(&p.name, v);
+    }
+    let feed = |session: &mut meganeura::Session, seed| {
+        for slot in 0..2 {
+            let (frame, target) = fixture(config, slot, seed);
+            let state = if slot == 0 {
+                State::default()
+            } else {
+                State {
+                    values: vec![0.0; config.state_channels() * frame.surfaces.len()],
+                }
+            };
+            let tag = format!("f{slot}");
+            graph::feed(
+                session,
+                &tag,
+                &cpu::prepare(&frame, &state, config),
+                &target,
+                slot,
+            );
+            graph::feed_rgb(session, &tag, &frame, &target, config);
+        }
+    };
+    for seeds in [[7; 4], [7, 8, 9, 10]] {
+        session.clear_optimizer();
+        session.clear_grad_accumulate();
+        let mut gradients = model
+            .params
+            .iter()
+            .map(|p| vec![0.0; p.len])
+            .collect::<Vec<_>>();
+        for seed in seeds {
+            feed(&mut session, seed);
+            session.step();
+            session.wait();
+            for (p, sum) in model.params.iter().zip(&mut gradients) {
+                let mut gradient = vec![0.0; p.len];
+                session.read_param_grad(&p.name, &mut gradient);
+                for (s, g) in sum.iter_mut().zip(gradient) {
+                    *s += g / 4.0;
+                }
+            }
+        }
+        session.set_grad_accumulate(4);
+        session.zero_grad();
+        for (i, seed) in seeds.into_iter().enumerate() {
+            feed(&mut session, seed);
+            if i == 3 {
+                session.set_learning_rate(0.125);
+            }
+            session.step();
+            session.wait();
+        }
+        let names = model
+            .params
+            .iter()
+            .map(|p| p.name.as_str())
+            .collect::<Vec<_>>();
+        let actual = session.read_params(&names);
+        for ((p, expected), (before, after)) in model
+            .params
+            .iter()
+            .zip(gradients)
+            .zip(parameters.iter().zip(actual))
+        {
+            for (i, ((a, b), g)) in before.iter().zip(after).zip(expected).enumerate() {
+                let measured = (a - b) / 0.125;
+                assert!(
+                    (measured - g).abs() <= 2e-6 + 0.002 * g.abs(),
+                    "{}[{i}] mean {g} vs {measured}",
+                    p.name
+                );
+            }
+        }
+        session.clear_optimizer();
+        for (p, v) in model.params.iter().zip(&parameters) {
+            session.set_parameter(&p.name, v);
+        }
+    }
+}
 #[test]
 fn v4_convolution_budget() {
     let c = Config::default();

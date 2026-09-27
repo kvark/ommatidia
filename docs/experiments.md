@@ -6,6 +6,36 @@ Only development selects models. Confirmation is reserved for Phase 6.
 
 | Phase | Run | Budget / purpose | Outcome |
 |---|---|---|---|
+| 3 | `v4-phase3/ci-eight-reload` | Independent process reload of exact CI checkpoint | CSV byte-identical; zero validation errors. |
+| 3 | `v4-phase3/ci-eight-updates` | Exact eight-update CI configuration, debug LavaPipe | Pass, finite parameters and bit-exact checkpoint reload; zero validation errors. |
+| 3 | `v4-phase3/python-checks-direct` | Evaluator/crop/catalog/render tests and gallery verifier | 21 pass; published evidence and protected selections unchanged. |
+| 3 | `v4-phase3/final-unit-space` | Final workspace tests after package-scoped cache cleanup | 94 pass; ten GPU gates run separately. |
+| 3 | `v4-phase3/final-clippy-space` | Final workspace/all-target lint | Pass, warnings denied. |
+| 3 | `v4-phase3/final-format` | Rust formatting | Pass. |
+| 3 | `v4-phase3/python-checks` | Existing evaluator/crop/gallery tests | Discovery skipped the hyphenated filenames and found zero tests; rerun their direct unittest entry points below. |
+| 3 | `v4-phase3/train-5000` | First 5,000-step attempt, from scratch on 40 scenes | Stopped around step 240 when concurrent test linking exhausted disk; finite loss, no checkpoint yet. Restarted from scratch after clearing package-scoped debug outputs. |
+| 3 | `v4-phase3/final-unit` | Workspace unit suite | Linking exhausted disk; recorder finalization also failed. Cleared regenerable trainer debug outputs before rerun. |
+| 3 | `v4-phase3/final-clippy` | Workspace/all-target lint | Disk full while writing build fingerprint; recorder finalization also failed. |
+| 3 | `v4-phase3/evaluation-smoke` | Debug LavaPipe: periodic/final evaluation, CLI interrupted resume, reload, control/cuts | Pass; resumed/reloaded CSV byte-identical; zero validation errors. |
+| 3 | `v4-phase3/profile-200` | 200 updates, 40 scenes, B=8, k=4, 64² LR crops | 16.074 updates/s, 7.407 M valid pixel-gradients/s, **24.769×** Phase 1; 16.31% cold windows. Finite/exact checkpoint reload; not a candidate. |
+| 3 | `v4-phase3/lavapipe-model` | Eight debug GPU model gates, including all-parameter mean accumulation | All pass; zero validation errors. |
+| 3 | `v4-phase3/current-release-build` | Current release trainer | Pass. |
+| 3 | `v4-phase3/radv-packing` | Independent GPU target/material packing, two 24-frame cursor streams | Pass, target buffers match CPU packing exactly; zero validation errors. |
+| 3 | `v4-phase3/radv-accumulation` | Two-frame mean-gradient accumulation, identical and different micro-batches | Pass for every parameter; zero validation errors. |
+| 3 | `v4-phase3/clippy-fixed` | Workspace/all-target lint | Pass, warnings denied. |
+| 3 | `v4-phase3/radv-model` | Model GPU suite plus accumulation gate | Seven existing checks pass; the new single-frame accumulation fixture cannot differentiate the latent head. Changed it to two frames so every parameter is checked. |
+| 3 | `v4-phase3/lavapipe-cursors` | GPU carry and full interrupted resume on software Vulkan | Both pass; zero validation errors. |
+| 3 | `v4-phase3/radv-cursors-border` | 24-frame GPU carry, partial/outside borders, interrupted Adam resume | Both pass; unchanged-weight carry within 1e-5, resumed parameters within 1e-6; zero validation errors. |
+| 3 | `v4-phase3/clippy` | Workspace/all-target lint | Two style errors: nested conditional and test-module ordering; corrected. |
+| 3 | `v4-phase3/radv-cursors-bindings` | GPU carry and full resume | Resume passes; carry values agree but its border fixture had only partial taps, correctly renormalized as valid. Added explicit wholly-outside and partial-border cases. |
+| 3 | `v4-phase3/release-build` | Release trainer | Pass. |
+| 3 | `v4-phase3/radv-cursors-space` | GPU cursor carry and full resume | Shader compilation rejected WGSL reserved word `target`; renamed binding. No validation error or training run. |
+| 3 | `v4-phase3/initial-unit` | Initial workspace unit tests | 92 pass. |
+| 3 | `v4-phase3/cursor-unit` | Crop/gain/prefetch parity, sampler replay, margin exclusion | 94 pass; ten GPU gates run separately. |
+| 3 | `v4-phase3/radv-cursors` | First cursor GPU gate attempt | Linking ran out of disk before execution; recorder manifest/log writes also failed. Moved 1.9 GB of regenerable incremental cache to `/tmp`, preserving run/data archives. |
+| 3 | `v4-phase3/integrated-check` | Mapped loader, GPU pipeline and true-resume CLI compile | Fixed borrowed checkpoint path and redundant trait import. |
+| 3 | `v4-phase3/pipeline-check` | First GPU cursor pipeline compile | Fixed Blade transfer-trait import and fallible fence wait; no GPU run yet. |
+| 3 | `v4-phase3/loader-sampler-unit` | First mapped-loader and resumable-cursor compile | Compile rejected conversion of Bytemuck's non-Error cast failure; mapped it to a descriptive error. |
 | 1, control | `v4-phase1/v3-control-causal-complete` | Frozen `89e81df0…`, 640 development frames; 40 predeclared crop selections | 30.270709 dB; 10 resets, 630 temporal pairs. All PNGs/float outputs reproduce the first run exactly. |
 | 1, control | `v4-phase1/v3-control-reset16-complete` | Same control/data; reset every 16 frames | 29.607780 dB; 40 resets, 600 temporal pairs. All PNGs/float outputs reproduce the first run exactly. |
 | 2 | `v4-phase2/initial-check` | Workspace/all-target compile after v4 replacement | Pass; initial library-only compile also passed before recording. |

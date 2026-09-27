@@ -65,7 +65,7 @@ fn pack(@builtin(global_invocation_id) id:vec3<u32>) {
     let q=vec2<f32>(p)+s.motion.xy;
     var positions:array<vec2<u32>,4>;
     var weights=vec4(0.0);
-    if params.ready!=0u && all(q>vec2(-1.0)) && all(q<vec2<f32>(extent())) {
+    if (params.ready&1u)!=0u && all(q>vec2(-1.0)) && all(q<vec2<f32>(extent())) {
         let base=vec2<i32>(floor(q));let f=q-vec2<f32>(base);
         for(var k=0u;k<4u;k++) {
             let at=base+vec2<i32>(i32(k%2u),i32(k/2u));
@@ -81,7 +81,11 @@ fn pack(@builtin(global_invocation_id) id:vec3<u32>) {
     for(var c=0u;c<params.state_channels;c++) {
         let i=idx(c,p);
         // Avoid even reading undefined device memory on the first frame/reset.
-        history[i]=0.0;if params.ready!=0u {history[i]=previous[i];}
+        // Bit 1 suppresses writes for later unroll slots, whose history lives
+        // inside the graph. Bit 0 means the detached cursor state is valid.
+        if (params.ready&2u)==0u {
+            history[i]=0.0;if (params.ready&1u)!=0u {history[i]=previous[i];}
+        }
         warp0[i]=idx(c,positions[0]);warp1[i]=idx(c,positions[1]);
         warp2[i]=idx(c,positions[2]);warp3[i]=idx(c,positions[3]);
         coeff0[i]=weights.x;coeff1[i]=weights.y;coeff2[i]=weights.z;coeff3[i]=weights.w;

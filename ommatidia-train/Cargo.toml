@@ -13,9 +13,17 @@ default-run = "transport"
 [dependencies]
 ommatidia.workspace = true
 blade-graphics.workspace = true
+blade-macros.workspace = true
 env_logger.workspace = true
 meganeura.workspace = true
 png.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 ron.workspace = true
+bytemuck.workspace = true
+half.workspace = true
+memmap2 = "0.9.11"
+sha2 = "0.10.9"
+
+[dev-dependencies]
+naga.workspace = true
