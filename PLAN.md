@@ -437,7 +437,7 @@ Goal: enough scenes that a 60,000-step run does not memorize.
 - [ ] Capture 160 more training scenes (32 per case) × 64 frames using the exact recorded
   capture commands of the 40-scene corpus, changing only seeds. For example, use base
   seeds 1,010,001–1,050,001 in steps of 10,000.
-- [ ] Before capturing, check seed disjointness against every capture: training,
+- [x] Before capturing, check seed disjointness against every capture: training,
   development, both audits, diagnostics and published ancestry, as the sprint did.
 - [ ] Catalog scenes use the existing 22-family training pool; verify visibility over
   each full trajectory.
@@ -447,6 +447,13 @@ Goal: enough scenes that a 60,000-step run does not memorize.
 
 Done when: there are 200 training scenes, with membership, hash and visibility checks
 recorded.
+
+In progress, 2026-09-27: preflight checks all 160 proposed seeds against 305
+recorded prior seeds in 943 provenance sources, including published ancestry.
+The original extra-scene executable and four-scene commands are reused exactly,
+changing only seeds/output paths. The 40 capture batches are running; final
+membership, numerical, visibility, loader and protected-set hash checks are still
+required. [Reproduction and admission](docs/training-corpus.md).
 
 ## 9. Phase 5: training ladder and decision point A (3 days)
 
