@@ -573,6 +573,41 @@ The explicit positive reset interval defaults to the unchanged every-other
 policy and is recorded in training provenance. Verify all-cold sampling and
 serialized reload in debug before the run. No frozen audit is used here.
 
+The diagnostic completed (`cold-noise-training/`). All 2,000 updates were cold,
+covering all 64 inputs. Training-stream PSNR rises 28.08125 → 32.83757 dB;
+independent-noise PSNR rises 28.12444 → 32.62485 dB, improving every test frame
+by at least 3.684 dB. Test SSIM rises 0.80001 → 0.86077 and gradient MSE falls
+0.00072651 → 0.00063685; energy ratio becomes 0.99996. Reference files match
+byte-for-byte between parent and fitted evaluations. Broad surface blotches
+decrease in the inspected image, but colored specular outliers remain.
+
+This is **noise generalization within one scene**, not scene generalization:
+the separate scene's causal PSNR falls 30.82542 → 23.39932 dB. The one-image
+probe had fallen to 26.07836 there. Neither set of diagnostic weights is retained
+for broad training. The explicit sampling control passes all 83 regular tests,
+Clippy and formatting; its varied-start debug smoke and reload have zero
+validation errors and 49 identical image/score files.
+
+### Diverse all-cold supervision stage
+
+Test whether the successful within-scene cold supervision transfers when trained
+on the 40-scene corpus. Start from `cold-coverage-fit/model.safetensors`
+(`89e81df0b0a2228b04853c46c9aa0fb589bc364f8c6ba03935c9c8047ce51bbe`),
+not either overfit probe. The final broad checkpoint retains the accumulated-frame
+improvements and supplies a known, unchanged cold-start baseline for this test.
+
+Keep the same ten ordered training captures, five development captures, 16/8
+history configuration, model, loss weights and seed 31. Use fresh Adam, learning
+rate 0.0001, `--unroll 1 --reset-every 1`, and exactly 4,000 updates with
+full-precision development evaluation every 1,000. This is a cold-supervision
+stage: both history exposure and unroll/temporal-loss exposure change, so it does
+not isolate reset frequency alone. Causal inference is unchanged. Select using
+cold and mature spatial quality, texture, temporal error and illumination
+response together; reject a cold-only gain that damages accumulated behavior.
+Do not extend the budget or consume the confirmation audit unless development
+evidence justifies freezing a new candidate. The single architecture and frozen
+audit/confirmation contracts remain unchanged.
+
 ## Progress and evidence
 
 - Initial validation reproduction:
@@ -624,8 +659,9 @@ serialized reload in debug before the run. No frozen audit is used here.
   the pre-update baseline (`updated-runtime-baseline/`).
 - The static final-audit capture is complete: two 64-frame sequences, data hash
   `2d5b776cd48f292d10f315931a4ffb30d2eea8eeec3443a88858dc516ee634a7`.
-  All five audit cases and crop locking are now complete; no candidate has been
-  evaluated on them. A separate 64-frame diagnostic rollout of scene 310001 uses
+  All five cases and crop locking were complete before any candidate evaluation;
+  the first candidate's failed gate is reported above. A separate 64-frame
+  diagnostic rollout of scene 310001 uses
   input sample offset 128 (`data/fit-long.omd`); it is not audit data.
 - **The long-rollout diagnostic fails.** On that independent 64-frame noise
   stream, the starting checkpoint averages 28.73 dB. The RGB-only tiny-scene fit
