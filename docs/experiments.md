@@ -6,6 +6,8 @@ Only development selects models. Confirmation is reserved for Phase 6.
 
 | Phase | Run | Budget / purpose | Outcome |
 |---|---|---|---|
+| 5 | `v4-phase5/budget-curve-50000` | Scheduled 50,000-update checkpoint: paired sequence intervals and immutable loss prefix | 26.3941 dB; change vs 40,000 +0.026 [−0.335, +0.277] dB. Training loss is ~26% below 30,000 but development remains flat; one finite outlier. |
+| 5 | `v4-phase5/candidate-recipe-check` | Dry-run the fixed two-protocol evaluation/scoring recipe against the completed sanity bundle; no repeated inference | Pass: checks completed step, checkpoint/executable identity and finite reload, then prepares four independently recorded commands; no model or protocol change. |
 | 5 | `v4-phase5/budget-curve-40000` | Scheduled 40,000-update checkpoint: paired sequence intervals and immutable loss prefix | 26.3681 dB; change vs 30,000 −0.019 [−0.414, +0.356] dB while mean training loss falls ~21%. Energy 1.00538; continue the fixed budget. |
 | 5 | `v4-phase5/budget-curve-30000` | Half-budget checkpoint: complete causal development curve, paired sequence intervals and frozen loss prefix | 26.3870 dB; change vs 20,000 +0.340 [−0.160, +0.888] dB. Energy 1.03080, temporal ratio 0.85051; one finite outlier. |
 | 5 | `v4-phase5/budget-curve-20000` | Second scheduled checkpoint: paired sequence intervals against 10,000 updates and v3, with the complete loss prefix | 26.0469 dB; improvement vs 10,000 is +0.562 [−0.016, +1.201] dB. Energy 0.97125; one finite outlier. Continue the fixed budget. |

@@ -152,15 +152,16 @@ Scheduled causal development checkpoints (all 640 frames):
 | 20,000 | 0.0046064 | 26.0469 dB | +0.562 [−0.016, +1.201] dB |
 | 30,000 | 0.0045400 | 26.3870 dB | +0.340 [−0.160, +0.888] dB |
 | 40,000 | 0.0035796 | 26.3681 dB | −0.019 [−0.414, +0.356] dB |
+| 50,000 | 0.0033819 | 26.3941 dB | +0.026 [−0.335, +0.277] dB |
 
-At 40,000, the gap against v3 remains −3.903 [−5.141, −2.983] dB; warm PSNR
-is −4.073 [−5.429, −2.993] dB behind. Temporal MSE ratio is 0.86314
-[0.76457, 0.93204], and energy is 1.00538 [0.96796, 1.06583]. Energy's point
-estimate is now in range, but its interval is not contained within the target.
+At 50,000, the gap against v3 remains −3.877 [−5.440, −2.824] dB; warm PSNR
+is −4.038 [−5.714, −2.814] dB behind. Temporal MSE ratio is 0.85984
+[0.76831, 0.92504], and energy is 1.00843 [0.96734, 1.07557]. Energy's point
+estimate is in range, but its interval is not contained within the target.
 Development is essentially flat from 30,000 while mean training loss falls
-about 21%: consistent with flattening generalization, not yet a final budget
+about 26%: consistent with flattening generalization, not yet a final budget
 conclusion. No overall gate pass or early selection is inferred. Reports at
-`runs/v4-phase5/budget-curve-{10000,20000,30000,40000}/` use
+`runs/v4-phase5/budget-curve-{10000,20000,30000,40000,50000}/` use
 whole-sequence intervals and freeze each observed loss prefix. Reference hashes
 are transferred from a completed full evaluation only after verifying identical
 recorded executable and ordered development capture/provenance hashes. These
