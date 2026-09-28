@@ -150,12 +150,15 @@ Scheduled causal development checkpoints (all 640 frames):
 |---|---:|---:|---|
 | 10,000 | 0.0059652 | 25.4850 dB | — |
 | 20,000 | 0.0046064 | 26.0469 dB | +0.562 [−0.016, +1.201] dB |
+| 30,000 | 0.0045400 | 26.3870 dB | +0.340 [−0.160, +0.888] dB |
 
-At 20,000, the gap against v3 remains −4.224 [−5.463, −3.258] dB. Temporal MSE
-ratio is 0.89057 [0.78584, 0.96042], but energy is 0.97125 [0.93425, 1.02969].
-PSNR's positive point change is not yet a statistically established improvement;
-energy's point estimate is outside the target. No gate pass or early selection
-is inferred. Reports at `runs/v4-phase5/budget-curve-{10000,20000}/` use
+At 30,000, the gap against v3 remains −3.884 [−5.351, −2.928] dB; warm PSNR
+is −4.068 [−5.626, −2.975] dB behind. Temporal MSE ratio is 0.85051
+[0.75790, 0.91516], but energy is 1.03080 [0.98516, 1.10242], following 0.97125
+at 20,000. Adjacent checkpoints' positive PSNR point changes are not yet
+statistically established improvements; energy remains outside its point target.
+No overall gate pass or early selection is inferred. Reports at
+`runs/v4-phase5/budget-curve-{10000,20000,30000}/` use
 whole-sequence intervals and freeze each observed loss prefix. Reference hashes
 are transferred from a completed full evaluation only after verifying identical
 recorded executable and ordered development capture/provenance hashes. These
