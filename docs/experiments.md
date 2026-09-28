@@ -6,6 +6,7 @@ Only development selects models. Confirmation is reserved for Phase 6.
 
 | Phase | Run | Budget / purpose | Outcome |
 |---|---|---|---|
+| 5 | `v4-phase5/capacity-w32-l3-seed1-curve-10000` | First scheduled 32×3 checkpoint: causal sequence intervals and immutable 10k loss prefix | 26.5075 dB; delta −3.763 [−4.154, −3.347] dB versus v3. Energy 0.96066, temporal ratio 0.90711 [0.79024, 0.98616]; no loss outliers, fixed budget continues. |
 | 5 | `v4-phase5/capacity-w16-l4-report-audit` | Verify exact causal reproduction, shared references and all fixed raw alpha maps/histograms/PNG headers | Pass: all 640 causal rows reproduce exactly; 1,280 verified references are shared; all 12 alpha maps/histograms and PNG headers agree. |
 | 5 | `v4-phase5/capacity-w16-l3-vs-l4-seed1` | Pair completed width-16 depth trials at identical data/seed/60k budget; both protocols and explicit cost | Causal/reset-16 PSNR gains +0.473 [0.113, 0.980]/+0.569 [0.183, 1.142] dB. Cold ratio 0.895 [0.713, 1.013] at 25.5% extra FLOPs: paired difference CI crosses zero, so the larger-cost exception is not met. |
 | 5 | `v4-phase5/capacity-w16-l4-seed1-curve-50000` | Scheduled 16×4 retry checkpoint: causal sequence intervals and immutable loss prefix through 50k | 27.7825 dB; −0.144 [−0.311, 0.006] dB versus 40k, −2.488 [−3.259, −1.828] versus v3. Energy 0.97746; temporal ratio 0.81455 [0.72350, 0.87788]; four loss outliers. |

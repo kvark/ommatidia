@@ -410,3 +410,20 @@ difference interval [−0.00031211, +0.00001200] includes zero. At 25.5% extra
 FLOPs, it does not yet meet the plan's exception to preferring the cheaper
 configuration. Width-32 runs and the best-two second seeds remain required
 before selection and Decision A.
+
+## 32×3: training observations
+
+The first scheduled 10,000-update checkpoint covers all 640 causal development
+frames: **26.5075 dB**, −3.763 [−4.154, −3.347] dB versus v3. Cold/warm PSNR
+are 24.8317/26.6222 dB; the warm difference is −3.876 [−4.372, −3.263] dB.
+Energy is 0.96066 [0.93247, 0.99135], below target at its point estimate.
+Temporal MSE ratio is 0.90711 [0.79024, 0.98616], not proof of the separate
+lighting-final condition. The last-1,000 mean training loss is 0.0061488, with
+no losses above 1 through 10,000 updates. Cost is 79,680 convolution
+FLOPs/output pixel (657,840 parameters).
+
+The recorded `capacity-w32-l3-seed1-curve-10000/` analysis freezes the loss
+prefix and uses the same reference-identity proof and whole-sequence bootstrap
+as the other curves. Training continues to the unchanged 60,000-update budget.
+This metrics-only checkpoint does not establish a capacity ranking or claim
+FLIP/crop results; full two-protocol reporting remains queued.
