@@ -216,10 +216,20 @@ pass recurrent HDR/reset parity, every-parameter f64 gradients (fused/unfused),
 and production-extent gradient-direction checks on debug RADV and LavaPipe,
 with zero validation errors. These are correctness checks, not capacity results.
 The 200-scene first-seed 16×3 run and both full reports are complete; 16×4 is
-now training, with 32×3 and 32×4 queued. Each trains from scratch for 60,000
-updates and is followed by both complete development protocols. Every child run is recorded independently;
+restarting from scratch after the execution interruption below, with 32×3 and
+32×4 queued. Each trains for 60,000 updates and is followed by both complete
+development protocols. Every child run is recorded independently;
 any failed command stops the queue. The best two configurations' second seeds
 and Decision A remain pending.
+
+Execution recovery: the original 16×4 attempt stopped after 792 finite updates,
+before its first optimizer checkpoint; trainer, recorder and queue processes
+were absent. No exit status or cause was captured. Preserve its stale manifest
+and partial artifacts; `capacity-200-w16-l4-seed1-60000-retry1/` changes only the
+output directory and starts the same numerical command from scratch. The
+remaining queue and final curve audits now run under the transient user service
+`ommatidia-phase5-capacity-20260928.service`, independently of the tool session,
+with no automatic restart on failure. This is not a numerical-quality failure.
 
 Pairwise capacity reports will compare raw per-crop error sums on the same
 sequences, not divide independently reported ratios or confidence intervals.

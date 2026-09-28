@@ -6,6 +6,10 @@ Only development selects models. Confirmation is reserved for Phase 6.
 
 | Phase | Run | Budget / purpose | Outcome |
 |---|---|---|---|
+| 5 | `v4-phase5/capacity-queue-recovery` | Finish remaining first-seed runs, both full protocols and final curve audits in a transient user job | Running under `ommatidia-phase5-capacity-20260928.service`; stop on any failure, no selection or second seeds. |
+| 5 | `v4-phase5/capacity-retry-recipe-check` | Validate fresh retry directory and unchanged numerical command; dry-run remaining first-seed launch recipes | Pass: retry command differs only in output directory, all three launch recipes pass, unsafe suffix rejected. |
+| 5 | `v4-phase5/capacity-w16-l4-interruption` | Read-only audit of the interrupted attempt: process absence, loss prefix and checkpoint availability | 792 finite updates, max loss 0.544915, no spikes >1 or resumable checkpoint; all four execution processes absent. Cause unestablished; originals unchanged. |
+| 5 | `v4-phase5/capacity-200-w16-l4-seed1-60000-retry1` | Repeat interrupted 16×4 attempt from scratch, same seed/data/60k schedule, fresh output directory | Recovery launched; no optimizer resume or numerical command change. |
 | 5 | `v4-phase5/capacity-w16-l4-seed1-curve-60000` | Complete scheduled causal checkpoint curve and final weights/optimizer/state/sampling audit for 16×4 | Queued after successful training completion; no checkpoint selection. |
 | 5 | `v4-phase5/capacity-w32-l3-seed1-curve-60000` | Same complete curve and final-training audit for 32×3 | Queued after successful training completion; no checkpoint selection. |
 | 5 | `v4-phase5/capacity-w32-l4-seed1-curve-60000` | Same complete curve and final-training audit for 32×4 | Queued after successful training completion; no checkpoint selection. |
@@ -31,7 +35,7 @@ Only development selects models. Confirmation is reserved for Phase 6.
 | 5 | `v4-phase5/capacity-w16-l3-seed1-score-causal` | FLIP, paired frame/crop intervals and lighting-final comparisons | Complete: cold smooth 1.155 [0.687, 1.612], warm 3.625 [2.156, 5.139], FLIP 0.17455 versus v3 0.10775. Spatial/warm/lighting misses retained; no selection. |
 | 5 | `v4-phase5/capacity-w16-l3-seed1-dev-reset16` | Same checkpoint/development with periodic cuts and fixed alpha frames | Complete: 27.4277 dB on 640 frames/40 cuts; all references verified/shared, fixed alpha maps/histograms saved. |
 | 5 | `v4-phase5/capacity-w16-l3-seed1-score-reset16` | Same scoring under periodic cuts | Complete: PSNR delta −2.180 [−2.837, −1.662] dB, FLIP 0.17896 versus v3 0.11929; temporal ratio 0.69502 [0.62306, 0.75750]. Warm strata null. |
-| 5 | `v4-phase5/capacity-200-w16-l4-seed1-60000` | 200 scenes, width 16/four levels, seed 1, 60,000 updates from scratch | Running from scratch; all 50 capture/provenance identities match. 654,256 parameters, 31,200 convolution FLOPs/output pixel; quality pending. |
+| 5 | `v4-phase5/capacity-200-w16-l4-seed1-60000` | 200 scenes, width 16/four levels, seed 1, 60,000 updates from scratch | Interrupted after 792 recorded updates; trainer/recorder/queue absent, no optimizer checkpoint. Original stale manifest/artifacts preserved; cause unestablished. |
 | 5 | `v4-phase5/capacity-w16-l4-seed1-dev-causal` | Full causal development and fixed alpha frames for 16×4, seed 1 | Queued after training. |
 | 5 | `v4-phase5/capacity-w16-l4-seed1-score-causal` | FLIP, paired frame/crop intervals and lighting-final comparisons | Queued after causal evaluation. |
 | 5 | `v4-phase5/capacity-w16-l4-seed1-dev-reset16` | Same checkpoint/development with periodic cuts and fixed alpha frames | Queued after training. |
