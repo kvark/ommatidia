@@ -6,6 +6,7 @@ Only development selects models. Confirmation is reserved for Phase 6.
 
 | Phase | Run | Budget / purpose | Outcome |
 |---|---|---|---|
+| 5 | `v4-phase5/budget-curve-10000` | First scheduled budget-curve checkpoint: metrics-only causal development, whole-sequence intervals and frozen loss prefix | 25.4850 dB; delta vs v3 −4.786 [−5.923, −3.779] dB. No loss spikes >1; continue the unchanged 60,000-step budget. |
 | 5 | `v4-phase5/ladder-checks` | Workspace regular tests/fmt plus frame/crop reporting tests and unchanged-gallery verification after capacity-test parameterization | 99 regular Rust tests, seven frame and twelve crop tests pass; fmt and gallery verification pass. |
 | 5 | `v4-phase5/budget-40-w16-l3-seed1-60000` | Budget curve: original 40 scenes, width 16/three levels, seed 1, 60,000 updates from scratch; causal development every 10,000 | Running; overlaps sanity reporting/correctness checks, so timing is not an isolated throughput benchmark. |
 | 5 | `v4-phase5/capacity-16x4-radv` | Debug RADV: recurrent HDR/reset parity, every-parameter f64 gradients and production-extent gradient directions | Three tests pass, zero validation errors. |

@@ -144,6 +144,17 @@ curve is running at `runs/v4-phase5/budget-40-w16-l3-seed1-60000/`. Causal metri
 are recorded every 10,000 updates. It overlaps report generation and correctness
 checks, so its timing is not an isolated throughput benchmark.
 
+The first scheduled checkpoint (10,000 updates) scores **25.4850 dB**, a delta
+of −4.786 [−5.923, −3.779] dB against v3. Last-1,000-update mean training loss
+is 0.0059652, with no loss spikes above 1. Energy is 0.99146 [0.94441, 1.05554]
+and temporal MSE ratio is 0.97330 [0.85426, 1.05914]; neither interval establishes
+its decision-A gate. The report at `runs/v4-phase5/budget-curve-10000/` uses
+whole-sequence intervals and freezes the observed loss prefix. Reference hashes
+are transferred from a completed full evaluation only after verifying identical
+recorded executable and ordered development capture/provenance hashes. This
+metrics-only checkpoint does not claim FLIP/crop results or early selection;
+training continues to the pre-registered 60,000 updates.
+
 Before capacity training, all three additional planned sizes (16×4, 32×3, 32×4)
 pass recurrent HDR/reset parity, every-parameter f64 gradients (fused/unfused),
 and production-extent gradient-direction checks on debug RADV and LavaPipe,
