@@ -6,6 +6,7 @@ Only development selects models. Confirmation is reserved for Phase 6.
 
 | Phase | Run | Budget / purpose | Outcome |
 |---|---|---|---|
+| 5 | `v4-phase5/capacity-w32-l4-seed1-curve-20000` | Scheduled 32×4 checkpoint: causal intervals, immutable 20k loss prefix and retained outlier diagnostics | 26.9652 dB; +0.895 [0.632, 1.216] dB versus 10k, −3.306 [−4.053, −2.601] versus v3. Energy 1.00841; temporal ratio 0.96706 [0.84694, 1.07511]; eleven loss outliers. |
 | 5 | `v4-phase5/capacity-w32-l4-seed1-curve-10000` | First scheduled 32×4 checkpoint: causal intervals, immutable 10k loss prefix and retained outlier diagnostics | 26.0701 dB; delta −4.201 [−4.948, −3.615] dB versus v3. Energy 1.00754; temporal ratio 0.87832 [0.77590, 0.94341]; eight loss outliers, fixed budget continues. |
 | 5 | `v4-phase5/capacity-w32-l4-outliers-2000` | Freeze the first 2,000 updates and recorded cursor diagnostics; no inference or training changes | Six finite spikes in two cold-started cursor episodes; max batch loss 8,868.602, subsequent maximum through 2,000 is 0.065291. All recorded observations finite; cause unestablished. |
 | 5 | `v4-phase5/capacity-pair-recipe-check` | Verify the generalized capacity-pair recipe exactly reproduces the completed width-16 depth comparison | Pass: cost and both paired protocol reports are exactly identical; existing scoring/bootstrap implementation unchanged. |
