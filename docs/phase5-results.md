@@ -414,31 +414,33 @@ before selection and Decision A.
 ## 32×3: training observations
 
 Scheduled causal checkpoints cover all 640 development frames. Recorded
-`capacity-w32-l3-seed1-curve-{10000,20000,30000}/` analyses freeze the corresponding
-loss prefixes and use the same reference-identity proof and whole-sequence
-bootstrap as the other curves:
+`capacity-w32-l3-seed1-curve-{10000,20000,30000,40000}/` analyses freeze the
+corresponding loss prefixes and use the same reference-identity proof and
+whole-sequence bootstrap as the other curves:
 
 | Updates | Last-1,000 mean loss | PSNR | Delta vs previous (95% CI), dB | Delta vs v3 (95% CI), dB |
 |---|---:|---:|---|---|
 | 10,000 | 0.0061488 | 26.5075 | — | −3.763 [−4.154, −3.347] |
 | 20,000 | 0.0057168 | 27.2636 | +0.756 [0.211, 1.234] | −3.007 [−3.803, −2.292] |
 | 30,000 | 0.0041916 | 27.2123 | −0.051 [−0.491, 0.378] | −3.058 [−4.207, −2.100] |
+| 40,000 | 0.0038097 | 27.8720 | +0.660 [0.310, 1.026] | −2.399 [−3.282, −1.610] |
 
-The 10k→20k improvement interval excludes zero, but the 20k→30k interval
-includes zero despite falling training loss. At 30,000, warm PSNR remains
-−3.219 [−4.464, −2.122] dB behind v3. Energy is 1.02121 [0.98980, 1.07120],
-with its point estimate slightly above the 1.02 upper target. Temporal MSE
-ratio is 0.90912 [0.82094, 0.96917], below v3 at this checkpoint. Cost is
-79,680 convolution FLOPs/output pixel (657,840 parameters). Training continues
-to the unchanged 60,000-update budget; these metrics-only checkpoints do not
-establish a capacity ranking or claim FLIP/crop results. Full two-protocol
-reporting remains queued.
+The 10k→20k and 30k→40k improvement intervals exclude zero; the intervening
+20k→30k interval includes zero despite falling training loss. At 40,000, warm
+PSNR remains −2.560 [−3.542, −1.634] dB behind v3. Energy is 1.02584
+[1.00251, 1.06495], with its point estimate above the 1.02 upper target.
+Temporal MSE ratio is 0.92690 [0.80743, 1.01089]: the point estimate is lower
+than v3, but improvement is not established at this checkpoint. Cost is 79,680
+convolution FLOPs/output pixel (657,840 parameters). Training continues to the
+unchanged 60,000-update budget; these metrics-only checkpoints do not establish
+a capacity ranking or claim FLIP/crop results. Full two-protocol reporting
+remains queued.
 
 Two finite batch losses exceed 1 at updates 10,737/10,738 (3.6016/3.3204),
 both dominated by warm cursor 4 on sequence 50, windows 27/31. Recorded
 predicted-lobe peaks are 3,827.1/2,159.9 against target peaks 65.5/65.0;
 all recorded input/target/prediction/latent summaries have zero nonfinite
-values. No further losses above 1 occur through 30,000. The outlier telemetry
-is snapshotted identically in the 20k and 30k analyses. This records a transient
-prediction overshoot, not its root cause; no batch, loss, model or schedule is
-changed.
+values. No further losses above 1 occur through 40,000. The outlier telemetry
+is snapshotted identically in the 20k, 30k and 40k analyses. This records a
+transient prediction overshoot, not its root cause; no batch, loss, model or
+schedule is changed.
