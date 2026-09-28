@@ -414,9 +414,9 @@ before selection and Decision A.
 ## 32×3: training observations
 
 Scheduled causal checkpoints cover all 640 development frames. Recorded
-`capacity-w32-l3-seed1-curve-{10000,20000,30000,40000,50000}/` analyses freeze
-the corresponding loss prefixes and use the same reference-identity proof and
-whole-sequence bootstrap as the other curves:
+`capacity-w32-l3-seed1-curve-{10000,20000,30000,40000,50000,60000}/` analyses
+freeze the corresponding loss prefixes and use the same reference-identity
+proof and whole-sequence bootstrap as the other curves:
 
 | Updates | Last-1,000 mean loss | PSNR | Delta vs previous (95% CI), dB | Delta vs v3 (95% CI), dB |
 |---|---:|---:|---|---|
@@ -425,22 +425,64 @@ whole-sequence bootstrap as the other curves:
 | 30,000 | 0.0041916 | 27.2123 | −0.051 [−0.491, 0.378] | −3.058 [−4.207, −2.100] |
 | 40,000 | 0.0038097 | 27.8720 | +0.660 [0.310, 1.026] | −2.399 [−3.282, −1.610] |
 | 50,000 | 0.0033609 | 28.2899 | +0.418 [0.163, 0.642] | −1.981 [−2.885, −1.208] |
+| 60,000 | 0.0032854 | 28.3656 | +0.076 [−0.117, 0.303] | −1.905 [−2.609, −1.272] |
 
 The 10k→20k, 30k→40k and 40k→50k improvement intervals exclude zero;
-20k→30k includes zero despite falling training loss. At 50,000, warm PSNR
-remains −2.082 [−3.087, −1.111] dB behind v3. Energy is 0.98866
-[0.96872, 1.02051]: its point estimate is back in range, but not its entire
-interval. Temporal MSE ratio is 0.79017 [0.69970, 0.85212], below v3 at this
-checkpoint. Cost is 79,680 convolution FLOPs/output pixel (657,840 parameters).
-Training continues to the unchanged 60,000-update budget; these metrics-only
-checkpoints do not establish a capacity ranking or claim FLIP/crop results.
-Full two-protocol reporting remains queued.
+20k→30k and 50k→60k include zero despite falling training loss. The completed
+from-scratch run has 480,000 sampled windows (17.4983% cold), 657,840 finite
+parameters and each Adam moment set, and 2,228,224 finite carried-state values.
+Checkpoint/state hashes match and parameters reload bit-exactly. Cost is
+79,680 convolution FLOPs/output pixel. The fixed budget is unchanged and no
+intermediate checkpoint is selected. Final checkpoint SHA-256:
+`18a3565d7de67d301dc0fa4c68ea2858926457582e421d023ab61575060ac597`.
 
 Two finite batch losses exceed 1 at updates 10,737/10,738 (3.6016/3.3204),
 both dominated by warm cursor 4 on sequence 50, windows 27/31. Recorded
 predicted-lobe peaks are 3,827.1/2,159.9 against target peaks 65.5/65.0;
 all recorded input/target/prediction/latent summaries have zero nonfinite
-values. No further losses above 1 occur through 50,000. The outlier telemetry
+values. No further losses above 1 occur through 60,000. The outlier telemetry
 is snapshotted identically in the 20k–50k analyses. This records a
 transient prediction overshoot, not its root cause; no batch, loss, model or
 schedule is changed.
+
+## Third capacity result: 200 scenes, 32×3, seed 1
+
+Both full protocols use the final 60,000-update checkpoint and all 640
+development frames. Ratios compare against learned v3, with whole-sequence
+bootstrap 95% intervals:
+
+| Metric | Causal | Reset every 16 |
+|---|---|---|
+| PSNR, dB | 28.3656 | 28.0262 |
+| PSNR delta vs v3, dB | −1.905 [−2.609, −1.272] | −1.582 [−2.214, −1.069] |
+| Cold smooth-crop MSE ratio | 1.153 [0.695, 1.648] | 1.153 [0.695, 1.648] |
+| Early smooth-crop MSE ratio | 2.242 [1.235, 3.491] | 2.242 [1.235, 3.491] |
+| Warm smooth-crop MSE ratio | 2.925 [2.102, 3.910] | Unavailable |
+| FLIP | 0.16453 | 0.16893 |
+| FLIP delta vs v3 | +0.05678 [0.04354, 0.06928] | +0.04965 [0.03745, 0.06187] |
+| Energy ratio to reference | 0.99388 [0.97095, 1.02624] | 0.99081 [0.96615, 1.02535] |
+| Temporal MSE ratio | 0.79689 [0.70604, 0.85753] | 0.68765 [0.61587, 0.74322] |
+
+Cold crop intervals have 999 valid resamples; reset-16 warm coverage remains
+null. Causal warm PSNR is 28.4976 dB, −2.001 [−2.785, −1.227] dB behind v3.
+Energy point estimates are in range, but their intervals are not contained
+within it. Cold/warm crop and FLIP targets still miss. Lower aggregate temporal
+error does not satisfy the lighting-final condition:
+
+| Protocol / sequence (frame 63) | PSNR delta, dB | FLIP delta | Linear MSE ratio | Temporal MSE ratio |
+|---|---:|---:|---:|---:|
+| Causal / 6 | +0.1518 | +0.04655 | 0.69788 | 1.11086 |
+| Causal / 7 | +3.2130 | −0.04014 | 1.01988 | 1.01178 |
+| Reset 16 / 6 | −0.1922 | +0.05634 | 0.63458 | 1.09657 |
+| Reset 16 / 7 | +0.1173 | +0.00408 | 1.17520 | 0.94428 |
+
+The `capacity-w32-l3-report-audit/` check verifies exact reproduction of all
+640 causal metric rows, all 1,280 verified shared references, and the 12 raw
+alpha maps, histograms and PNG headers. Cold alpha is zero. Diffuse/specular
+means at camera 2:31 and lighting 6:63 are 0.89197/0.85868 and
+0.86740/0.83791 (causal), and 0.89202/0.85895 and 0.86700/0.83747 (reset-16).
+Fixed cold/camera image inspection shows less speckling than v3 but persistent
+material-color and detail errors. Full reports are
+`capacity-w32-l3-seed1-score-{causal,reset16}/`; no images or weights are promoted.
+The 32×4 run and best-two second seeds remain required before selection and
+Decision A; these results alone do not justify a cost exception.

@@ -486,7 +486,9 @@ The width-16 capacity runs (three/four levels, seed 1) and both full protocols
 are complete: 27.7914/28.2648 dB causal, with cold/warm crop and FLIP misses
 retained. Four levels improve PSNR but do not yet satisfy the cost exception:
 cold MSE ratio 0.895 [0.713, 1.013] versus three levels, at 25.5% extra FLOPs.
-The width-32 runs, best-two second seeds and decision A remain open.
+The 32×3 seed-1 run and both full protocols are also complete: 28.3656 dB
+causal, cold ratio 1.153 [0.695, 1.648], with spatial/warm/FLIP/lighting misses
+retained. The 32×4 run, best-two second seeds and decision A remain open.
 
 Every rung reports, in one `docs/experiments.md` row per run:
 
