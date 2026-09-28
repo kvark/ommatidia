@@ -650,7 +650,7 @@ selection and Decision A remain required. Confirmation remains untouched.
 ## 16×3 second-seed curve
 
 Scheduled checkpoints cover all 640 causal development frames.
-`capacity-w16-l3-seed2-curve-{10000,20000,30000,40000}/` freezes each loss prefix and
+`capacity-w16-l3-seed2-curve-{10000,20000,30000,40000,50000}/` freezes each loss prefix and
 the empty outlier log, using the same reference-identity proof and
 whole-sequence bootstrap as seed 1:
 
@@ -660,12 +660,14 @@ whole-sequence bootstrap as seed 1:
 | 20,000 | 0.0050200 | 26.6589 | +1.369 [0.522, 2.523] | −3.612 [−4.237, −3.011] |
 | 30,000 | 0.0049041 | 26.5194 | −0.139 [−0.783, 0.494] | −3.751 [−4.618, −2.870] |
 | 40,000 | 0.0042379 | 27.4749 | +0.955 [0.461, 1.483] | −2.796 [−3.463, −2.163] |
+| 50,000 | 0.0039092 | 27.2580 | −0.217 [−0.471, −0.021] | −3.013 [−3.923, −2.222] |
 
 The 10k→20k and 30k→40k improvement intervals exclude zero; the 20k→30k
-interval includes zero despite a small further decrease in training loss.
-Warm PSNR at 40k is 27.5882 dB, −2.910 [−3.694, −2.078] dB behind v3.
-Energy is 0.98700 [0.96058, 1.02586]: the point estimate is in range, not
-its entire interval. Temporal MSE ratio is 0.86388 [0.75926, 0.93776].
-No batch losses above 1 occur through 40k. These metrics-only checkpoints do not claim
-crop/FLIP results or select a model. The fresh seed-2 run continues to the
+interval includes zero. The 40k→50k PSNR decline is established despite
+falling training loss. Warm PSNR at 50k is 27.3511 dB,
+−3.147 [−4.178, −2.157] dB behind v3. Energy is 0.98405 [0.95894, 1.02612]:
+the point estimate is in range, not its entire interval. Temporal MSE ratio
+is 0.84661 [0.75077, 0.91080]. No batch losses above 1 occur through 50k.
+These metrics-only checkpoints do not claim crop/FLIP results or select
+a model. The fresh seed-2 run continues to the
 unchanged 60,000-update budget.
