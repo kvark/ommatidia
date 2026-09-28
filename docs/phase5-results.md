@@ -413,17 +413,29 @@ before selection and Decision A.
 
 ## 32×3: training observations
 
-The first scheduled 10,000-update checkpoint covers all 640 causal development
-frames: **26.5075 dB**, −3.763 [−4.154, −3.347] dB versus v3. Cold/warm PSNR
-are 24.8317/26.6222 dB; the warm difference is −3.876 [−4.372, −3.263] dB.
-Energy is 0.96066 [0.93247, 0.99135], below target at its point estimate.
-Temporal MSE ratio is 0.90711 [0.79024, 0.98616], not proof of the separate
-lighting-final condition. The last-1,000 mean training loss is 0.0061488, with
-no losses above 1 through 10,000 updates. Cost is 79,680 convolution
-FLOPs/output pixel (657,840 parameters).
+Scheduled causal checkpoints cover all 640 development frames. Recorded
+`capacity-w32-l3-seed1-curve-{10000,20000}/` analyses freeze the corresponding
+loss prefixes and use the same reference-identity proof and whole-sequence
+bootstrap as the other curves:
 
-The recorded `capacity-w32-l3-seed1-curve-10000/` analysis freezes the loss
-prefix and uses the same reference-identity proof and whole-sequence bootstrap
-as the other curves. Training continues to the unchanged 60,000-update budget.
-This metrics-only checkpoint does not establish a capacity ranking or claim
-FLIP/crop results; full two-protocol reporting remains queued.
+| Updates | Last-1,000 mean loss | PSNR | Delta vs previous (95% CI), dB | Delta vs v3 (95% CI), dB |
+|---|---:|---:|---|---|
+| 10,000 | 0.0061488 | 26.5075 | — | −3.763 [−4.154, −3.347] |
+| 20,000 | 0.0057168 | 27.2636 | +0.756 [0.211, 1.234] | −3.007 [−3.803, −2.292] |
+
+The 10k→20k improvement interval excludes zero, but warm PSNR remains
+−3.176 [−4.038, −2.307] dB behind v3 at 20,000. Energy is 0.99830
+[0.96932, 1.03875]: its point estimate is in range, not its entire interval.
+Temporal MSE ratio is 0.96148 [0.85200, 1.03523], so improvement over v3 is
+not established at this checkpoint. Cost is 79,680 convolution FLOPs/output
+pixel (657,840 parameters). Training continues to the unchanged 60,000-update
+budget; these metrics-only checkpoints do not establish a capacity ranking or
+claim FLIP/crop results. Full two-protocol reporting remains queued.
+
+Two finite batch losses exceed 1 at updates 10,737/10,738 (3.6016/3.3204),
+both dominated by warm cursor 4 on sequence 50, windows 27/31. Recorded
+predicted-lobe peaks are 3,827.1/2,159.9 against target peaks 65.5/65.0;
+all recorded input/target/prediction/latent summaries have zero nonfinite
+values. No further losses above 1 occur through 20,000. The outlier telemetry
+is snapshotted in the 20k analysis. This records a transient prediction
+overshoot, not its root cause; no batch, loss, model or schedule is changed.
