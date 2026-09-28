@@ -59,7 +59,9 @@ fn pack(@builtin(global_invocation_id) id:vec3<u32>) {
         metadata[idx(c+4u,p)]=s.albedo_roughness[c];
     }
     for(var c=0u;c<2u;c++) {
-        features[12u*lr+idx(c+11u,p)]=s.motion[c];
+        // No previous reconstruction exists on a hard reset. Large first-frame
+        // renderer motion must not condition the cold spatial prediction.
+        features[12u*lr+idx(c+11u,p)]=select(0.0,s.motion[c],(params.ready&1u)!=0u);
         features[12u*lr+idx(c+13u,p)]=f32(p[c]%params.scale)/f32(params.scale)+0.5/f32(params.scale)-0.5-params.jitter[c];
     }
     let q=vec2<f32>(p)+s.motion.xy;

@@ -42,10 +42,10 @@ and **32.4875 dB causal**, missing the fixed gates by 0.2379 and 0.1125 dB.
 These are single-scene diagnostics, not generalization estimates or independent
 frame confidence intervals. The 60,000-step ladder is held for model/loop
 diagnosis; no threshold/data changes or warm starts. Cost remains 24,864
-convolution FLOPs/output pixel. Full development protocols follow.
+convolution FLOPs/output pixel. Full development results are reported below.
 
 Localization: the outer four-pixel border contributes 28.15% of compressed-RGB
-error (Phase 2 fit: 6.85%). The crop loss currently masks every crop border,
+error (Phase 2 fit: 6.85%). The initial crop loss masked every crop border,
 including real image edges, so those pixels receive no direct supervision.
 Trimming four pixels raises diagnostic PSNR to 33.65 dB, but **does not change
 the full-frame gate**. Correct the training masks to retain supervision at real
@@ -82,4 +82,20 @@ The image-edge correction passes 98 regular tests, all-target Clippy, and all
 twelve GPU checks on each of debug RADV/LavaPipe, with zero validation errors.
 Checks include every-parameter f64 gradients with asymmetric loss masks, all
 16 masks' spatial/coarse normalization, actual GPU mask copies and schema-2
-resume. Old training bundles are rejected for resume; inference is unchanged.
+resume. Old training bundles are rejected for resume; this correction leaves
+inference unchanged.
+
+Cold-motion counterfactuals subsequently fail on both CPU packing and native
+GPU output: changing only motion to the observed 1,305/−306-pixel magnitude
+changes cold output despite absent reconstruction history. The fix zeros only
+these reset-frame motion features; warm vectors and geometric warp math remain
+unchanged. Checkpoint schema 3 rejects resume across this input-contract change.
+This proves and corrects cold-motion dependence; the controlled training replay
+must still establish its effect on the observed loss spikes.
+
+The border-only seed-1 repeat clears the sanity gates on the unchanged independent
+noise stream: **31.7441 dB reset-every-frame** and **33.1141 dB causal** (+0.3820
+and +0.6266 dB over the initial fit). It uses the archived matching runtime,
+unchanged seed/data/10,000-step schedule and full-frame scoring, with no warm
+start or inference change. It is a controlled diagnostic, not a promotion;
+the final corrected input contract still needs its own from-scratch sanity fit.

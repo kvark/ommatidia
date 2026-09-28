@@ -6,12 +6,25 @@ Only development selects models. Confirmation is reserved for Phase 6.
 
 | Phase | Run | Budget / purpose | Outcome |
 |---|---|---|---|
+| 5 | `v4-phase5/reset-motion-regression-before` | Counterfactual regression: change only irrelevant cold-frame motion to the observed spike magnitude | Fails as expected: cold feature 3584 changes from 0 to 1,305 despite absent history. |
+| 5 | `v4-phase5/reset-motion-gpu-before` | Same cold-motion counterfactual through the unfixed native GPU path and recurrent state | Invalid check: used an older workspace test artifact and matched zero tests. Corrected below. |
+| 5 | `v4-phase5/reset-motion-gpu-before-corrected` | Run the newly built regression artifact on debug LavaPipe | Fails as expected: cold output changes from 1.41825 to 0.79996 solely from absent-frame motion. |
+| 5 | `v4-phase5/reset-motion-checks` | Zero only cold motion features; full fmt/tests/Clippy/build and schema-3 resume fixtures | 99 regular tests, all-target Clippy, fmt and release build pass. |
+| 5 | `v4-phase5/reset-motion-lavapipe` | All GPU checks with cold-motion independence and schema-3 resume, debug LavaPipe | Thirteen tests pass, zero validation errors; cold output/state now bit-identical under motion-only perturbations. |
+| 5 | `v4-phase5/reset-motion-evaluation-smoke` | Debug CLI: periodic evaluation, interrupted resume, reload, saved control, and reset-1/16 | Pass: resumed/reloaded CSV byte-identical, zero validation errors. |
+| 5 | `v4-phase5/reset-motion-debug-cli` | Rebuild standalone debug trainer for the exact CLI evaluation/resume smoke | Pass. |
+| 5 | `v4-phase5/image-edge-noise-causal` | Border-only checkpoint, independent noise, archived matching runtime, causal | 33.1141 dB: passes ≥32.6 dB, +0.6266 dB versus initial fit. |
+| 5 | `v4-phase5/image-edge-noise-reset1` | Same border-only checkpoint/runtime, history reset every frame | 31.7441 dB: passes ≥31.6 dB, +0.3820 dB versus initial fit. |
+| 5 | `v4-phase5/reset-motion-radv` | Full GPU checks with reset-motion correction and schema-3 resume, debug RADV | Thirteen tests pass, zero validation errors. |
+| 5 | `v4-phase5/image-edge-spike-500` | Controlled seed-7 40-scene prefix, corrected borders but original reset-motion features; archived runtime | Launching; original 5,000-step schedule, stop at 500, no warm start. |
+| 5 | `v4-phase5/reset-motion-spike-500` | Identical prefix with only cold-motion feature correction added | Queued after border-only control. |
+| 5 | `v4-phase5/archive-image-edge-runtime` | Preserve the executing border-only trainer/evaluator before testing reset-motion changes | Pass: archived hash exactly matches the running fit's recorded executable. |
 | 5 | `v4-phase5/image-edge-checks` | Corrected crop-loss masks: normalization, real-edge supervision, gradients/restore fixtures; fmt/tests/Clippy/build | Compile failed on an inferred integer bitmask type; corrected explicit usize. |
 | 5 | `v4-phase5/image-edge-checks-fixed` | Repeat after bitmask type fix; include actual GPU mask transfer assertions | 98 regular tests, fmt/Clippy and release build pass; GPU suites follow. |
 | 5 | `v4-phase5/image-edge-radv` | Corrected loss masks: all GPU gates, f64 gradients, packing/state carry and schema-2 resume, debug RADV | Twelve tests pass, zero validation errors. |
 | 5 | `v4-phase5/image-edge-lavapipe` | Same full GPU checks on debug LavaPipe | Twelve tests pass, zero validation errors. |
 | 5 | `v4-phase5/spike-observations` | Inspect captured geometry/motion at the two replayed cold prediction spikes | First-frame motion peaks at 135 and 1,305 HR pixels, then drops below 1; candidate cause for a controlled cold-input test, not yet a causal attribution. |
-| 5 | `v4-phase5/sanity-image-edges-10000` | Repeat seed-1 sanity from scratch with only corrected image-edge loss masks; unchanged data/schedule/budget | Launching after 98 regular tests and twelve GPU checks on each backend pass. |
+| 5 | `v4-phase5/sanity-image-edges-10000` | Repeat seed-1 sanity from scratch with only corrected image-edge loss masks; unchanged data/schedule/budget | Complete: finite/exact reload, 17.72% cold windows; both independent-noise gates pass. Background CPU checks exclude this run from speed comparisons. |
 | 5 | `v4-phase5/sanity-build` | Locked release trainer at the merged caller-encoder Meganeura pin; unchanged model/loop | Pass; previous debug correctness gates cover the identical merged source tree. |
 | 5 | `v4-phase5/sanity-10000` | From scratch, one scene, seed 1, 10,000 updates; B=8, k=4, 64² LR crops | Complete: 621.90 training seconds, 16.08 updates/s, 17.72% cold windows; independent-noise gates follow. |
 | 5 | `v4-phase5/diagnostic-radv` | Full reconstruction and cursor GPU gates after adding read-only diagnostics, debug RADV | Twelve tests pass, zero validation errors; alpha and diagnostic readbacks preserve outputs/resume exactly. |

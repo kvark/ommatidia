@@ -67,8 +67,10 @@ a complete matching bundle; it rejects weights-only warm starts or changed data
 and schedule settings. Use a new output directory and repeat the same training
 arguments, including the original total `--steps`; `--stop-after N` simulates an
 interruption without changing that schedule. Existing checkpoints are not overwritten.
-Training checkpoint schema 2 records this corrected loss contract; schema-1
-optimizer bundles cannot resume under it (their weights remain evaluable).
+Training checkpoint schema 3 records the corrected loss and reset-input contract:
+motion features are zero when no previous reconstruction exists, without changing
+the captured observations or warm-frame warp. Schema-1/2 optimizer bundles cannot
+resume under it; archived runtimes reproduce those earlier weights' exact results.
 The [measured profile](training-profile.md#phase-3-cursor-loop) excludes startup,
 checkpointing and evaluation, and counts only supervised pixels as gradients.
 

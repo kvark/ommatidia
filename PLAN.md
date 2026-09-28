@@ -471,6 +471,9 @@ Sanity diagnosis, 2026-09-28: the initial fit misses both gates. Correct the
 loss-mask interpretation: the four-pixel exclusion applies to artificial crop
 borders, not real image boundaries (previously never supervised). Keep evaluation
 full-frame, all thresholds/data fixed, and restart training from scratch.
+The cold-spike investigation also exposes motion features referring to absent
+history on hard resets. Zero those undefined features on reset only, preserve
+warm motion/geometric warps, and verify cold-input independence before training.
 
 Every rung reports, in one `docs/experiments.md` row per run:
 

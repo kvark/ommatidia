@@ -8,6 +8,8 @@ and its [built control runtime](archive/README.md) remains usable offline.
 
 Each frame supplies LR diffuse illumination/specular radiance, LR normal/depth,
 projection jitter, and HR normal/depth, diffuse albedo, F0, roughness and motion.
+Motion features are zero on hard resets, when there is no previous reconstruction;
+warm-frame vectors and the geometric warp retain their observed pixel units.
 HR signals are subpixel-packed onto the LR grid. Sample offsets describe each
 output pixel relative to its jittered input sample. Radiance is encoded as
 `c(exposure * radiance)`, where `c(x) = x/(1+x)`; nonnegative depth uses `c(depth)`.
@@ -43,7 +45,8 @@ are `[lobes, latent, state]` in inference and `[loss, lobes, latent, state]` in
 training; optional final alpha is diagnostic only. Meganeura differentiates the
 first, scalar training output while preserving carried outputs.
 Training uses eight persistent 64² LR crops and four-frame windows, excluding a
-four-pixel HR loss margin. Observations/maps are packed on GPU; detached state
+four-pixel HR loss margin at artificial crop edges (real image edges stay supervised).
+Observations/maps are packed on GPU; detached state
 is carried with GPU copies. Mean-gradient accumulation takes one clipped Adam
 step per batch. Evaluation shares parameter storage. Read-only memory-mapped
 captures feed a bounded crop-prefetch worker; radiance gains stay fixed per

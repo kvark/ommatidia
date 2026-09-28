@@ -274,13 +274,15 @@ fn resume_restores_adam_schedule_rng_and_gpu_state() {
     let metadata_path = directory.join("trainer.json");
     let metadata = std::fs::read(&metadata_path).unwrap();
     let mut old: serde_json::Value = serde_json::from_slice(&metadata).unwrap();
-    old["schema"] = 1.into();
-    std::fs::write(&metadata_path, serde_json::to_vec(&old).unwrap()).unwrap();
-    let error = Checkpoint::restore(&checkpoint, &mut restored, &settings, &[])
-        .err()
-        .unwrap()
-        .to_string();
-    assert!(error.contains("training-loss schema differs"), "{error}");
+    for schema in [1, 2] {
+        old["schema"] = schema.into();
+        std::fs::write(&metadata_path, serde_json::to_vec(&old).unwrap()).unwrap();
+        let error = Checkpoint::restore(&checkpoint, &mut restored, &settings, &[])
+            .err()
+            .unwrap()
+            .to_string();
+        assert!(error.contains("training contract differs"), "{error}");
+    }
     std::fs::write(&metadata_path, metadata).unwrap();
     // A changed state file cannot silently turn resume into a warm start.
     std::fs::write(directory.join("state.f32"), [0; 4]).unwrap();

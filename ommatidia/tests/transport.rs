@@ -244,6 +244,86 @@ fn alpha_output_preserves_reconstruction_and_reset_gates() {
 }
 
 #[test]
+fn reset_observations_ignore_motion_without_a_previous_frame() {
+    let config = Config::default();
+    let (mut stationary, _) = fixture(config, 0, 1);
+    for surface in &mut stationary.surfaces {
+        surface.motion = [0.0; 4];
+    }
+    let mut moving = stationary.clone();
+    for surface in &mut moving.surfaces {
+        // Magnitudes observed on the two Phase 5 cold spike frames.
+        surface.motion = [1305.0, -306.0, 0.0, 0.0];
+    }
+    let expected = cpu::prepare(&stationary, &State::default(), config);
+    let actual = cpu::prepare(&moving, &State::default(), config);
+    for (i, (a, b)) in expected.features.iter().zip(&actual.features).enumerate() {
+        assert_eq!(
+            a, b,
+            "reset feature {i} must not depend on absent-frame motion"
+        );
+    }
+    let previous = State {
+        values: vec![0.0; config.state_channels() * moving.surfaces.len()],
+    };
+    let warm = cpu::prepare(&moving, &previous, config);
+    let base = 12 * (moving.low[0] * moving.low[1]) as usize;
+    for c in 0..2 {
+        assert_eq!(
+            warm.features[base + config.index(moving.low, 11 + c, 0, 0)],
+            moving.surfaces[0].motion[c]
+        );
+    }
+}
+
+#[test]
+#[ignore = "requires Vulkan or Metal"]
+fn cold_motion_cannot_contaminate_reconstruction_or_carried_state() {
+    let context = gpu_context(false);
+    let config = Config {
+        channels: 2,
+        ..Config::default()
+    };
+    let mut expected = native::Native::new(Arc::clone(&context), config, [8; 2]).unwrap();
+    let mut actual = native::Native::new(Arc::clone(&context), config, [8; 2]).unwrap();
+    for (p, values) in expected
+        .network
+        .params
+        .iter()
+        .zip(nonzero_parameters(&expected.network))
+    {
+        expected.session.set_parameter(&p.name, &values);
+        actual.session.set_parameter(&p.name, &values);
+    }
+    for step in 0..4 {
+        let (mut frame, _) = fixture(config, step, 19);
+        if step % 2 == 0 {
+            expected.reset();
+            actual.reset();
+            for surface in &mut frame.surfaces {
+                surface.motion = [0.0; 4];
+            }
+        }
+        let mut changed = frame.clone();
+        if step % 2 == 0 {
+            for surface in &mut changed.surfaces {
+                surface.motion = [1305.0, -306.0, 0.0, 0.0];
+            }
+        }
+        close(
+            &expected.process(&frame).unwrap(),
+            &actual.process(&changed).unwrap(),
+            0.0,
+        );
+        close(
+            &expected.read_state().values,
+            &actual.read_state().values,
+            0.0,
+        );
+    }
+}
+
+#[test]
 #[ignore = "requires Vulkan or Metal"]
 fn caller_encoder_matches_offline_across_frames_and_cuts() {
     use blade_graphics as gpu;

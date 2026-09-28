@@ -92,7 +92,11 @@ pub fn prepare(frame: &Frame, previous: &State, config: Config) -> Prepared {
         observation[3] = encode(s.normal_depth[3], 1.0);
         observation[4..8].copy_from_slice(&s.albedo_roughness);
         observation[8..11].copy_from_slice(&s.specular_f0[..3]);
-        observation[11..13].copy_from_slice(&s.motion[..2]);
+        // Motion has no reconstruction reference on a hard reset. Preserve
+        // the observed vectors on warm frames, even when a warp leaves the image.
+        if ready {
+            observation[11..13].copy_from_slice(&s.motion[..2]);
+        }
         let scale = config.scale as usize;
         observation[13] =
             (x % scale) as f32 / scale as f32 + 0.5 / scale as f32 - 0.5 - frame.jitter[0];
