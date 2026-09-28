@@ -530,3 +530,27 @@ retain sequence identity, crop origin and frame windows. This identifies
 transient prediction overshoots, not their root cause; no batch is skipped,
 no clipping is added, and the model/loss/schedule remain unchanged. The larger
 early spikes are retained as evidence, not treated as a successful quality gate.
+
+The first scheduled causal checkpoint covers all 640 development frames.
+`capacity-w32-l4-seed1-curve-10000/` freezes the 10k loss prefix and outlier
+telemetry, with the same reference-identity proof and whole-sequence bootstrap
+as the other curves:
+
+| Updates | Last-1,000 mean loss | PSNR | Delta vs previous (95% CI), dB | Delta vs v3 (95% CI), dB |
+|---|---:|---:|---|---|
+| 10,000 | 0.0084783 | 26.0701 | — | −4.201 [−4.948, −3.615] |
+
+Warm PSNR is 26.1017 dB, −4.396 [−5.203, −3.700] dB behind v3. Energy is
+1.00754 [0.97069, 1.05238]: its point estimate is in range, not its entire
+interval. Temporal MSE ratio is 0.87832 [0.77590, 0.94341], below v3 at this
+checkpoint. Cost is 105,024 convolution FLOPs/output pixel (2,575,664
+parameters). The fixed 60,000-update run continues; this metrics-only report
+does not establish a capacity ranking or claim FLIP/crop results.
+
+The frozen prefix contains eight batch losses above 1. In addition to the six
+early events, update 3,260 has batch loss 3.2651 (warm cursor 4, sequence 14),
+and update 9,653 has batch loss 1.5453 (warm cursor 5, sequence 144). Recorded
+last-frame predicted-lobe peaks are 3,178.7/948.5 versus target-window peaks
+54.1/396.1; prediction and latent summaries for those cursors are finite.
+Their telemetry is retained in the 10k analysis. No root cause or training
+change is inferred from these observations.
