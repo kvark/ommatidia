@@ -1,8 +1,13 @@
 # Phase 5: training ladder
 
-In progress. The thresholds in [PLAN.md §9](../PLAN.md#9-phase-5-training-ladder-and-decision-point-a-3-days)
-are frozen. Every run, including failed diagnostics, is in the [ledger](experiments.md).
-No confirmation evaluation or gallery promotion belongs to this phase.
+The six-run capacity matrix is complete; **Decision A fails**. Select 16×4
+under the frozen cost rule and stop for the [owner handoff](#decision-a-owner-handoff)
+before the one fallback. Phase 5 is not complete. The thresholds in
+[PLAN.md §9](../PLAN.md#9-phase-5-training-ladder-and-decision-point-a-3-days)
+are unchanged. Every run, including failed diagnostics, is in the [ledger](experiments.md).
+The sections below preserve the chronological evidence; earlier pending-work
+notes are superseded by the final decision. No confirmation evaluation or
+gallery promotion belongs to this phase.
 
 ## Fixed protocol
 
@@ -754,7 +759,7 @@ without skips, clamps or restart; the immutable loss-prefix SHA-256 is
 
 ## 16×4 second-seed curve
 
-`capacity-w16-l4-seed2-curve-{10000,20000,30000,40000,50000}/` covers all 640 causal development
+`capacity-w16-l4-seed2-curve-{10000,20000,30000,40000,50000,60000}/` covers all 640 causal development
 frames with the same reference-identity proof and whole-sequence bootstrap.
 Each report freezes its loss prefix and the one-event outlier telemetry.
 
@@ -765,6 +770,7 @@ Each report freezes its loss prefix and the one-event outlier telemetry.
 | 30,000 | 0.0048583 | 27.0901 | +0.242 [−0.209, 0.630] | −3.181 [−3.765, −2.564] |
 | 40,000 | 0.0048389 | 27.6519 | +0.562 [0.322, 0.830] | −2.619 [−3.317, −1.975] |
 | 50,000 | 0.0037824 | 27.6353 | −0.017 [−0.305, 0.354] | −2.635 [−3.085, −2.107] |
+| 60,000 | 0.0038524 | 27.9233 | +0.288 [0.084, 0.453] | −2.347 [−2.913, −1.759] |
 
 Warm PSNR is 25.7272 dB, −4.771 [−5.843, −3.677] dB behind v3.
 Energy is 0.98470 [0.94197, 1.04113]: the point is in range, not its entire
@@ -805,3 +811,122 @@ one. The immutable 50k loss-prefix SHA-256 is
 `7aa9da9b1dba15415b3d66a4c03ecc87938d205950776b7c911f81b4fd4d9962`.
 The same 60k schedule continues; neither the lower training loss nor the
 temporal result establishes a spatial-quality pass.
+
+## 16×4 second-seed final report
+
+`capacity-200-w16-l4-seed2-60000/` completed from scratch at 60,000 updates,
+480,000 windows and 17.5025% cold windows. The final audit verifies 654,256
+finite parameters and each Adam tensor set, 2,228,224 finite carry values,
+matching hashes and bit-exact parameter reload. The one finite loss outlier
+at update 4,703 remains the only loss above 1. Cost is 31,200 convolution
+FLOPs/output pixel (2.044723 GFLOP per 256×256 frame).
+Checkpoint SHA-256:
+`aace1d510f4f31e1f13e95bbaf45d594e8a1b0eb54f9780a177e5fffde31cde1`.
+The final immutable loss-prefix SHA-256 is
+`d12e71bc0ef1fa79dc1ed200c975469ce0d567f69be1fd168803bf42e00b7529`.
+
+All four `capacity-w16-l4-seed2-{dev,score}-{causal,reset16}` runs completed
+with zero validation errors. Against learned v3, with paired whole-sequence
+95% confidence intervals:
+
+| Metric | Causal | Reset every 16 |
+|---|---:|---:|
+| PSNR | 27.9233 dB | 27.6257 dB |
+| PSNR delta vs v3 | −2.347 [−2.913, −1.759] dB | −1.982 [−2.460, −1.550] dB |
+| Cold smooth-crop MSE ratio | 0.883 [0.562, 1.518] | 0.883 [0.562, 1.518] |
+| Early smooth-crop MSE ratio | 2.085 [1.217, 3.134] | 2.085 [1.217, 3.134] |
+| Warm smooth-crop MSE ratio | 3.253 [2.442, 3.709] | null: no warm coverage |
+| FLIP | 0.171092 | 0.174878 |
+| FLIP delta vs v3 | +0.063340 [0.049150, 0.077084] | +0.055591 [0.042912, 0.067821] |
+| Energy ratio | 0.99533 [0.97559, 1.02589] | 0.99709 [0.97761, 1.02785] |
+| Temporal MSE ratio vs v3 | 0.81327 [0.72724, 0.87492] | 0.68377 [0.62230, 0.73810] |
+
+Causal warm PSNR is 28.0277 dB, a delta of −2.470 [−3.146, −1.690] dB.
+Energy point estimates recover into range at 60k; neither full interval is
+inside [0.98, 1.02]. Cold crops still cover four sequences/eight rectangles,
+with 999 valid resamples. Identical causal/reset cold and early crops come
+from the fixed selections, not additional independent reset-frame coverage.
+
+| Protocol / sequence (frame 63) | PSNR delta | FLIP delta | Linear MSE ratio | Temporal MSE ratio |
+|---|---:|---:|---:|---:|
+| Causal / 6 | −0.0308 dB | +0.043931 | 0.78044 | 1.05789 |
+| Causal / 7 | +3.8485 dB | −0.038271 | 1.02579 | 1.19317 |
+| Reset-16 / 6 | −0.4419 dB | +0.054906 | 0.72277 | 1.04265 |
+| Reset-16 / 7 | +0.2874 dB | +0.010530 | 1.19175 | 1.11418 |
+
+`capacity-w16-l4-seed2-report-audit/` verifies 640 exact causal metric rows,
+1,280 shared references, and twelve finite alpha maps with exact f32
+histograms and valid 256×256 PNGs. Diffuse/specular alpha means at 0:0,
+2:31 and 6:63 are 0/0, 0.86443/0.81578 and 0.84929/0.77055 causal;
+reset-16 gives 0/0, 0.86441/0.81584 and 0.84896/0.76923. Fixed-image
+inspection still shows mottled surfaces, purple/brown reconstruction of the
+gold patterned object, and blurred lighting/detail. No visual pass is claimed.
+
+## Final capacity selection
+
+The recorded `capacity-w16-l3-vs-l4-two-seeds/` comparison uses the method
+specified before either second-seed full report. Its fourteen synthetic
+checks pass; per-seed data/recipe identity holds and seed-1 results exactly
+reproduce the previous comparison. Both protocols give the same cold result:
+
+| Training seeds | Cold MSE ratio, 16×4 / 16×3 (95% CI) | Frozen cost exception |
+|---|---:|---|
+| 1 | 0.89484 [0.71271, 1.01260] | No: paired difference includes zero |
+| 2 | 0.87875 [0.63434, 1.07345] | No: paired difference includes zero |
+| Both, raw errors pooled | 0.88736 [0.76014, 0.99008] | Yes |
+
+**Select 16×4.** Pooled cold error falls 11.26%; the paired MSE difference
+is −0.00017930 [−0.00038048, −0.00001432], satisfying the ≥10% point gain
+plus difference-CI-below-zero rule for 25.5% extra compute (31,200 versus
+24,864 convolution FLOPs/output pixel). The interval does **not** establish
+that the gain is at least 10%; that was not the frozen requirement.
+Repeated scene IDs are resampled jointly across seeds. This is scene
+uncertainty conditional on two seeds, not eight independent cold-crop scenes,
+training-seed population uncertainty, or an ensemble prediction.
+
+Seed 2's PSNR gain from four levels is +0.111 [−0.123, 0.401] dB causal
+and +0.125 [−0.077, 0.400] dB reset-16; neither establishes a gain alone.
+Its FLIP differences also include zero. The selection is based on the
+specified pooled cold-error/cost rule, not a claim of universal improvement.
+
+## Decision A owner handoff
+
+**Fail; Phase 5 remains incomplete.** The recorded `decision-a-audit/`
+cross-checks 61 completed run manifests and their ledger coverage, the sanity
+thresholds, all six fixed-budget checkpoint curves/hashes and both full
+development protocols. It retains metrics for every candidate; none passes.
+The selected capacity's seed 2 has the best cold error and is the checkpoint
+reported below. Seed 1 has better overall PSNR (28.2648 dB) and FLIP (0.169426),
+but worse cold error (1.03389); it also fails. Metrics are never mixed across
+checkpoints to manufacture a passing candidate.
+
+| Requirement vs learned v3 | Seed-2 evidence | Outcome |
+|---|---|---|
+| Cold smooth-crop MSE ≤0.80 | 0.88254 [0.56232, 1.51816], both protocols | Fail |
+| Warm PSNR CI lower bound ≥−0.1 dB | Delta −2.470 [−3.146, −1.690] dB | Fail |
+| Warm smooth-crop MSE ≤1.0 | 3.25315 [2.44194, 3.70943] | Fail |
+| Aggregate temporal MSE ≤1.0 | 0.81327 causal / 0.68377 reset-16, both intervals below 1 | Pass |
+| Each lighting-final frame no worse | Temporal ratios 1.058/1.193 causal, 1.043/1.114 reset-16; other misses above | Fail |
+| Energy within [0.98, 1.02] | 0.99533 / 0.99709; full intervals extend outside range | Points pass; interval-level containment unproven |
+| FLIP ≤v3 | 0.171092 vs 0.107752 causal; 0.174878 vs 0.119287 reset-16; delta intervals above zero | Fail |
+
+Warm evidence is causal only; reset-16 has no frames aged ≥16, so its null
+warm strata are not passes. Lighting frame comparisons are individual points,
+not independent-frame confidence claims. Their two-sequence pooled temporal
+ratios also exceed 1: 1.07356 [1.05789, 1.19317] causal and
+1.05135 [1.04265, 1.11418] reset-16. The overall failure is unambiguous
+regardless of the energy-interval interpretation.
+
+Recommend **F1**, the already specified 5×5 LR kernel-prediction path with
+softmax weights and a learned mix with the direct estimate, as a replacement
+within the single 16×4 v4 model. Cold, early and warm spatial errors and FLIP
+justify testing that hypothesis; they do not prove it will fix lighting or
+texture/color failures. Do not stack F2/F3, increase the budget, or weaken gates.
+After owner direction: implement the one replacement, repeat correctness gates
+on both GPUs, train from scratch at the same 60k budget and evaluate the unchanged
+development protocols. A second failed Decision A ends this ladder per §9.
+
+The managed training queue has exited successfully (MainPID 0, exit status 0).
+No fallback is implemented or running. Stop here under PLAN §3 and request
+owner direction. Confirmation, README/gallery, runtime defaults and model code
+remain unchanged; this is not a Phase 6 checkpoint freeze.

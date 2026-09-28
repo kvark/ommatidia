@@ -1,6 +1,7 @@
 # Plan: one end-to-end reconstruction model (config v4)
 
-Status: adopted, 2026-09-27; Phases 0–4 complete. Owner: kvark.
+Status: adopted, 2026-09-27; Phases 0–4 complete. Phase 5 at failed Decision A,
+awaiting owner direction on the one fallback. Owner: kvark.
 Read all of §0–§3 before starting. Open decisions for the owner are in §12.
 
 Implementation started from `origin/main` at `232a278`, after the owner merged
@@ -496,8 +497,23 @@ second seeds: the cheaper baseline and the lowest-cost challenger, whose
 10.5% cold-error improvement remains uncertain. Both repeat from scratch at
 the unchanged 60k budget, seed 2. The 16×3 repeat and its complete reports
 are finished: 27.8122 dB causal, cold ratio 1.004 [0.721, 1.414], with
-spatial/warm/FLIP/lighting misses retained. The managed queue has started
-the fresh 16×4 repeat. Final capacity selection and decision A remain open.
+spatial/warm/FLIP/lighting misses retained. The fresh 16×4 repeat and both
+reports are now complete: 27.9233 dB causal, cold ratio 0.883 [0.562, 1.518].
+The pre-specified two-seed comparison selects **16×4**: pooled cold ratio
+0.88736 [0.76014, 0.99008] versus 16×3, with paired-difference CI below zero,
+meeting the frozen cost exception at 25.5% extra convolution FLOPs. Neither
+individual seed's capacity comparison excludes zero; the joint-scene interval
+is conditional on these two seeds, not a seed-population confidence claim.
+
+**Decision A, 2026-09-28: fail.** Both selected-capacity seeds miss the quality
+requirements. Seed 2 has the best cold error, but warm crop ratio is 3.253,
+warm PSNR delta is −2.470 [−3.146, −1.690] dB and FLIP increases by 0.06334.
+Aggregate temporal error improves, while individual lighting-final frames
+regress. Energy points are in range; their full intervals are not. See the
+[gate table and owner handoff](docs/phase5-results.md#decision-a-owner-handoff).
+Training is stopped at the §3 owner checkpoint. Recommend the pre-registered
+**F1 replacement**, fresh at the same 60k budget; it is not implemented or
+started. Phase 5 is not complete, and Phase 6/README promotion is not authorized.
 
 Every rung reports, in one `docs/experiments.md` row per run:
 
