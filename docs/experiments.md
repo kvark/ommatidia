@@ -6,6 +6,9 @@ Only development selects models. Confirmation is reserved for Phase 6.
 
 | Phase | Run | Budget / purpose | Outcome |
 |---|---|---|---|
+| 5 | `v4-phase5/capacity-w16-l4-seed1-curve-60000` | Complete scheduled causal checkpoint curve and final weights/optimizer/state/sampling audit for 16×4 | Queued after successful training completion; no checkpoint selection. |
+| 5 | `v4-phase5/capacity-w32-l3-seed1-curve-60000` | Same complete curve and final-training audit for 32×3 | Queued after successful training completion; no checkpoint selection. |
+| 5 | `v4-phase5/capacity-w32-l4-seed1-curve-60000` | Same complete curve and final-training audit for 32×4 | Queued after successful training completion; no checkpoint selection. |
 | 5 | `v4-phase5/capacity-40-vs-200-w16-l3-seed1` | Pair the completed 40- and 200-scene runs at identical width/depth, seed and budget, both development protocols | Causal/reset-16 PSNR gains +1.754 [1.175, 2.671]/+1.525 [1.045, 2.305] dB; FLIP improves. Cold smooth ratio 1.230 [0.726, 1.628]: no established crop improvement. |
 | 5 | `v4-phase5/capacity-w16-l3-seed1-curve-60000` | Final 200-scene 16×3 curve: paired development intervals, full loss prefix and completed-training audit | 27.7914 dB; +0.057 [−0.141, 0.252] dB versus 50k, −2.479 [−3.209, −1.856] versus v3. Audit passes: 480,000 windows, finite weights/moments/state, exact reload; one loss outlier. |
 | 5 | `v4-phase5/capacity-w16-l3-seed1-curve-50000` | Scheduled 200-scene checkpoint: paired development intervals and immutable loss prefix through 50,000 updates | 27.7346 dB; +0.007 [−0.174, 0.195] dB versus 40k, −2.536 [−3.357, −1.865] versus v3. Temporal ratio 0.83966 [0.74242, 0.90620]; one loss outlier through 50k. |
