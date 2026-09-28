@@ -532,7 +532,7 @@ no clipping is added, and the model/loss/schedule remain unchanged. The larger
 early spikes are retained as evidence, not treated as a successful quality gate.
 
 Scheduled causal checkpoints cover all 640 development frames. Recorded
-`capacity-w32-l4-seed1-curve-{10000,20000,30000,40000}/` analyses freeze
+`capacity-w32-l4-seed1-curve-{10000,20000,30000,40000,50000}/` analyses freeze
 the corresponding loss prefixes and outlier telemetry. They use the same
 reference-identity proof and whole-sequence bootstrap as the other curves:
 
@@ -542,15 +542,15 @@ reference-identity proof and whole-sequence bootstrap as the other curves:
 | 20,000 | 0.0074709 | 26.9652 | +0.895 [0.632, 1.216] | −3.306 [−4.053, −2.601] |
 | 30,000 | 0.0042334 | 27.3616 | +0.396 [0.101, 0.733] | −2.909 [−3.681, −2.167] |
 | 40,000 | 0.0037826 | 28.1300 | +0.768 [0.464, 1.019] | −2.141 [−2.784, −1.507] |
+| 50,000 | 0.0033130 | 28.6405 | +0.510 [0.298, 0.685] | −1.630 [−2.189, −1.047] |
 
-All three consecutive improvement intervals exclude zero, but warm PSNR at
-40k remains 28.2041 dB, −2.294 [−3.057, −1.500] dB behind v3. Energy is
-1.00370 [0.98096, 1.03683]: its point estimate is in range, not its entire
-interval. Temporal MSE ratio is 0.98572 [0.84280, 1.10413], so improvement
-over v3 is not established at this checkpoint. Cost is 105,024 convolution
-FLOPs/output pixel (2,575,664 parameters). The fixed 60,000-update run
-continues; these metrics-only reports do not establish a capacity ranking or
-claim FLIP/crop results.
+All four consecutive improvement intervals exclude zero, but warm PSNR at
+50k remains 28.7569 dB, −1.741 [−2.458, −0.950] dB behind v3. Energy is
+0.98476 [0.96911, 1.00799]: its point estimate is in range, not its entire
+interval. Temporal MSE ratio is 0.79768 [0.71729, 0.85169], below v3 at this
+checkpoint. Cost is 105,024 convolution FLOPs/output pixel (2,575,664
+parameters). The fixed 60,000-update run continues; these metrics-only
+reports do not establish a capacity ranking or claim FLIP/crop results.
 
 The frozen 10k prefix contains eight batch losses above 1. In addition to the six
 early events, update 3,260 has batch loss 3.2651 (warm cursor 4, sequence 14),
@@ -564,5 +564,5 @@ Through 20k, the count reaches eleven, with additional batch losses
 1.0737/2.0109/2.3051 at updates 10,736/12,023/16,332. These are dominated by
 one warm and two resetting windows, respectively; the recorded prediction
 and latent summaries of those cursors are finite. No additional losses above
-1 occur through 40k; the 20k–40k telemetry snapshots are identical and
+1 occur through 50k; the 20k–50k telemetry snapshots are identical and
 retain all eleven events. Training remains unchanged.
