@@ -486,3 +486,47 @@ material-color and detail errors. Full reports are
 `capacity-w32-l3-seed1-score-{causal,reset16}/`; no images or weights are promoted.
 The 32×4 run and best-two second seeds remain required before selection and
 Decision A; these results alone do not justify a cost exception.
+
+The recorded `capacity-w16-l3-vs-w32-l3-seed1/` and
+`capacity-w16-l4-vs-w32-l3-seed1/` comparisons verify identical executable,
+ordered corpus/provenance hashes, loss, seed and 60k schedule, allowing only
+the registered width/depth differences. The generalized comparison wrapper
+first reproduces the existing width-16 depth comparison exactly, including
+both paired protocol reports and cost. Cold ratios below compare 32×3 against
+the named baseline, using paired raw crop sums rather than ratios of ratios:
+
+| Baseline | FLOPs multiplier | Causal PSNR gain (95% CI), dB | Reset-16 PSNR gain (95% CI), dB | Cold MSE ratio (95% CI), both protocols |
+|---|---:|---|---|---|
+| 16×3 | 3.205× | +0.574 [0.418, 0.747] | +0.599 [0.440, 0.754] | 0.99789 [0.97097, 1.02240] |
+| 16×4 | 2.554× | +0.101 [−0.431, 0.488] | +0.030 [−0.514, 0.421] | 1.11516 [0.99860, 1.36968] |
+
+Neither cold comparison meets the ≥10% improvement requirement, and both
+paired difference intervals include zero. Thus 32×3 does not meet the larger
+configuration's cost exception against either completed smaller configuration.
+Against 16×3, FLIP improves by 0.01002 [0.00664, 0.01442] causal and
+0.01002 [0.00619, 0.01446] reset-16. Against 16×4, neither PSNR nor FLIP
+improvement is established; reset-16 temporal MSE is higher, ratio 1.03471
+[1.01403, 1.05640]. This is first-seed evidence, not final selection.
+
+## 32×4: early training observations
+
+The managed queue started the final first-seed configuration from scratch,
+with the same 200-scene corpus, seed and 60,000-update schedule. The recorded
+`capacity-w32-l4-outliers-2000/` audit freezes the first 2,000 updates and
+cursor diagnostics. Six finite batch losses exceed 1 in two episodes:
+
+- Updates 1,022/1,023: batch losses 13.2411/2.3460, dominated by cursor 7
+  on sequence 173 (lighting), gain 3.6784. The first window resets and the
+  second carries history. Last-frame prediction peaks are 789.4/356.8 versus
+  target-window peaks 98.2/98.1.
+- Updates 1,497–1,500: batch losses 8,868.602/837.659/82.815/4.368, dominated
+  by cursor 6 on sequence 65 (camera), gain 3.8918. The first window resets;
+  the following three carry history. The first event's last-frame predicted
+  lobe peak is 20,873.0 versus target-window peak 29.4 and input peak 1,008.0.
+
+All recorded input, target, prediction and latent summaries are finite. After
+update 1,500, batch loss through 2,000 is at most 0.065291. The source snapshots
+retain sequence identity, crop origin and frame windows. This identifies
+transient prediction overshoots, not their root cause; no batch is skipped,
+no clipping is added, and the model/loss/schedule remain unchanged. The larger
+early spikes are retained as evidence, not treated as a successful quality gate.
