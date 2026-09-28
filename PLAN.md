@@ -482,9 +482,11 @@ v3. The complete development/alpha/interval report is in
 60,000-update budget curve is complete: development plateaus then regresses
 while training loss falls, so proceed with the planned 200-scene capacity sweep.
 Its full two-protocol report is complete, with spatial-quality misses retained.
-The first 200-scene capacity run (16×3, seed 1) and both full reports are also
-complete: 27.7914 dB causal, with cold/warm crop and FLIP misses retained.
-The remaining capacity runs, best-two second seeds and decision A remain open.
+The width-16 capacity runs (three/four levels, seed 1) and both full protocols
+are complete: 27.7914/28.2648 dB causal, with cold/warm crop and FLIP misses
+retained. Four levels improve PSNR but do not yet satisfy the cost exception:
+cold MSE ratio 0.895 [0.713, 1.013] versus three levels, at 25.5% extra FLOPs.
+The width-32 runs, best-two second seeds and decision A remain open.
 
 Every rung reports, in one `docs/experiments.md` row per run:
 

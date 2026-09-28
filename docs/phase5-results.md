@@ -336,9 +336,9 @@ The reproducible report is `capacity-w16-l4-warm-outliers-2500-recorded/`;
 its source snapshot corrects the first audit's missing stdin-script provenance.
 
 The scheduled causal checkpoints cover all 640 development frames. Recorded
-`capacity-w16-l4-seed1-curve-{20000,30000,40000,50000}/` analyses freeze the corresponding
-loss prefixes and use the same reference-identity proof and whole-sequence
-intervals as the other curves:
+`capacity-w16-l4-seed1-curve-{20000,30000,40000,50000,60000}/` analyses freeze
+the corresponding loss prefixes and use the same reference-identity proof and
+whole-sequence intervals as the other curves:
 
 | Updates | Last-1,000 mean loss | PSNR | Delta vs previous (95% CI), dB | Delta vs v3 (95% CI), dB |
 |---|---:|---:|---|---|
@@ -347,17 +347,66 @@ intervals as the other curves:
 | 30,000 | 0.0045525 | 27.0070 | +0.139 [−0.274, 0.558] | −3.264 [−4.323, −2.429] |
 | 40,000 | 0.0042245 | 27.9262 | +0.919 [0.581, 1.276] | −2.344 [−3.097, −1.672] |
 | 50,000 | 0.0037667 | 27.7825 | −0.144 [−0.311, 0.006] | −2.488 [−3.259, −1.828] |
+| 60,000 | 0.0036426 | 28.2648 | +0.482 [0.104, 1.017] | −2.006 [−2.276, −1.643] |
 
 The first two consecutive-change intervals cross zero, but the 30k→40k gain
 excludes zero. The following 40k→50k point estimate declines, with an interval
-that includes zero, while training loss keeps falling. This does not establish
-a regression or a capacity ranking. At 50,000, cold PSNR is 26.0786 dB
-(not a cold-crop gate measurement), while warm PSNR remains −2.583
-[−3.476, −1.721] dB behind v3. Energy is 0.97746 [0.95174, 1.01315], below
-the target at its point estimate. Temporal MSE ratio is 0.81455
-[0.72350, 0.87788], below parity without
-establishing the separate lighting-final condition. Four losses above 1 are
-recorded through 50,000. Cost is 31,200 convolution FLOPs/output pixel
-(654,256 parameters). Training continues to the unchanged 60,000-update
-budget; full crop/FLIP/reset-16 reports and final-state verification remain
-pending. No checkpoint is selected or promoted.
+that includes zero, followed by a positive 50k→60k gain. This is not a
+capacity ranking or a reason to change one configuration's fixed budget.
+The complete from-scratch run has 480,000 sampled windows (17.4983% cold),
+654,256 finite parameters and each Adam moment set, and 2,228,224 finite
+carried-state values. Checkpoint/state hashes match and parameters reload
+bit-exactly. Four finite losses exceed 1 (maximum 43.92154). Cost is 31,200
+convolution FLOPs/output pixel. Final checkpoint SHA-256:
+`ff05999a9073809f07203b5756a9551d5a237c24541cf6beb758048ee6f94268`.
+
+## Second capacity result: 200 scenes, 16×4, seed 1
+
+Both full protocols use the final 60,000-update retry checkpoint and all 640
+development frames. Ratios compare against learned v3, with whole-sequence
+bootstrap 95% intervals:
+
+| Metric | Causal | Reset every 16 |
+|---|---|---|
+| PSNR, dB | 28.2648 | 27.9967 |
+| PSNR delta vs v3, dB | −2.006 [−2.276, −1.643] | −1.611 [−1.761, −1.441] |
+| Cold smooth-crop MSE ratio | 1.034 [0.696, 1.452] | 1.034 [0.696, 1.452] |
+| Early smooth-crop MSE ratio | 2.186 [1.258, 3.243] | 2.186 [1.258, 3.243] |
+| Warm smooth-crop MSE ratio | 2.830 [2.016, 3.902] | Unavailable |
+| FLIP | 0.16943 | 0.17246 |
+| FLIP delta vs v3 | +0.06167 [0.05031, 0.07361] | +0.05318 [0.04292, 0.06375] |
+| Energy ratio to reference | 0.98283 [0.96310, 1.00506] | 0.98314 [0.96321, 1.00516] |
+| Temporal MSE ratio | 0.81871 [0.72568, 0.88317] | 0.66458 [0.60137, 0.72096] |
+
+Cold crop intervals have 999 valid resamples; reset-16 warm coverage remains
+null. Causal warm PSNR is 28.3815 dB, −2.117 [−2.490, −1.556] dB behind v3.
+Energy point estimates are in range, but their intervals are not contained
+within it. Cold/warm crop and FLIP targets still miss. The lighting-final
+condition also remains unmet despite improved final-frame PSNR:
+
+| Protocol / sequence (frame 63) | PSNR delta, dB | FLIP delta | Linear MSE ratio | Temporal MSE ratio |
+|---|---:|---:|---:|---:|
+| Causal / 6 | +0.9437 | +0.03434 | 0.71551 | 1.02376 |
+| Causal / 7 | +3.5597 | −0.03633 | 1.03454 | 1.20202 |
+| Reset 16 / 6 | +0.5265 | +0.04560 | 0.66113 | 1.00994 |
+| Reset 16 / 7 | +0.0654 | +0.01110 | 1.19875 | 1.11746 |
+
+The `capacity-w16-l4-report-audit/` check verifies exact reproduction of all
+640 causal metric rows, all 1,280 verified shared references, and the 12 raw
+alpha maps, histograms and PNG headers. Cold alpha is zero. Diffuse/specular
+means at camera 2:31 and lighting 6:63 are 0.83295/0.77677 and
+0.81845/0.75490 (causal), and 0.83296/0.77678 and 0.81840/0.75487 (reset-16).
+Fixed cold/camera image inspection shows reduced speckling but persistent
+material-color and detail errors. Full reports are
+`capacity-w16-l4-seed1-score-{causal,reset16}/`; no images or weights are promoted.
+
+The recorded `capacity-w16-l3-vs-l4-seed1/` comparison verifies identical
+executable, ordered data/provenance hashes, loss, seed and 60k schedule, with
+only depth changed. Four levels improve causal/reset-16 PSNR by
+0.473 [0.113, 0.980]/0.569 [0.183, 1.142] dB and reduce FLIP by
+0.00512 [0.00124, 0.00931]/0.00649 [0.00174, 0.01200]. However, cold smooth
+MSE is 0.89484 [0.71271, 1.01260] times the three-level result: its paired
+difference interval [−0.00031211, +0.00001200] includes zero. At 25.5% extra
+FLOPs, it does not yet meet the plan's exception to preferring the cheaper
+configuration. Width-32 runs and the best-two second seeds remain required
+before selection and Decision A.
