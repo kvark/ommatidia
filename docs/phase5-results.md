@@ -335,21 +335,24 @@ not its root cause. No batch is skipped and no loss/model/schedule is changed.
 The reproducible report is `capacity-w16-l4-warm-outliers-2500-recorded/`;
 its source snapshot corrects the first audit's missing stdin-script provenance.
 
-The scheduled causal checkpoints cover all 640 development frames. The recorded
-`capacity-w16-l4-seed1-curve-20000/` analysis freezes the first 20,000 loss rows
-and uses the same reference-identity proof and whole-sequence intervals as the
-other curves:
+The scheduled causal checkpoints cover all 640 development frames. Recorded
+`capacity-w16-l4-seed1-curve-{20000,30000}/` analyses freeze the corresponding
+loss prefixes and use the same reference-identity proof and whole-sequence
+intervals as the other curves:
 
 | Updates | Last-1,000 mean loss | PSNR | Delta vs previous (95% CI), dB | Delta vs v3 (95% CI), dB |
 |---|---:|---:|---|---|
 | 10,000 | 0.0063584 | 25.8484 | — | −4.422 [−4.943, −3.892] |
 | 20,000 | 0.0055403 | 26.8684 | +1.020 [−0.174, 1.902] | −3.402 [−4.741, −2.478] |
+| 30,000 | 0.0045525 | 27.0070 | +0.139 [−0.274, 0.558] | −3.264 [−4.323, −2.429] |
 
-The improvement interval crosses zero; this does not establish a gain or a
-capacity ranking. At 20,000, warm PSNR remains −3.540 [−4.967, −2.501] dB
-behind v3. Energy is 1.03040 [0.99504, 1.08715], outside the target at its
-point estimate; temporal MSE ratio is 0.93869 [0.82804, 1.02207]. Four losses
-above 1 are recorded through 20,000. Cost is 31,200 convolution FLOPs/output
+Both consecutive-change intervals cross zero; neither establishes a gain or a
+capacity ranking. At 30,000, warm PSNR remains −3.394 [−4.485, −2.401] dB
+behind v3. Energy is 0.99166 [0.95673, 1.04143]: the point estimate is in
+range, not its entire interval. Temporal MSE ratio is 0.91533
+[0.81290, 0.98131], below parity without establishing the separate
+lighting-final condition. Four losses above 1 are recorded through 30,000.
+Cost is 31,200 convolution FLOPs/output
 pixel (654,256 parameters). Training continues to the unchanged 60,000-update
 budget; full crop/FLIP/reset-16 reports and final-state verification remain
 pending. No checkpoint is selected or promoted.
