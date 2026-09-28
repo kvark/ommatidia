@@ -488,7 +488,14 @@ retained. Four levels improve PSNR but do not yet satisfy the cost exception:
 cold MSE ratio 0.895 [0.713, 1.013] versus three levels, at 25.5% extra FLOPs.
 The 32×3 seed-1 run and both full protocols are also complete: 28.3656 dB
 causal, cold ratio 1.153 [0.695, 1.648], with spatial/warm/FLIP/lighting misses
-retained. The 32×4 run, best-two second seeds and decision A remain open.
+retained. The 32×4 seed-1 run and both protocols are complete: 28.6585 dB
+causal, cold ratio 1.382 [0.860, 2.074], with spatial/warm/FLIP/lighting/energy
+misses retained. All six paired capacity comparisons are complete; no larger
+configuration meets the frozen cost exception. Select 16×3 and 16×4 for
+second seeds: the cheaper baseline and the lowest-cost challenger, whose
+10.5% cold-error improvement remains uncertain. Both repeat from scratch at
+the unchanged 60k budget, seed 2. The managed queue has started 16×3 with
+16×4 next. Final capacity selection and decision A remain open.
 
 Every rung reports, in one `docs/experiments.md` row per run:
 
