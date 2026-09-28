@@ -6,6 +6,7 @@ Only development selects models. Confirmation is reserved for Phase 6.
 
 | Phase | Run | Budget / purpose | Outcome |
 |---|---|---|---|
+| 5 | `v4-phase5/capacity-w16-l3-seed2-curve-30000` | Half-budget second-seed checkpoint: causal intervals, immutable 30k loss prefix and outlier telemetry | 26.5194 dB; −0.139 [−0.783, 0.494] dB versus 20k, −3.751 [−4.618, −2.870] versus v3. Energy 1.03917, temporal ratio 0.88028 [0.77606, 0.95186]; no loss outliers. |
 | 5 | `v4-phase5/capacity-w16-l3-seed2-curve-20000` | Scheduled second-seed checkpoint: causal intervals, immutable 20k loss prefix and outlier telemetry | 26.6589 dB; +1.369 [0.522, 2.523] dB versus 10k, −3.612 [−4.237, −3.011] versus v3. Energy 1.01770, temporal ratio 0.87281 [0.75952, 0.94619]; no loss outliers. |
 | 5 | `v4-phase5/capacity-w16-l3-seed2-curve-10000` | First scheduled second-seed checkpoint: causal sequence intervals, immutable 10k loss prefix and outlier telemetry | 25.2895 dB; delta −4.981 [−6.506, −3.902] dB versus v3. Energy 1.03413, temporal ratio 0.84733 [0.74724, 0.91423]; no loss outliers, fixed budget continues. |
 | 5 | `v4-phase5/second-seed-selection` | Apply the frozen cold-improvement/cost rule to all six completed first-seed pairs | Select 16×3 and 16×4 for seed 2: no larger configuration earns the cost exception; their cold-error difference remains uncertain. Not final selection or Decision A. |
