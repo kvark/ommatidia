@@ -235,13 +235,19 @@ identifies input delivery as the current measured bottleneck, not its exact
 underlying cause or an isolated speed comparison. The active schedule, model,
 loss and data are unchanged.
 
-The first scheduled **200-scene 16×3, seed-1, 10,000-update** checkpoint scores
-25.5216 dB on all 640 causal development frames: −4.749 [−5.397, −4.108] dB
-against v3. Cold/warm PSNR are 24.6199/25.5544 dB; the warm difference is
-−4.944 [−5.704, −4.133] dB. Energy is 0.94467 [0.90736, 0.99011], and temporal
-MSE ratio is 0.97140 [0.85282, 1.05723], whose interval spans parity.
-Last-1,000 mean training loss is 0.0079259, with no loss outliers above 1 in
-the frozen prefix. The report is `capacity-w16-l3-seed1-curve-10000/` under
-`runs/v4-phase5/`. This interim metrics-only checkpoint does not establish a
-capacity ranking or claim FLIP/crop results. The unchanged run continues to
+Scheduled **200-scene 16×3, seed-1** checkpoints, all 640 causal development
+frames; paired intervals resample whole sequences:
+
+| Updates | Last-1,000 mean loss | PSNR | Delta vs previous (95% CI), dB | Delta vs v3 (95% CI), dB |
+|---|---:|---:|---|---|
+| 10,000 | 0.0079259 | 25.5216 | — | −4.749 [−5.397, −4.108] |
+| 20,000 | 0.0082268 | 26.8564 | +1.335 [0.596, 1.924] | −3.414 [−4.628, −2.487] |
+
+At 20,000 updates, cold/warm PSNR are 24.9389/26.9092 dB; the warm difference
+against v3 is −3.589 [−4.853, −2.530] dB. Energy is 1.03208
+[1.00071, 1.08462], and temporal MSE ratio is 1.03540 [0.89117, 1.14835].
+The frozen prefix contains one finite loss above 1 (1.474924 at update 19,829),
+versus none through 10,000. Reports are `capacity-w16-l3-seed1-curve-{step}/`
+under `runs/v4-phase5/`. These interim metrics-only checkpoints do not establish
+a capacity ranking or claim FLIP/crop results. The unchanged run continues to
 60,000 updates before its complete two-protocol report.
