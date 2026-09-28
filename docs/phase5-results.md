@@ -754,13 +754,14 @@ without skips, clamps or restart; the immutable loss-prefix SHA-256 is
 
 ## 16×4 second-seed curve
 
-`capacity-w16-l4-seed2-curve-10000/` covers all 640 causal development
+`capacity-w16-l4-seed2-curve-{10000,20000}/` covers all 640 causal development
 frames with the same reference-identity proof and whole-sequence bootstrap.
-It freezes the 10k loss prefix and the one-event outlier telemetry.
+Each report freezes its loss prefix and the one-event outlier telemetry.
 
 | Updates | Last-1,000 mean loss | PSNR | Delta vs previous (95% CI), dB | Delta vs v3 (95% CI), dB |
 |---|---:|---:|---|---|
 | 10,000 | 0.0061000 | 25.6862 | — | −4.585 [−5.547, −3.674] |
+| 20,000 | 0.0051748 | 26.8478 | +1.162 [0.478, 1.996] | −3.423 [−3.751, −3.079] |
 
 Warm PSNR is 25.7272 dB, −4.771 [−5.843, −3.677] dB behind v3.
 Energy is 0.98470 [0.94197, 1.04113]: the point is in range, not its entire
@@ -769,3 +770,10 @@ outlier above is the only loss above 1 through 10k. The loss-prefix SHA-256
 is `8988ac6f5013fd2429ebb65f375262444b5024f35b666bb960ae7c5489766264`.
 No crop/FLIP result, capacity selection or quality pass is inferred from
 this interim checkpoint; the unchanged fresh 60k run continues.
+
+At 20k, the PSNR improvement over 10k excludes zero, but warm PSNR remains
+26.8966 dB, −3.601 [−4.028, −3.124] dB behind v3. Energy is
+0.98980 [0.97642, 1.00385], with the point but not the full interval in
+range. Temporal MSE ratio is 0.89182 [0.76935, 0.97858]. The outlier count
+remains one through 20k. Its immutable loss-prefix SHA-256 is
+`53323d3640a3e9c7556d39d0e02895667f48addc84d203c84b3388ff4a3367ba`.
