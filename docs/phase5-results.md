@@ -647,6 +647,18 @@ with both full protocols and final curve audits after each. It stops on
 failure and never restarts a job automatically. Both repeats, final capacity
 selection and Decision A remain required. Confirmation remains untouched.
 
+Final capacity comparison will include both registered seeds equally, using
+the final 60k checkpoints. Pool raw crop error sums, not ratios; bootstrap
+the original ten sequence identities jointly across seeds so a repeated
+scene is not treated as independent. Keep both per-seed comparisons visible.
+The combined interval measures scene uncertainty conditional on these two
+seeds, not the population variance over possible training seeds. The frozen
+≥10% cold improvement plus paired-difference interval rule is unchanged;
+the pooled result concerns capacity, not an ensemble prediction or a quality
+pass. This aggregation is specified before either second-seed full report.
+The helper also requires identical reference hashes, reset ages and v3 crop
+control evidence across seeds, in addition to the existing per-seed checks.
+
 ## 16×3 second-seed curve
 
 Scheduled checkpoints cover all 640 causal development frames.
