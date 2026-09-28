@@ -336,7 +336,7 @@ The reproducible report is `capacity-w16-l4-warm-outliers-2500-recorded/`;
 its source snapshot corrects the first audit's missing stdin-script provenance.
 
 The scheduled causal checkpoints cover all 640 development frames. Recorded
-`capacity-w16-l4-seed1-curve-{20000,30000,40000}/` analyses freeze the corresponding
+`capacity-w16-l4-seed1-curve-{20000,30000,40000,50000}/` analyses freeze the corresponding
 loss prefixes and use the same reference-identity proof and whole-sequence
 intervals as the other curves:
 
@@ -346,15 +346,18 @@ intervals as the other curves:
 | 20,000 | 0.0055403 | 26.8684 | +1.020 [−0.174, 1.902] | −3.402 [−4.741, −2.478] |
 | 30,000 | 0.0045525 | 27.0070 | +0.139 [−0.274, 0.558] | −3.264 [−4.323, −2.429] |
 | 40,000 | 0.0042245 | 27.9262 | +0.919 [0.581, 1.276] | −2.344 [−3.097, −1.672] |
+| 50,000 | 0.0037667 | 27.7825 | −0.144 [−0.311, 0.006] | −2.488 [−3.259, −1.828] |
 
 The first two consecutive-change intervals cross zero, but the 30k→40k gain
-excludes zero. This is improvement within this run, not a capacity ranking.
-At 40,000, cold PSNR is 26.1004 dB (not a cold-crop gate measurement), while
-warm PSNR remains −2.467 [−3.319, −1.604] dB behind v3. Energy is 0.99746
-[0.97318, 1.03374]: the point estimate is in range, not its entire interval.
-Temporal MSE ratio is 0.86312 [0.76558, 0.93135], below parity without
+excludes zero. The following 40k→50k point estimate declines, with an interval
+that includes zero, while training loss keeps falling. This does not establish
+a regression or a capacity ranking. At 50,000, cold PSNR is 26.0786 dB
+(not a cold-crop gate measurement), while warm PSNR remains −2.583
+[−3.476, −1.721] dB behind v3. Energy is 0.97746 [0.95174, 1.01315], below
+the target at its point estimate. Temporal MSE ratio is 0.81455
+[0.72350, 0.87788], below parity without
 establishing the separate lighting-final condition. Four losses above 1 are
-recorded through 40,000. Cost is 31,200 convolution FLOPs/output pixel
+recorded through 50,000. Cost is 31,200 convolution FLOPs/output pixel
 (654,256 parameters). Training continues to the unchanged 60,000-update
 budget; full crop/FLIP/reset-16 reports and final-state verification remain
 pending. No checkpoint is selected or promoted.
