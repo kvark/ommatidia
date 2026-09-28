@@ -481,9 +481,10 @@ v3. The complete development/alpha/interval report is in
 [Phase 5 results](docs/phase5-results.md). The original 40-scene, seed-1,
 60,000-update budget curve is complete: development plateaus then regresses
 while training loss falls, so proceed with the planned 200-scene capacity sweep.
-Its full two-protocol report is complete, with spatial-quality misses retained;
-the first 200-scene capacity run has started. Capacity selection and decision A
-remain open.
+Its full two-protocol report is complete, with spatial-quality misses retained.
+The first 200-scene capacity run (16×3, seed 1) and both full reports are also
+complete: 27.7914 dB causal, with cold/warm crop and FLIP misses retained.
+The remaining capacity runs, best-two second seeds and decision A remain open.
 
 Every rung reports, in one `docs/experiments.md` row per run:
 

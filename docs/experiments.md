@@ -6,7 +6,8 @@ Only development selects models. Confirmation is reserved for Phase 6.
 
 | Phase | Run | Budget / purpose | Outcome |
 |---|---|---|---|
-| 5 | `v4-phase5/capacity-w16-l3-seed1-curve-60000` | Final 200-scene 16×3 curve: paired development intervals, full loss prefix and completed-training audit | Queued until training and evaluation complete. |
+| 5 | `v4-phase5/capacity-40-vs-200-w16-l3-seed1` | Pair the completed 40- and 200-scene runs at identical width/depth, seed and budget, both development protocols | Causal/reset-16 PSNR gains +1.754 [1.175, 2.671]/+1.525 [1.045, 2.305] dB; FLIP improves. Cold smooth ratio 1.230 [0.726, 1.628]: no established crop improvement. |
+| 5 | `v4-phase5/capacity-w16-l3-seed1-curve-60000` | Final 200-scene 16×3 curve: paired development intervals, full loss prefix and completed-training audit | 27.7914 dB; +0.057 [−0.141, 0.252] dB versus 50k, −2.479 [−3.209, −1.856] versus v3. Audit passes: 480,000 windows, finite weights/moments/state, exact reload; one loss outlier. |
 | 5 | `v4-phase5/capacity-w16-l3-seed1-curve-50000` | Scheduled 200-scene checkpoint: paired development intervals and immutable loss prefix through 50,000 updates | 27.7346 dB; +0.007 [−0.174, 0.195] dB versus 40k, −2.536 [−3.357, −1.865] versus v3. Temporal ratio 0.83966 [0.74242, 0.90620]; one loss outlier through 50k. |
 | 5 | `v4-phase5/capacity-w16-l3-seed1-curve-40000` | Scheduled 200-scene checkpoint: paired development intervals and immutable loss prefix through 40,000 updates | 27.7273 dB; +0.647 [0.414, 0.875] dB versus 30k, −2.543 [−3.317, −1.821] versus v3. Temporal ratio 0.87143 [0.76644, 0.94542]; one loss outlier through 40k. |
 | 5 | `v4-phase5/capacity-w16-l3-seed1-curve-30000` | Scheduled 200-scene checkpoint: paired development intervals and immutable loss prefix through 30,000 updates | 27.0808 dB; +0.224 [−0.173, 0.644] dB versus 20k, −3.190 [−4.080, −2.404] versus v3. Temporal ratio 0.91559 [0.81387, 0.98831]; one loss outlier through 30k. |
@@ -22,12 +23,12 @@ Only development selects models. Confirmation is reserved for Phase 6.
 | 5 | `v4-phase5/budget-score-causal-retry` | Same scoring on the completed immutable causal outputs, fresh directory | Complete: cold smooth ratio 0.940 [0.827, 1.307], warm 4.202 [2.523, 6.029]; FLIP 0.19921 vs v3 0.10775. Not promoted. |
 | 5 | `v4-phase5/budget-dev-reset16` | Same final budget checkpoint, development with periodic cuts and fixed alpha frames | Complete: 25.9030 dB on 640 frames/40 cuts; fixed alpha outputs saved and 640 reference files shared. |
 | 5 | `v4-phase5/budget-score-reset16` | Same scoring under periodic cuts | Complete: PSNR delta −3.705 [−5.097, −2.776] dB, cold smooth ratio identical; FLIP 0.20092 vs v3 0.11929. Warm strata null. |
-| 5 | `v4-phase5/capacity-200-w16-l3-seed1-60000` | 200 scenes, width 16/three levels, seed 1, 60,000 updates from scratch | Running; all 50 ordered capture/provenance hashes match the admitted corpus, from step zero without optimizer resume. |
-| 5 | `v4-phase5/capacity-w16-l3-seed1-dev-causal` | Full causal development and fixed alpha frames for 16×3, seed 1 | Queued after training. |
-| 5 | `v4-phase5/capacity-w16-l3-seed1-score-causal` | FLIP, paired frame/crop intervals and lighting-final comparisons | Queued after causal evaluation. |
-| 5 | `v4-phase5/capacity-w16-l3-seed1-dev-reset16` | Same checkpoint/development with periodic cuts and fixed alpha frames | Queued after training. |
-| 5 | `v4-phase5/capacity-w16-l3-seed1-score-reset16` | Same scoring under periodic cuts | Queued after reset-16 evaluation. |
-| 5 | `v4-phase5/capacity-200-w16-l4-seed1-60000` | 200 scenes, width 16/four levels, seed 1, 60,000 updates from scratch | Queued after 16×3 reporting. |
+| 5 | `v4-phase5/capacity-200-w16-l3-seed1-60000` | 200 scenes, width 16/three levels, seed 1, 60,000 updates from scratch | Complete: 27.7914 dB, 17.50% cold windows, one finite loss outlier, exact reload; all 50 capture/provenance hashes match the admitted corpus. |
+| 5 | `v4-phase5/capacity-w16-l3-seed1-dev-causal` | Full causal development and fixed alpha frames for 16×3, seed 1 | Complete: 27.7914 dB on 640 frames; all 640 references verified/shared, fixed alpha maps/histograms saved. |
+| 5 | `v4-phase5/capacity-w16-l3-seed1-score-causal` | FLIP, paired frame/crop intervals and lighting-final comparisons | Complete: cold smooth 1.155 [0.687, 1.612], warm 3.625 [2.156, 5.139], FLIP 0.17455 versus v3 0.10775. Spatial/warm/lighting misses retained; no selection. |
+| 5 | `v4-phase5/capacity-w16-l3-seed1-dev-reset16` | Same checkpoint/development with periodic cuts and fixed alpha frames | Complete: 27.4277 dB on 640 frames/40 cuts; all references verified/shared, fixed alpha maps/histograms saved. |
+| 5 | `v4-phase5/capacity-w16-l3-seed1-score-reset16` | Same scoring under periodic cuts | Complete: PSNR delta −2.180 [−2.837, −1.662] dB, FLIP 0.17896 versus v3 0.11929; temporal ratio 0.69502 [0.62306, 0.75750]. Warm strata null. |
+| 5 | `v4-phase5/capacity-200-w16-l4-seed1-60000` | 200 scenes, width 16/four levels, seed 1, 60,000 updates from scratch | Running from scratch; all 50 capture/provenance identities match. 654,256 parameters, 31,200 convolution FLOPs/output pixel; quality pending. |
 | 5 | `v4-phase5/capacity-w16-l4-seed1-dev-causal` | Full causal development and fixed alpha frames for 16×4, seed 1 | Queued after training. |
 | 5 | `v4-phase5/capacity-w16-l4-seed1-score-causal` | FLIP, paired frame/crop intervals and lighting-final comparisons | Queued after causal evaluation. |
 | 5 | `v4-phase5/capacity-w16-l4-seed1-dev-reset16` | Same checkpoint/development with periodic cuts and fixed alpha frames | Queued after training. |

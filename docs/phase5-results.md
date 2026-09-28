@@ -215,9 +215,9 @@ Before capacity training, all three additional planned sizes (16×4, 32×3, 32×
 pass recurrent HDR/reset parity, every-parameter f64 gradients (fused/unfused),
 and production-extent gradient-direction checks on debug RADV and LavaPipe,
 with zero validation errors. These are correctness checks, not capacity results.
-The 200-scene first-seed sweep has started with 16×3; 16×4, 32×3, then 32×4 are
-queued sequentially. Each trains from scratch for 60,000 updates and is followed by
-both complete development protocols. Every child run is recorded independently;
+The 200-scene first-seed 16×3 run and both full reports are complete; 16×4 is
+now training, with 32×3 and 32×4 queued. Each trains from scratch for 60,000
+updates and is followed by both complete development protocols. Every child run is recorded independently;
 any failed command stops the queue. The best two configurations' second seeds
 and Decision A remain pending.
 
@@ -245,16 +245,70 @@ frames; paired intervals resample whole sequences:
 | 30,000 | 0.0046552 | 27.0808 | +0.224 [−0.173, 0.644] | −3.190 [−4.080, −2.404] |
 | 40,000 | 0.0043241 | 27.7273 | +0.647 [0.414, 0.875] | −2.543 [−3.317, −1.821] |
 | 50,000 | 0.0040542 | 27.7346 | +0.007 [−0.174, 0.195] | −2.536 [−3.357, −1.865] |
+| 60,000 | 0.0039458 | 27.7914 | +0.057 [−0.141, 0.252] | −2.479 [−3.209, −1.856] |
 
-At 50,000 updates, cold/warm PSNR are 25.6329/27.8793 dB; the warm difference
-against v3 is −2.619 [−3.518, −1.784] dB. Energy is 0.98441
-[0.95982, 1.02492], and temporal MSE ratio is 0.83966 [0.74242, 0.90620].
-The positive 30k→40k PSNR gain is followed by a nearly flat 40k→50k result;
+At 60,000 updates, cold/warm PSNR are 25.6818/27.9190 dB; the warm difference
+against v3 is −2.579 [−3.371, −1.822] dB. Energy is 1.00011
+[0.97649, 1.03602], and temporal MSE ratio is 0.85410 [0.75496, 0.92508].
+The positive 30k→40k PSNR gain is followed by nearly flat 40k→50k→60k results;
 warm quality remains well below v3. The energy point estimate is in range,
 not its entire interval. The temporal interval is below parity, without
 establishing the separate lighting-final condition.
-The frozen 50,000-update prefix still contains only one finite loss above 1
+The completed run contains only one finite loss above 1
 (1.474924 at update 19,829). Reports are `capacity-w16-l3-seed1-curve-{step}/`
-under `runs/v4-phase5/`. These interim metrics-only checkpoints do not establish
-a capacity ranking or claim FLIP/crop results. The unchanged run continues to
-60,000 updates before its complete two-protocol report.
+under `runs/v4-phase5/`. These metrics-only reports do not establish a capacity
+ranking or claim FLIP/crop results; the complete two-protocol report follows.
+
+The completed-training audit verifies 480,000 sampled windows (17.4983% cold),
+174,576 finite parameters and each Adam moment tensor set, 2,228,224 finite
+carried-state values, checkpoint/state hashes and bit-exact parameter reload.
+Final checkpoint SHA-256:
+`3ca52b124d8efd8fb5a5d89283ce10a583be4ccd62338fcc71188c8cec4ff1d4`.
+Cost remains 24,864 convolution FLOPs/output pixel.
+
+## First capacity result: 200 scenes, 16×3, seed 1
+
+Both complete development protocols use all 640 frames, byte-verified shared
+references and the final 60,000-update checkpoint. Ratios compare against the
+learned v3 control; brackets are whole-sequence bootstrap 95% intervals.
+
+| Metric | Causal | Reset every 16 |
+|---|---|---|
+| PSNR, dB | 27.7914 | 27.4277 |
+| PSNR delta vs v3, dB | −2.479 [−3.209, −1.856] | −2.180 [−2.837, −1.662] |
+| Cold smooth-crop MSE ratio | 1.155 [0.687, 1.612] | 1.155 [0.687, 1.612] |
+| Early smooth-crop MSE ratio | 2.855 [1.477, 4.390] | 2.855 [1.477, 4.390] |
+| Warm smooth-crop MSE ratio | 3.625 [2.156, 5.139] | Unavailable |
+| FLIP | 0.17455 | 0.17896 |
+| FLIP delta vs v3 | +0.06679 [0.05378, 0.07841] | +0.05967 [0.04800, 0.06983] |
+| Energy ratio to reference | 1.00011 [0.97649, 1.03602] | 1.00185 [0.97676, 1.04022] |
+| Temporal MSE ratio | 0.85410 [0.75496, 0.92508] | 0.69502 [0.62306, 0.75750] |
+
+Cold crop intervals have 999 valid resamples because some draws contain no
+selected cold crop. Reset-16 has no warm frames; null is not a passing score.
+Warm PSNR is 27.9190 dB, −2.579 [−3.371, −1.822] dB versus v3. Temporal
+improvement does not compensate for the spatial, warm-quality and FLIP misses.
+The individual lighting-final results also prevent a no-worse claim:
+
+| Protocol / sequence (frame 63) | PSNR delta, dB | FLIP delta | Linear MSE ratio | Temporal MSE ratio |
+|---|---:|---:|---:|---:|
+| Causal / 6 | −0.1823 | +0.04689 | 0.98756 | 0.99206 |
+| Causal / 7 | +2.6008 | −0.03733 | 1.08978 | 1.21770 |
+| Reset 16 / 6 | −0.6502 | +0.05864 | 0.91998 | 0.97942 |
+| Reset 16 / 7 | −0.9060 | +0.01133 | 1.25587 | 1.13783 |
+
+Both protocols retain the three fixed alpha frames with raw maps, grayscale
+PNGs and histograms. Diffuse/specular means at 0:0, 2:31 and 6:63 are
+0/0, 0.84160/0.74225, 0.83771/0.70977 (causal), and
+0/0, 0.84161/0.74227, 0.83764/0.70983 (reset-16). Inspection of the fixed
+0:0 and 2:31 RGB images shows persistent broad color/texture errors despite
+reduced speckling; no images or checkpoint are promoted.
+
+The recorded `capacity-40-vs-200-w16-l3-seed1/` comparison holds model, loss,
+seed and 60k schedule fixed. For this seed/budget, 200 scenes improve PSNR by
+1.754 [1.175, 2.671] dB causal and 1.525 [1.045, 2.305] dB reset-16; FLIP
+falls by 0.02467 [0.01977, 0.03061] and 0.02196 [0.01785, 0.02622].
+Cold smooth MSE is 1.230 [0.726, 1.628] times the 40-scene run: no established
+improvement or regression. Thus data expansion helps overall quality here,
+but does not solve the cold-crop failure. The remaining capacity configurations
+and best-two second seeds are still required before Decision A.
