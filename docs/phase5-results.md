@@ -123,5 +123,29 @@ The final corrected seed-1 sanity fit passes both fixed independent-noise gates:
 **31.8499 dB reset-every-frame** and **33.0874 dB causal**. It completes 10,000
 updates from scratch, with no loss spikes above 1, finite weights and bit-exact
 reload; 17.71625% of sampled windows are cold. Background LavaPipe correctness
-checks mean its timing is not a speed benchmark. These results unlock the
-planned 40-scene/60,000-update budget curve; full development reporting follows.
+checks mean its timing is not a speed benchmark. Its full development report is:
+
+| Protocol | PSNR | Delta vs v3 (95% CI) | Cold smooth MSE ratio (95% CI) | FLIP |
+|---|---:|---|---|---:|
+| Causal | 20.2038 | −10.067 [−12.060, −8.491] dB | 3.866 [1.958, 6.016] | 0.32090 |
+| Reset 16 | 20.0869 | −9.521 [−11.440, −7.958] dB | 3.866 [1.958, 6.016] | 0.32328 |
+
+Both protocols cover all 640 frames; the complete bucket/crop, energy, temporal
+and lighting-final comparisons are in `corrected-score-{causal,reset16}/` under
+`runs/v4-phase5/`. Fixed alpha maps and histograms are in the corresponding
+`corrected-dev-*/outputs/` directories; cold gates are exactly zero. Cost is
+unchanged at 24,864 convolution FLOPs/output pixel. The single-scene fit remains
+far below v3 on development and is not a candidate promotion.
+
+## Budget and capacity ladder
+
+The from-scratch **40-scene, width-16/three-level, seed-1, 60,000-update** budget
+curve is running at `runs/v4-phase5/budget-40-w16-l3-seed1-60000/`. Causal metrics
+are recorded every 10,000 updates. It overlaps report generation and correctness
+checks, so its timing is not an isolated throughput benchmark.
+
+Before capacity training, all three additional planned sizes (16×4, 32×3, 32×4)
+pass recurrent HDR/reset parity, every-parameter f64 gradients (fused/unfused),
+and production-extent gradient-direction checks on debug RADV and LavaPipe,
+with zero validation errors. These are correctness checks, not capacity results.
+The 200-scene four-configuration sweep and second seeds remain to be trained.

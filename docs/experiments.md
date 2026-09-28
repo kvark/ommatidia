@@ -6,13 +6,17 @@ Only development selects models. Confirmation is reserved for Phase 6.
 
 | Phase | Run | Budget / purpose | Outcome |
 |---|---|---|---|
-| 5 | `v4-phase5/budget-40-w16-l3-seed1-60000` | Budget curve: original 40 scenes, width 16/three levels, seed 1, 60,000 updates from scratch; causal development every 10,000 | Launching; overlaps sanity report export, so timing is not an isolated throughput benchmark. |
+| 5 | `v4-phase5/ladder-checks` | Workspace regular tests/fmt plus frame/crop reporting tests and unchanged-gallery verification after capacity-test parameterization | 99 regular Rust tests, seven frame and twelve crop tests pass; fmt and gallery verification pass. |
+| 5 | `v4-phase5/budget-40-w16-l3-seed1-60000` | Budget curve: original 40 scenes, width 16/three levels, seed 1, 60,000 updates from scratch; causal development every 10,000 | Running; overlaps sanity reporting/correctness checks, so timing is not an isolated throughput benchmark. |
+| 5 | `v4-phase5/capacity-16x4-radv` | Debug RADV: recurrent HDR/reset parity, every-parameter f64 gradients and production-extent gradient directions | Three tests pass, zero validation errors. |
+| 5 | `v4-phase5/capacity-32x3-radv` | Width 32, three levels: same three RADV correctness gates | Three tests pass, zero validation errors. |
+| 5 | `v4-phase5/capacity-32x4-radv` | Width 32, four levels: same three RADV correctness gates | Three tests pass, zero validation errors. |
 | 5 | `v4-phase5/corrected-noise-causal` | Final corrected sanity checkpoint on independent input noise, causal; gate ≥32.6 dB | Pass: 33.0874 dB, +0.5999 dB versus initial fit. |
 | 5 | `v4-phase5/corrected-noise-reset1` | Same independent-noise stream, resetting history every frame; gate ≥31.6 dB | Pass: 31.8499 dB, +0.4877 dB versus initial fit. |
-| 5 | `v4-phase5/corrected-dev-causal` | Corrected sanity checkpoint, full ten-scene development with fixed alpha frames and shared verified references | Running. |
-| 5 | `v4-phase5/corrected-dev-reset16` | Same checkpoint/development with periodic cuts | Pending. |
-| 5 | `v4-phase5/corrected-score-causal` | Official FLIP, paired frame/crop intervals, and fixed lighting-final comparisons against v3 | Pending. |
-| 5 | `v4-phase5/corrected-score-reset16` | Same scoring for periodic cuts | Pending. |
+| 5 | `v4-phase5/corrected-dev-causal` | Corrected sanity checkpoint, full ten-scene development with fixed alpha frames and shared verified references | 20.2038 dB on 640 frames; alpha maps/histograms saved, all 640 reference files shared. Single-scene fit, not promoted. |
+| 5 | `v4-phase5/corrected-dev-reset16` | Same checkpoint/development with periodic cuts | 20.0869 dB on 640 frames/40 cuts; fixed alpha maps/histograms saved, all 640 reference files shared. |
+| 5 | `v4-phase5/corrected-score-causal` | Official FLIP, paired frame/crop intervals, and fixed lighting-final comparisons against v3 | Complete: PSNR delta −10.067 [−12.060, −8.491] dB, cold smooth ratio 3.866 [1.958, 6.016]; not promoted. |
+| 5 | `v4-phase5/corrected-score-reset16` | Same scoring for periodic cuts | Complete: PSNR delta −9.521 [−11.440, −7.958] dB; cold smooth ratio identical, unsupported warm strata null. |
 | 5 | `v4-phase5/capacity-test-build` | Parameterize existing recurrence/reference-gradient gates by the planned width/depth, without changing the model | Format, workspace test build and all-target Clippy pass. |
 | 5 | `v4-phase5/capacity-16x4-lavapipe` | Width 16, four levels: debug recurrent HDR/reset parity and every-parameter f64 gradient gates, fused/unfused | Two tests pass, zero validation errors. Background CPU checks exclude sanity throughput from speed claims. |
 | 5 | `v4-phase5/capacity-32x3-lavapipe` | Width 32, three levels: recurrence, f64 gradients and 128² production-extent gradient directions | Three tests pass, zero validation errors. |
