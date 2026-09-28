@@ -6,6 +6,35 @@ Only development selects models. Confirmation is reserved for Phase 6.
 
 | Phase | Run | Budget / purpose | Outcome |
 |---|---|---|---|
+| 5 | `v4-phase5/budget-report-audit` | Verify completed reports, exact causal metric reproduction, all shared references and fixed alpha maps/histograms | Ancillary audit failed: Python f64 binning differs by one boundary sample from the writer's f32 multiplication. Reporting unchanged; corrected snapshotted audit follows. |
+| 5 | `v4-phase5/budget-report-audit-fixed` | Same report audit with the writer's f32 histogram arithmetic and recorded source | Pass: all 640 causal metric rows reproduce exactly; 1,280 references share the verified controls; all 12 alpha maps/histograms and PNG headers agree. |
+| 5 | `v4-phase5/budget-curve-60000` | Final budget curve, whole-sequence intervals and complete checkpoint/optimizer/sampler audit | Pass: finite weights/Adam/state and exact reload, 480,000 windows. Final 26.0374 dB; change vs 50,000 −0.357 [−0.586, −0.136] dB while loss falls. |
+| 5 | `v4-phase5/budget-dev-causal` | Final 40-scene-budget checkpoint, full causal development, fixed alpha frames and verified shared references | Complete: 26.0374 dB on all 640 frames; fixed alpha outputs saved and 640 reference files shared. |
+| 5 | `v4-phase5/budget-score-causal` | Official FLIP, paired frame/crop intervals and lighting-final comparisons against v3 | Interrupted: launcher exited 143 during FLIP; no child remains live. Partial artifacts and stale running manifest retained; no training failure. |
+| 5 | `v4-phase5/budget-score-causal-retry` | Same scoring on the completed immutable causal outputs, fresh directory | Complete: cold smooth ratio 0.940 [0.827, 1.307], warm 4.202 [2.523, 6.029]; FLIP 0.19921 vs v3 0.10775. Not promoted. |
+| 5 | `v4-phase5/budget-dev-reset16` | Same final budget checkpoint, development with periodic cuts and fixed alpha frames | Complete: 25.9030 dB on 640 frames/40 cuts; fixed alpha outputs saved and 640 reference files shared. |
+| 5 | `v4-phase5/budget-score-reset16` | Same scoring under periodic cuts | Complete: PSNR delta −3.705 [−5.097, −2.776] dB, cold smooth ratio identical; FLIP 0.20092 vs v3 0.11929. Warm strata null. |
+| 5 | `v4-phase5/capacity-200-w16-l3-seed1-60000` | 200 scenes, width 16/three levels, seed 1, 60,000 updates from scratch | Running; all 50 ordered capture/provenance hashes match the admitted corpus, from step zero without optimizer resume. |
+| 5 | `v4-phase5/capacity-w16-l3-seed1-dev-causal` | Full causal development and fixed alpha frames for 16×3, seed 1 | Queued after training. |
+| 5 | `v4-phase5/capacity-w16-l3-seed1-score-causal` | FLIP, paired frame/crop intervals and lighting-final comparisons | Queued after causal evaluation. |
+| 5 | `v4-phase5/capacity-w16-l3-seed1-dev-reset16` | Same checkpoint/development with periodic cuts and fixed alpha frames | Queued after training. |
+| 5 | `v4-phase5/capacity-w16-l3-seed1-score-reset16` | Same scoring under periodic cuts | Queued after reset-16 evaluation. |
+| 5 | `v4-phase5/capacity-200-w16-l4-seed1-60000` | 200 scenes, width 16/four levels, seed 1, 60,000 updates from scratch | Queued after 16×3 reporting. |
+| 5 | `v4-phase5/capacity-w16-l4-seed1-dev-causal` | Full causal development and fixed alpha frames for 16×4, seed 1 | Queued after training. |
+| 5 | `v4-phase5/capacity-w16-l4-seed1-score-causal` | FLIP, paired frame/crop intervals and lighting-final comparisons | Queued after causal evaluation. |
+| 5 | `v4-phase5/capacity-w16-l4-seed1-dev-reset16` | Same checkpoint/development with periodic cuts and fixed alpha frames | Queued after training. |
+| 5 | `v4-phase5/capacity-w16-l4-seed1-score-reset16` | Same scoring under periodic cuts | Queued after reset-16 evaluation. |
+| 5 | `v4-phase5/capacity-200-w32-l3-seed1-60000` | 200 scenes, width 32/three levels, seed 1, 60,000 updates from scratch | Queued after 16×4 reporting. |
+| 5 | `v4-phase5/capacity-w32-l3-seed1-dev-causal` | Full causal development and fixed alpha frames for 32×3, seed 1 | Queued after training. |
+| 5 | `v4-phase5/capacity-w32-l3-seed1-score-causal` | FLIP, paired frame/crop intervals and lighting-final comparisons | Queued after causal evaluation. |
+| 5 | `v4-phase5/capacity-w32-l3-seed1-dev-reset16` | Same checkpoint/development with periodic cuts and fixed alpha frames | Queued after training. |
+| 5 | `v4-phase5/capacity-w32-l3-seed1-score-reset16` | Same scoring under periodic cuts | Queued after reset-16 evaluation. |
+| 5 | `v4-phase5/capacity-200-w32-l4-seed1-60000` | 200 scenes, width 32/four levels, seed 1, 60,000 updates from scratch | Queued after 32×3 reporting. |
+| 5 | `v4-phase5/capacity-w32-l4-seed1-dev-causal` | Full causal development and fixed alpha frames for 32×4, seed 1 | Queued after training. |
+| 5 | `v4-phase5/capacity-w32-l4-seed1-score-causal` | FLIP, paired frame/crop intervals and lighting-final comparisons | Queued after causal evaluation. |
+| 5 | `v4-phase5/capacity-w32-l4-seed1-dev-reset16` | Same checkpoint/development with periodic cuts and fixed alpha frames | Queued after training. |
+| 5 | `v4-phase5/capacity-w32-l4-seed1-score-reset16` | Same scoring under periodic cuts | Queued after reset-16 evaluation. |
+| 5 | `v4-phase5/capacity-recipe-check` | Dry-run all four planned 200-scene configurations and their fixed reporting commands; no training | Pass: 50 ordered captures/200 unique scenes, matching executable, prior per-size GPU gates and fixed from-scratch schedule; training/report commands prepared without executing them. |
 | 5 | `v4-phase5/budget-curve-50000` | Scheduled 50,000-update checkpoint: paired sequence intervals and immutable loss prefix | 26.3941 dB; change vs 40,000 +0.026 [−0.335, +0.277] dB. Training loss is ~26% below 30,000 but development remains flat; one finite outlier. |
 | 5 | `v4-phase5/candidate-recipe-check` | Dry-run the fixed two-protocol evaluation/scoring recipe against the completed sanity bundle; no repeated inference | Pass: checks completed step, checkpoint/executable identity and finite reload, then prepares four independently recorded commands; no model or protocol change. |
 | 5 | `v4-phase5/budget-curve-40000` | Scheduled 40,000-update checkpoint: paired sequence intervals and immutable loss prefix | 26.3681 dB; change vs 30,000 −0.019 [−0.414, +0.356] dB while mean training loss falls ~21%. Energy 1.00538; continue the fixed budget. |
@@ -14,7 +43,7 @@ Only development selects models. Confirmation is reserved for Phase 6.
 | 5 | `v4-phase5/budget-outlier-15991` | Read-only observation check for the first long-budget finite loss outlier; preserve recorded cursor diagnostics | Batch loss 1.0605, one cold HDR cursor 8.4269; predicted peak 1,225.6 vs target 120.7. Motion ≤0.521 pixels, not the earlier large-motion signature; no training changes. |
 | 5 | `v4-phase5/budget-curve-10000` | First scheduled budget-curve checkpoint: metrics-only causal development, whole-sequence intervals and frozen loss prefix | 25.4850 dB; delta vs v3 −4.786 [−5.923, −3.779] dB. No loss spikes >1; continue the unchanged 60,000-step budget. |
 | 5 | `v4-phase5/ladder-checks` | Workspace regular tests/fmt plus frame/crop reporting tests and unchanged-gallery verification after capacity-test parameterization | 99 regular Rust tests, seven frame and twelve crop tests pass; fmt and gallery verification pass. |
-| 5 | `v4-phase5/budget-40-w16-l3-seed1-60000` | Budget curve: original 40 scenes, width 16/three levels, seed 1, 60,000 updates from scratch; causal development every 10,000 | Running; overlaps sanity reporting/correctness checks, so timing is not an isolated throughput benchmark. |
+| 5 | `v4-phase5/budget-40-w16-l3-seed1-60000` | Budget curve: original 40 scenes, width 16/three levels, seed 1, 60,000 updates from scratch; causal development every 10,000 | Complete: 26.0374 dB, 17.50% cold windows, one finite loss outlier and exact reload. Overlapped checks/reporting exclude isolated throughput claims. |
 | 5 | `v4-phase5/capacity-16x4-radv` | Debug RADV: recurrent HDR/reset parity, every-parameter f64 gradients and production-extent gradient directions | Three tests pass, zero validation errors. |
 | 5 | `v4-phase5/capacity-32x3-radv` | Width 32, three levels: same three RADV correctness gates | Three tests pass, zero validation errors. |
 | 5 | `v4-phase5/capacity-32x4-radv` | Width 32, four levels: same three RADV correctness gates | Three tests pass, zero validation errors. |

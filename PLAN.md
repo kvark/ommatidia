@@ -479,7 +479,10 @@ Corrected sanity passed, 2026-09-28: 31.8499 dB reset-every-frame and 33.0874 dB
 causal on the unchanged independent-noise stream, within the required 1 dB of
 v3. The complete development/alpha/interval report is in
 [Phase 5 results](docs/phase5-results.md). The original 40-scene, seed-1,
-60,000-update budget curve is now running; capacity training and decision A
+60,000-update budget curve is complete: development plateaus then regresses
+while training loss falls, so proceed with the planned 200-scene capacity sweep.
+Its full two-protocol report is complete, with spatial-quality misses retained;
+the first 200-scene capacity run has started. Capacity selection and decision A
 remain open.
 
 Every rung reports, in one `docs/experiments.md` row per run:

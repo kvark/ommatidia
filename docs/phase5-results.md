@@ -140,8 +140,8 @@ far below v3 on development and is not a candidate promotion.
 ## Budget and capacity ladder
 
 The from-scratch **40-scene, width-16/three-level, seed-1, 60,000-update** budget
-curve is running at `runs/v4-phase5/budget-40-w16-l3-seed1-60000/`. Causal metrics
-are recorded every 10,000 updates. It overlaps report generation and correctness
+curve is complete at `runs/v4-phase5/budget-40-w16-l3-seed1-60000/`. Causal metrics
+were recorded every 10,000 updates. It overlapped report generation and correctness
 checks, so its timing is not an isolated throughput benchmark.
 
 Scheduled causal development checkpoints (all 640 frames):
@@ -153,20 +153,55 @@ Scheduled causal development checkpoints (all 640 frames):
 | 30,000 | 0.0045400 | 26.3870 dB | +0.340 [−0.160, +0.888] dB |
 | 40,000 | 0.0035796 | 26.3681 dB | −0.019 [−0.414, +0.356] dB |
 | 50,000 | 0.0033819 | 26.3941 dB | +0.026 [−0.335, +0.277] dB |
+| 60,000 | 0.0030917 | 26.0374 dB | −0.357 [−0.586, −0.136] dB |
 
-At 50,000, the gap against v3 remains −3.877 [−5.440, −2.824] dB; warm PSNR
-is −4.038 [−5.714, −2.814] dB behind. Temporal MSE ratio is 0.85984
-[0.76831, 0.92504], and energy is 1.00843 [0.96734, 1.07557]. Energy's point
+At 60,000, the gap against v3 remains −4.233 [−5.874, −3.174] dB; warm PSNR
+is −4.425 [−6.178, −3.186] dB behind. Temporal MSE ratio is 0.82413
+[0.72857, 0.89348], and energy is 1.01270 [0.96802, 1.08362]. Energy's point
 estimate is in range, but its interval is not contained within the target.
-Development is essentially flat from 30,000 while mean training loss falls
-about 26%: consistent with flattening generalization, not yet a final budget
-conclusion. No overall gate pass or early selection is inferred. Reports at
-`runs/v4-phase5/budget-curve-{10000,20000,30000,40000,50000}/` use
+Development plateaus after 30,000 and regresses at the final checkpoint while
+mean training loss falls about 32% from 30,000. This meets the plan's overfitting
+diagnosis: proceed with the approved 200-scene corpus, not more budget on the
+same 40 scenes. No checkpoint is promoted or substituted for the scheduled final
+checkpoint. Reports at
+`runs/v4-phase5/budget-curve-{10000,20000,30000,40000,50000,60000}/` use
 whole-sequence intervals and freeze each observed loss prefix. Reference hashes
 are transferred from a completed full evaluation only after verifying identical
 recorded executable and ordered development capture/provenance hashes. These
-metrics-only checkpoints do not claim FLIP/crop results; training continues to
-the pre-registered 60,000 updates.
+metrics-only checkpoints do not claim FLIP/crop results. The final checkpoint's
+full causal/reset-16 reports with those metrics and fixed alpha frames are now
+complete:
+
+| Protocol | PSNR | Delta vs v3 (95% CI) | Cold smooth MSE ratio (95% CI) | FLIP (v3) |
+|---|---:|---|---|---|
+| Causal | 26.0374 | −4.233 [−5.874, −3.174] dB | 0.940 [0.827, 1.307] | 0.19921 (0.10775) |
+| Reset 16 | 25.9030 | −3.705 [−5.097, −2.776] dB | 0.940 [0.827, 1.307] | 0.20092 (0.11929) |
+
+Warm smooth-crop MSE is 4.202 [2.523, 6.029] times v3; early smooth error is
+2.458 [1.407, 3.650] times v3 under either protocol. Reset-16 has no warm
+coverage, left null. Its temporal MSE ratio is 0.67009 [0.60322, 0.73564] and
+energy 1.01289 [0.96939, 1.08186]. Temporal gains do not offset spatial misses.
+The fixed static/camera frame-31 images show softened structure and appearance
+errors, consistent with the quantitative results; this is not a promotion.
+
+Lighting-final results are not hidden by pooling: causal sequence 6 loses
+1.088 dB and increases FLIP by 0.06476, while sequence 7 gains 1.592 dB but has
+1.078× linear MSE and 1.186× temporal MSE. Reset-16 final PSNR loses 1.504/1.956
+dB on sequences 6/7, with higher FLIP on both. The no-worse lighting condition
+is not met by this rung.
+
+Every protocol retains all 640 frames, six fixed alpha maps and histograms, and
+640 byte-verified shared reference files. Cold alpha is zero; causal camera-frame
+diffuse/specular means are 0.814/0.769 and lighting-final means 0.815/0.744.
+Full reports are `budget-score-causal-retry/` and `budget-score-reset16/` under
+`runs/v4-phase5/`; the interrupted first causal scoring attempt remains intact.
+
+The final audit verifies all 60,000 updates, 480,000 sampled windows (17.4983%
+cold), all 174,576 parameters and both equally sized Adam moments finite,
+2,228,224 finite carried-state values, matching checkpoint/state hashes and
+bit-exact parameter reload. Final checkpoint SHA-256 is
+`9c5750da8e90a6916dcb6cd56e9e0ea6efe6f81c65baa1ef8f5db368dad70a7d`.
+Cost remains 24,864 convolution FLOPs/output pixel.
 
 At update 15,991, the first long-budget loss above 1 is recorded (batch 1.0605;
 one cold HDR cursor 8.4269). Its predicted peak is 1,225.6 versus a target peak
@@ -180,4 +215,8 @@ Before capacity training, all three additional planned sizes (16×4, 32×3, 32×
 pass recurrent HDR/reset parity, every-parameter f64 gradients (fused/unfused),
 and production-extent gradient-direction checks on debug RADV and LavaPipe,
 with zero validation errors. These are correctness checks, not capacity results.
-The 200-scene four-configuration sweep and second seeds remain to be trained.
+The 200-scene first-seed sweep has started with 16×3; 16×4, 32×3, then 32×4 are
+queued sequentially. Each trains from scratch for 60,000 updates and is followed by
+both complete development protocols. Every child run is recorded independently;
+any failed command stops the queue. The best two configurations' second seeds
+and Decision A remain pending.
