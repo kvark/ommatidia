@@ -738,3 +738,16 @@ the cleaner temporal aggregate does not imply restored color or detail.
 The managed queue has started the fresh 16×4 seed-2 run at the same 60k
 budget. Both-seed capacity comparison and final Decision A remain open;
 no confirmation evaluation or README/gallery promotion occurred.
+
+## 16×4 second-seed telemetry
+
+The first-4,800-update snapshot (`capacity-w16-l4-seed2-outliers-4800/`)
+contains one finite batch loss above 1: 1.030057 at update 4,703. Cursor 0
+has loss 8.20894 in a reset-start four-frame window, sequence 50/frame 24,
+gain 2.70308, origin [28,19], object scene seed 5307974659. Its last-frame
+prediction peak is 482.35, input peak 729.83 and target peak 106.35;
+all recorded input/target/prediction/latent summaries are finite. Following
+batch losses through 4,800 are ≤0.175524. This does not establish the cause
+or locate the peak at the reset frame. The fixed recipe continues unchanged,
+without skips, clamps or restart; the immutable loss-prefix SHA-256 is
+`53b3c63e23f4f47d0c77883dffb1802ab0ae953f0ea8dd6159dfcaf1e1d5b3c2`.
