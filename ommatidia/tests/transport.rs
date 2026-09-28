@@ -14,6 +14,26 @@ fn gpu_context(timing: bool) -> Arc<blade_graphics::Context> {
     context
 }
 
+// The Phase 5 capacity sweep changes size, not architecture. Run the same
+// reference/gradient gates for each planned size without duplicating tests.
+fn capacity_config() -> Config {
+    let setting = |name, default| {
+        std::env::var(name)
+            .map(|v| v.parse().unwrap_or_else(|_| panic!("{name} must be a u32")))
+            .unwrap_or(default)
+    };
+    let config = Config {
+        channels: setting("OMMATIDIA_TEST_CHANNELS", Config::default().channels),
+        levels: setting("OMMATIDIA_TEST_LEVELS", Config::default().levels),
+        ..Config::default()
+    };
+    println!(
+        "capacity check: width={}, levels={}",
+        config.channels, config.levels
+    );
+    config
+}
+
 fn observation_feeds(feeds: &mut Feeds, tag: &str, p: &cpu::Prepared, first: bool) {
     for (name, values) in [
         ("features", p.features.as_slice()),
@@ -683,7 +703,7 @@ fn inference_convolution_preserves_f32_operands() {
 #[test]
 #[ignore = "requires Vulkan or Metal"]
 fn native_recurrence_reset_hdr_matches_independent_reference() {
-    let config = Config::default();
+    let config = capacity_config();
     let context = gpu_context(false);
     let mut native = native::Native::new(context, config, [8, 8]).unwrap();
     let model = graph::build(config, [8, 8], 0).unwrap();
@@ -772,7 +792,7 @@ fn exposure_equivariance_through_nonzero_network_and_recurrence() {
 #[ignore = "requires Vulkan or Metal; checks every parameter and carried output"]
 fn two_frame_training_matches_reference() {
     use meganeura::reference::gradients;
-    let config = Config::default();
+    let config = capacity_config();
     let model = graph::build_training(config, [8, 8], 2, 4).unwrap();
     let mut feeds = Feeds::new();
     for (name, values) in graph::LOSS_MASK_NAMES
@@ -897,12 +917,7 @@ fn two_frame_training_matches_reference() {
 fn production_extent_gradient_directions_match_finite_differences() {
     use ommatidia::neural::InitKind;
 
-    let config = Config {
-        channels: std::env::var("OMMATIDIA_TEST_CHANNELS")
-            .map(|v| v.parse().expect("OMMATIDIA_TEST_CHANNELS must be a u32"))
-            .unwrap_or(Config::default().channels),
-        ..Config::default()
-    };
+    let config = capacity_config();
     let context = gpu_context(false);
     let model = graph::build(config, [128, 128], 2).unwrap();
     let mut training = ommatidia::gpu::training_session(&model.graph, Arc::clone(&context));

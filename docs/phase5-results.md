@@ -117,5 +117,11 @@ above 1** (original: 14); maximum loss is 0.43470. All 174,576 parameters and
 349,152 Adam moment values are finite, with bit-exact parameter reload. Full
 causal development is **24.8592 dB** versus 24.6385 originally; cold PSNR improves
 from 21.1600 to 23.9078 dB. This diagnostic remains far below v3 and does not
-replace the from-scratch seed-1 budget curve. A fresh corrected sanity fit is
-running before that ladder is unlocked.
+replace the from-scratch seed-1 budget curve.
+
+The final corrected seed-1 sanity fit passes both fixed independent-noise gates:
+**31.8499 dB reset-every-frame** and **33.0874 dB causal**. It completes 10,000
+updates from scratch, with no loss spikes above 1, finite weights and bit-exact
+reload; 17.71625% of sampled windows are cold. Background LavaPipe correctness
+checks mean its timing is not a speed benchmark. These results unlock the
+planned 40-scene/60,000-update budget curve; full development reporting follows.

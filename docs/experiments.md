@@ -6,9 +6,21 @@ Only development selects models. Confirmation is reserved for Phase 6.
 
 | Phase | Run | Budget / purpose | Outcome |
 |---|---|---|---|
+| 5 | `v4-phase5/budget-40-w16-l3-seed1-60000` | Budget curve: original 40 scenes, width 16/three levels, seed 1, 60,000 updates from scratch; causal development every 10,000 | Launching; overlaps sanity report export, so timing is not an isolated throughput benchmark. |
+| 5 | `v4-phase5/corrected-noise-causal` | Final corrected sanity checkpoint on independent input noise, causal; gate ≥32.6 dB | Pass: 33.0874 dB, +0.5999 dB versus initial fit. |
+| 5 | `v4-phase5/corrected-noise-reset1` | Same independent-noise stream, resetting history every frame; gate ≥31.6 dB | Pass: 31.8499 dB, +0.4877 dB versus initial fit. |
+| 5 | `v4-phase5/corrected-dev-causal` | Corrected sanity checkpoint, full ten-scene development with fixed alpha frames and shared verified references | Running. |
+| 5 | `v4-phase5/corrected-dev-reset16` | Same checkpoint/development with periodic cuts | Pending. |
+| 5 | `v4-phase5/corrected-score-causal` | Official FLIP, paired frame/crop intervals, and fixed lighting-final comparisons against v3 | Pending. |
+| 5 | `v4-phase5/corrected-score-reset16` | Same scoring for periodic cuts | Pending. |
+| 5 | `v4-phase5/capacity-test-build` | Parameterize existing recurrence/reference-gradient gates by the planned width/depth, without changing the model | Format, workspace test build and all-target Clippy pass. |
+| 5 | `v4-phase5/capacity-16x4-lavapipe` | Width 16, four levels: debug recurrent HDR/reset parity and every-parameter f64 gradient gates, fused/unfused | Two tests pass, zero validation errors. Background CPU checks exclude sanity throughput from speed claims. |
+| 5 | `v4-phase5/capacity-32x3-lavapipe` | Width 32, three levels: recurrence, f64 gradients and 128² production-extent gradient directions | Three tests pass, zero validation errors. |
+| 5 | `v4-phase5/capacity-32x4-lavapipe` | Width 32, four levels: same three correctness gates | Three tests pass, zero validation errors. |
+| 5 | `v4-phase5/capacity-16x4-extent-lavapipe` | Width 16, four levels: 128² production-extent gradient directions | Pass, zero validation errors. |
 | 5 | `v4-phase5/final-frame-bootstrap-tests` | Lighting-final reporting: fixed sequence selection, individual regression visibility and sequence-cluster intervals | Seven frame and twelve crop tests pass; published-gallery verification unchanged. |
 | 5 | `v4-phase5/final-frame-bootstrap-smoke` | Existing sanity/v3 scores, both protocols: exercise fixed lighting-final reporting without rerunning models | Pass: selects exactly frames 6:63/7:63; all existing bucket/interval outputs remain identical. |
-| 5 | `v4-phase5/sanity-corrected-10000` | Fresh seed-1 single-scene fit with both verified corrections; unchanged data, 10,000-step schedule and thresholds | Running; independent-noise gates follow. |
+| 5 | `v4-phase5/sanity-corrected-10000` | Fresh seed-1 single-scene fit with both verified corrections; unchanged data, 10,000-step schedule and thresholds | Complete: no loss spikes >1, finite/exact reload, 17.72% cold windows; both independent-noise gates pass. |
 | 5 | `v4-phase5/replay-5000-audit` | Audit complete corrected seed-7 replay, including parent prefix, optimizer continuation and full development | Ancillary audit assertion failed: counted Adam moments as model parameters. Training completed successfully; corrected audit below. |
 | 5 | `v4-phase5/replay-5000-audit-fixed` | Same audit with parameter/optimizer tensor counts distinguished | Pass: 5,000 updates, identical sampling/schedule, no spikes >1 (old: 14); finite weights/moments, exact reload. |
 | 5 | `v4-phase5/alpha-evaluation-smoke` | End-to-end CLI alpha outputs: exact raw probabilities/histograms, cold zeros and grayscale PNG headers, plus resume/control smoke | Pass on debug LavaPipe, including exact resume/reload; zero validation errors. |
