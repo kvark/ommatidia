@@ -6,6 +6,7 @@ Only development selects models. Confirmation is reserved for Phase 6.
 
 | Phase | Run | Budget / purpose | Outcome |
 |---|---|---|---|
+| 5 | `v4-phase5/capacity-w16-l4-seed2-curve-10000` | Scheduled four-level second-seed checkpoint: causal intervals, immutable 10k loss prefix and outlier telemetry | 25.6862 dB; delta −4.585 [−5.547, −3.674] dB versus v3. Energy 0.98470, temporal ratio 0.86056 [0.75896, 0.92494]; one finite loss outlier, fixed budget continues. |
 | 5 | `v4-phase5/capacity-w16-l4-seed2-outliers-4800` | Frozen first-4,800-update loss/telemetry audit after the second seed's first outlier | Pass: one finite batch outlier, 1.030057 at update 4,703 (cursor 0, reset-start sequence 50). Recorded observations finite; following losses ≤0.175524 through 4,800; no recipe change. |
 | 5 | `v4-phase5/capacity-w16-l3-seed2-report-audit` | Exact causal CSV agreement, shared references, fixed alpha maps/histograms and PNGs for the second seed | Pass: 640 identical causal rows, 1,280 shared references and twelve finite alpha maps with exact histograms and valid PNGs. |
 | 5 | `v4-phase5/two-seed-evidence-checks` | Joint-scene pooling plus cross-seed reference, reset-age and v3-control identity checks; no model evaluation | Pass: fourteen synthetic tests; reject changed reference/control evidence and preserve joint scene resampling. |

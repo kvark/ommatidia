@@ -751,3 +751,21 @@ batch losses through 4,800 are ≤0.175524. This does not establish the cause
 or locate the peak at the reset frame. The fixed recipe continues unchanged,
 without skips, clamps or restart; the immutable loss-prefix SHA-256 is
 `53b3c63e23f4f47d0c77883dffb1802ab0ae953f0ea8dd6159dfcaf1e1d5b3c2`.
+
+## 16×4 second-seed curve
+
+`capacity-w16-l4-seed2-curve-10000/` covers all 640 causal development
+frames with the same reference-identity proof and whole-sequence bootstrap.
+It freezes the 10k loss prefix and the one-event outlier telemetry.
+
+| Updates | Last-1,000 mean loss | PSNR | Delta vs previous (95% CI), dB | Delta vs v3 (95% CI), dB |
+|---|---:|---:|---|---|
+| 10,000 | 0.0061000 | 25.6862 | — | −4.585 [−5.547, −3.674] |
+
+Warm PSNR is 25.7272 dB, −4.771 [−5.843, −3.677] dB behind v3.
+Energy is 0.98470 [0.94197, 1.04113]: the point is in range, not its entire
+interval. Temporal MSE ratio is 0.86056 [0.75896, 0.92494]. The one finite
+outlier above is the only loss above 1 through 10k. The loss-prefix SHA-256
+is `8988ac6f5013fd2429ebb65f375262444b5024f35b666bb960ae7c5489766264`.
+No crop/FLIP result, capacity selection or quality pass is inferred from
+this interim checkpoint; the unchanged fresh 60k run continues.
