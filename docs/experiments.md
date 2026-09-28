@@ -6,6 +6,7 @@ Only development selects models. Confirmation is reserved for Phase 6.
 
 | Phase | Run | Budget / purpose | Outcome |
 |---|---|---|---|
+| 5 | `v4-phase5/capacity-w16-l4-seed1-curve-40000` | Scheduled 16×4 retry checkpoint: causal sequence intervals and immutable loss prefix through 40k | 27.9262 dB; +0.919 [0.581, 1.276] dB versus 30k, −2.344 [−3.097, −1.672] versus v3. Temporal ratio 0.86312 [0.76558, 0.93135]; four loss outliers. |
 | 5 | `v4-phase5/capacity-w16-l4-seed1-curve-30000` | Scheduled 16×4 retry checkpoint: causal sequence intervals and immutable loss prefix through 30k | 27.0070 dB; +0.139 [−0.274, 0.558] dB versus 20k, −3.264 [−4.323, −2.429] versus v3. Temporal ratio 0.91533 [0.81290, 0.98131]; four loss outliers. |
 | 5 | `v4-phase5/capacity-w16-l4-seed1-curve-20000` | Scheduled 16×4 retry checkpoints at 10k/20k: paired causal intervals and immutable loss prefix | 26.8684 dB; +1.020 [−0.174, 1.902] dB versus 10k, −3.402 [−4.741, −2.478] versus v3. Four loss outliers; fixed 60k budget continues. |
 | 5 | `v4-phase5/capacity-w16-l4-warm-outliers-2500-recorded` | Repeat the frozen-prefix audit with its source retained as a recorder input | Three finite spikes at 1,589–1,591 in one warm cursor; max batch loss 43.92154, later maximum through 2,500 is 0.029109. Source retained; training unchanged. |
