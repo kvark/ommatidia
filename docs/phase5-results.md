@@ -220,3 +220,17 @@ queued sequentially. Each trains from scratch for 60,000 updates and is followed
 both complete development protocols. Every child run is recorded independently;
 any failed command stops the queue. The best two configurations' second seeds
 and Decision A remain pending.
+
+Pairwise capacity reports will compare raw per-crop error sums on the same
+sequences, not divide independently reported ratios or confidence intervals.
+The report adapter passes exact comparison against direct pixel scoring,
+self-pair and mismatch checks, and the fixed ≥10% gain plus paired-interval
+condition. It does not rank or promote checkpoints automatically.
+
+The first 200-scene run's recorded updates 11–2,500 take 186.01 ms/update versus
+70.62 ms on the same 40-scene prefix. GPU step/wait remains about 64 ms in both;
+input-batch wait rises from 0.13 to 116.48 ms (62.6% of current wall time).
+The frozen-prefix report is `runs/v4-phase5/capacity-prefix-timing/`. This
+identifies input delivery as the current measured bottleneck, not its exact
+underlying cause or an isolated speed comparison. The active schedule, model,
+loss and data are unchanged.

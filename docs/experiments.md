@@ -6,6 +6,8 @@ Only development selects models. Confirmation is reserved for Phase 6.
 
 | Phase | Run | Budget / purpose | Outcome |
 |---|---|---|---|
+| 5 | `v4-phase5/capacity-comparison-checks` | Verify paired report comparisons against raw-pixel crops, self-pairs and the fixed 10%/CI rule; no new model evaluation | Four checks pass: pixel-exact cached pairing, zero self-differences, mismatch rejection and both threshold conditions. No ranking or selection. |
+| 5 | `v4-phase5/capacity-prefix-timing` | Read-only timing of updates 11–2,500 on 40 versus 200 scenes, identical executable/settings; retain immutable CSV prefixes | 14.16 vs 5.38 updates/s: step/wait ~64 ms in both, input wait 0.13 →116.48 ms (62.6% of 200-scene wall time). Observational, not an isolated speed claim; run unchanged. |
 | 5 | `v4-phase5/budget-report-audit` | Verify completed reports, exact causal metric reproduction, all shared references and fixed alpha maps/histograms | Ancillary audit failed: Python f64 binning differs by one boundary sample from the writer's f32 multiplication. Reporting unchanged; corrected snapshotted audit follows. |
 | 5 | `v4-phase5/budget-report-audit-fixed` | Same report audit with the writer's f32 histogram arithmetic and recorded source | Pass: all 640 causal metric rows reproduce exactly; 1,280 references share the verified controls; all 12 alpha maps/histograms and PNG headers agree. |
 | 5 | `v4-phase5/budget-curve-60000` | Final budget curve, whole-sequence intervals and complete checkpoint/optimizer/sampler audit | Pass: finite weights/Adam/state and exact reload, 480,000 windows. Final 26.0374 dB; change vs 50,000 −0.357 [−0.586, −0.136] dB while loss falls. |
