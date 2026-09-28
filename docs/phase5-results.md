@@ -662,7 +662,7 @@ control evidence across seeds, in addition to the existing per-seed checks.
 ## 16×3 second-seed curve
 
 Scheduled checkpoints cover all 640 causal development frames.
-`capacity-w16-l3-seed2-curve-{10000,20000,30000,40000,50000}/` freezes each loss prefix and
+`capacity-w16-l3-seed2-curve-{10000,20000,30000,40000,50000,60000}/` freezes each loss prefix and
 the empty outlier log, using the same reference-identity proof and
 whole-sequence bootstrap as seed 1:
 
@@ -673,13 +673,68 @@ whole-sequence bootstrap as seed 1:
 | 30,000 | 0.0049041 | 26.5194 | −0.139 [−0.783, 0.494] | −3.751 [−4.618, −2.870] |
 | 40,000 | 0.0042379 | 27.4749 | +0.955 [0.461, 1.483] | −2.796 [−3.463, −2.163] |
 | 50,000 | 0.0039092 | 27.2580 | −0.217 [−0.471, −0.021] | −3.013 [−3.923, −2.222] |
+| 60,000 | 0.0040278 | 27.8122 | +0.554 [0.438, 0.666] | −2.459 [−3.285, −1.749] |
 
 The 10k→20k and 30k→40k improvement intervals exclude zero; the 20k→30k
 interval includes zero. The 40k→50k PSNR decline is established despite
-falling training loss. Warm PSNR at 50k is 27.3511 dB,
-−3.147 [−4.178, −2.157] dB behind v3. Energy is 0.98405 [0.95894, 1.02612]:
-the point estimate is in range, not its entire interval. Temporal MSE ratio
-is 0.84661 [0.75077, 0.91080]. No batch losses above 1 occur through 50k.
-These metrics-only checkpoints do not claim crop/FLIP results or select
-a model. The fresh seed-2 run continues to the
-unchanged 60,000-update budget.
+falling training loss; the 50k→60k recovery also excludes zero, while the
+last-1,000 mean loss rises slightly. No batch losses above 1 occur in the
+completed 60k run (maximum 0.256878). These metrics-only checkpoints do
+not claim crop/FLIP results or select a model.
+
+## 16×3 second-seed final report
+
+`capacity-200-w16-l3-seed2-60000/` completed from scratch at 60,000 updates,
+480,000 sampled windows and 17.5025% cold windows. Its final audit verifies
+174,576 finite parameters and each Adam tensor set, 2,228,224 finite carry
+values, matching checkpoint hashes and bit-exact parameter reload.
+Checkpoint SHA-256:
+`4cdae95d890f0072d273a975412db51269ad4117eb667bd932ddcbdcd5517c37`.
+The immutable loss-prefix SHA-256 is
+`a13e4a3f50d0d3801e30a5a730d7663c7742eb3c2eb05da570c4206d00736a30`.
+Cost remains 24,864 convolution FLOPs/output pixel (1.629487 GFLOP/frame).
+
+All four `capacity-w16-l3-seed2-{dev,score}-{causal,reset16}` runs completed
+with zero validation errors. Against the same learned v3 control, using
+whole-sequence paired 95% intervals:
+
+| Metric | Causal | Reset every 16 |
+|---|---:|---:|
+| PSNR | 27.8122 dB | 27.5007 dB |
+| PSNR delta vs v3 | −2.459 [−3.285, −1.749] dB | −2.107 [−2.792, −1.524] dB |
+| Cold smooth-crop MSE ratio | 1.004 [0.721, 1.414] | 1.004 [0.721, 1.414] |
+| Early smooth-crop MSE ratio | 2.452 [1.117, 3.767] | 2.452 [1.117, 3.767] |
+| Warm smooth-crop MSE ratio | 3.182 [2.286, 3.625] | null: no warm coverage |
+| FLIP | 0.173892 | 0.178305 |
+| FLIP delta vs v3 | +0.066139 [0.049928, 0.081457] | +0.059019 [0.044478, 0.072144] |
+| Energy ratio | 0.99880 [0.97501, 1.03850] | 1.00123 [0.97708, 1.04095] |
+| Temporal MSE ratio vs v3 | 0.84234 [0.73999, 0.91140] | 0.68347 [0.61273, 0.74622] |
+
+Causal warm PSNR is 27.9026 dB: −2.596 [−3.512, −1.729] dB versus v3,
+well outside the −0.1 dB allowance. The cold point misses ≤0.80; the warm
+crop and FLIP misses remain. Energy point estimates are in range, but not
+their entire intervals. Cold crops have four sequences/eight rectangles
+and 999 valid resamples; identical early/cold entries reflect the frozen
+crop selections, not extra reset-frame coverage.
+
+Lighting-final frame 63 still fails the individual-sequence condition:
+
+| Protocol / sequence | PSNR delta | FLIP delta | Linear MSE ratio | Temporal MSE ratio |
+|---|---:|---:|---:|---:|
+| Causal / 6 | −0.3723 dB | +0.047928 | 1.18898 | 0.98563 |
+| Causal / 7 | +2.3424 dB | −0.028678 | 1.03360 | 1.19392 |
+| Reset-16 / 6 | −0.8018 dB | +0.059043 | 1.10822 | 0.96921 |
+| Reset-16 / 7 | −1.1711 dB | +0.019624 | 1.19244 | 1.11612 |
+
+`capacity-w16-l3-seed2-report-audit/` verifies 640 exact causal metric
+rows, 1,280 shared references and twelve finite alpha maps, exact f32
+histograms and 256×256 PNGs. Alpha diffuse/specular means at frames
+0:0, 2:31 and 6:63 are respectively 0/0, 0.85441/0.74539 and
+0.84835/0.73940 causal; reset-16 gives 0/0, 0.85444/0.74544 and
+0.84823/0.73936. Visual inspection of the fixed causal images still shows
+mottled surfaces and the gold patterned object reconstructed purple/brown;
+the cleaner temporal aggregate does not imply restored color or detail.
+
+The managed queue has started the fresh 16×4 seed-2 run at the same 60k
+budget. Both-seed capacity comparison and final Decision A remain open;
+no confirmation evaluation or README/gallery promotion occurred.

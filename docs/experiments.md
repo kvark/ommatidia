@@ -6,6 +6,7 @@ Only development selects models. Confirmation is reserved for Phase 6.
 
 | Phase | Run | Budget / purpose | Outcome |
 |---|---|---|---|
+| 5 | `v4-phase5/capacity-w16-l3-seed2-report-audit` | Exact causal CSV agreement, shared references, fixed alpha maps/histograms and PNGs for the second seed | Pass: 640 identical causal rows, 1,280 shared references and twelve finite alpha maps with exact histograms and valid PNGs. |
 | 5 | `v4-phase5/two-seed-evidence-checks` | Joint-scene pooling plus cross-seed reference, reset-age and v3-control identity checks; no model evaluation | Pass: fourteen synthetic tests; reject changed reference/control evidence and preserve joint scene resampling. |
 | 5 | `v4-phase5/two-seed-comparison-checks` | Synthetic checks of equal-seed raw-crop pooling with joint scene resampling; no model evaluation | Pass: eight synthetic tests; repeated scenes retain one cluster, raw sums determine ratios, unsupported strata remain null. |
 | 5 | `v4-phase5/capacity-w16-l3-seed2-curve-50000` | Scheduled second-seed checkpoint: causal intervals, immutable 50k loss prefix and outlier telemetry | 27.2580 dB; −0.217 [−0.471, −0.021] dB versus 40k, −3.013 [−3.923, −2.222] versus v3. Energy 0.98405, temporal ratio 0.84661 [0.75077, 0.91080]; no loss outliers. |
@@ -16,13 +17,13 @@ Only development selects models. Confirmation is reserved for Phase 6.
 | 5 | `v4-phase5/second-seed-selection` | Apply the frozen cold-improvement/cost rule to all six completed first-seed pairs | Select 16×3 and 16×4 for seed 2: no larger configuration earns the cost exception; their cold-error difference remains uncertain. Not final selection or Decision A. |
 | 5 | `v4-phase5/second-seed-recipe-check` | Compare fresh seed-2 training/evaluation commands with the completed seed-1 recipes | Pass: both training commands differ only in seed and fresh output directory; evaluation recipes match, no optimizer resume. |
 | 5 | `v4-phase5/second-seed-queue` | Managed serial queue for the selected second seeds, both full protocols and final curve audits | Running under `ommatidia-phase5-second-seeds-20260928.service`; stops on failure, never resumes or selects a final model. |
-| 5 | `v4-phase5/capacity-200-w16-l3-seed2-60000` | 200 scenes, width 16/three levels, seed 2, 60,000 updates from scratch | Started under the verified managed queue; unchanged data/loss/schedule, no optimizer resume. |
-| 5 | `v4-phase5/capacity-w16-l3-seed2-dev-causal` | Full causal development and fixed alpha frames for 16×3, seed 2 | Queued after training. |
-| 5 | `v4-phase5/capacity-w16-l3-seed2-score-causal` | FLIP, paired frame/crop intervals and lighting-final comparisons | Queued after causal evaluation. |
-| 5 | `v4-phase5/capacity-w16-l3-seed2-dev-reset16` | Same checkpoint/development with periodic cuts and fixed alpha frames | Queued after training. |
-| 5 | `v4-phase5/capacity-w16-l3-seed2-score-reset16` | Same scoring under periodic cuts | Queued after reset-16 evaluation. |
-| 5 | `v4-phase5/capacity-w16-l3-seed2-curve-60000` | Complete second-seed curve, state/parameter finiteness, hashes and exact reload audit | Queued after both full protocols; no checkpoint selection. |
-| 5 | `v4-phase5/capacity-200-w16-l4-seed2-60000` | 200 scenes, width 16/four levels, seed 2, 60,000 updates from scratch | Queued after the 16×3 second seed. |
+| 5 | `v4-phase5/capacity-200-w16-l3-seed2-60000` | 200 scenes, width 16/three levels, seed 2, 60,000 updates from scratch | Complete: 480,000 windows, 17.5025% cold, finite parameters/state/Adam and exact reload, no loss outliers or validation errors; 24,864 convolution FLOPs/output pixel. |
+| 5 | `v4-phase5/capacity-w16-l3-seed2-dev-causal` | Full causal development and fixed alpha frames for 16×3, seed 2 | 27.8122 dB, energy 0.99880; 640 frames and fixed alpha exports, zero validation errors. |
+| 5 | `v4-phase5/capacity-w16-l3-seed2-score-causal` | FLIP, paired frame/crop intervals and lighting-final comparisons | Cold crop 1.004 [0.721, 1.414], warm 3.182 [2.286, 3.625], FLIP 0.173892; PSNR delta −2.459 [−3.285, −1.749] dB. Spatial/warm/FLIP/lighting misses remain. |
+| 5 | `v4-phase5/capacity-w16-l3-seed2-dev-reset16` | Same checkpoint/development with periodic cuts and fixed alpha frames | 27.5007 dB, energy 1.00123; 640 frames and fixed alpha exports, zero validation errors. |
+| 5 | `v4-phase5/capacity-w16-l3-seed2-score-reset16` | Same scoring under periodic cuts | Cold crop 1.004 [0.721, 1.414], FLIP 0.178305; PSNR delta −2.107 [−2.792, −1.524] dB. Temporal ratio 0.68347 [0.61273, 0.74622], lighting-final regressions; warm coverage null. |
+| 5 | `v4-phase5/capacity-w16-l3-seed2-curve-60000` | Complete second-seed curve, state/parameter finiteness, hashes and exact reload audit | Pass: fresh 60k state, no loss outliers; final PSNR +0.554 [0.438, 0.666] dB versus 50k. Hashes and finite parameters/Adam/carry verified; no checkpoint selection. |
+| 5 | `v4-phase5/capacity-200-w16-l4-seed2-60000` | 200 scenes, width 16/four levels, seed 2, 60,000 updates from scratch | Started after the completed three-level repeat, both protocols and final audit; unchanged recipe, no optimizer resume. |
 | 5 | `v4-phase5/capacity-w16-l4-seed2-dev-causal` | Full causal development and fixed alpha frames for 16×4, seed 2 | Queued after training. |
 | 5 | `v4-phase5/capacity-w16-l4-seed2-score-causal` | FLIP, paired frame/crop intervals and lighting-final comparisons | Queued after causal evaluation. |
 | 5 | `v4-phase5/capacity-w16-l4-seed2-dev-reset16` | Same checkpoint/development with periodic cuts and fixed alpha frames | Queued after training. |

@@ -494,8 +494,10 @@ misses retained. All six paired capacity comparisons are complete; no larger
 configuration meets the frozen cost exception. Select 16×3 and 16×4 for
 second seeds: the cheaper baseline and the lowest-cost challenger, whose
 10.5% cold-error improvement remains uncertain. Both repeat from scratch at
-the unchanged 60k budget, seed 2. The managed queue has started 16×3 with
-16×4 next. Final capacity selection and decision A remain open.
+the unchanged 60k budget, seed 2. The 16×3 repeat and its complete reports
+are finished: 27.8122 dB causal, cold ratio 1.004 [0.721, 1.414], with
+spatial/warm/FLIP/lighting misses retained. The managed queue has started
+the fresh 16×4 repeat. Final capacity selection and decision A remain open.
 
 Every rung reports, in one `docs/experiments.md` row per run:
 
