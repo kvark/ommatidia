@@ -323,7 +323,7 @@ improvement or regression. Thus data expansion helps overall quality here,
 but does not solve the cold-crop failure. The remaining capacity configurations
 and best-two second seeds are still required before Decision A.
 
-## 16×4 retry: early training observation
+## 16×4 retry: training observations
 
 The immutable first-2,500-update audit records three finite batch-loss spikes
 at 1,589–1,591 (4.5442, 43.9215, 1.6969), all from cursor 5 on warm windows
@@ -334,3 +334,22 @@ the recorded latent state remains finite. Subsequent batch loss through update
 not its root cause. No batch is skipped and no loss/model/schedule is changed.
 The reproducible report is `capacity-w16-l4-warm-outliers-2500-recorded/`;
 its source snapshot corrects the first audit's missing stdin-script provenance.
+
+The scheduled causal checkpoints cover all 640 development frames. The recorded
+`capacity-w16-l4-seed1-curve-20000/` analysis freezes the first 20,000 loss rows
+and uses the same reference-identity proof and whole-sequence intervals as the
+other curves:
+
+| Updates | Last-1,000 mean loss | PSNR | Delta vs previous (95% CI), dB | Delta vs v3 (95% CI), dB |
+|---|---:|---:|---|---|
+| 10,000 | 0.0063584 | 25.8484 | — | −4.422 [−4.943, −3.892] |
+| 20,000 | 0.0055403 | 26.8684 | +1.020 [−0.174, 1.902] | −3.402 [−4.741, −2.478] |
+
+The improvement interval crosses zero; this does not establish a gain or a
+capacity ranking. At 20,000, warm PSNR remains −3.540 [−4.967, −2.501] dB
+behind v3. Energy is 1.03040 [0.99504, 1.08715], outside the target at its
+point estimate; temporal MSE ratio is 0.93869 [0.82804, 1.02207]. Four losses
+above 1 are recorded through 20,000. Cost is 31,200 convolution FLOPs/output
+pixel (654,256 parameters). Training continues to the unchanged 60,000-update
+budget; full crop/FLIP/reset-16 reports and final-state verification remain
+pending. No checkpoint is selected or promoted.

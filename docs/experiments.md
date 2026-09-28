@@ -6,6 +6,7 @@ Only development selects models. Confirmation is reserved for Phase 6.
 
 | Phase | Run | Budget / purpose | Outcome |
 |---|---|---|---|
+| 5 | `v4-phase5/capacity-w16-l4-seed1-curve-20000` | Scheduled 16×4 retry checkpoints at 10k/20k: paired causal intervals and immutable loss prefix | 26.8684 dB; +1.020 [−0.174, 1.902] dB versus 10k, −3.402 [−4.741, −2.478] versus v3. Four loss outliers; fixed 60k budget continues. |
 | 5 | `v4-phase5/capacity-w16-l4-warm-outliers-2500-recorded` | Repeat the frozen-prefix audit with its source retained as a recorder input | Three finite spikes at 1,589–1,591 in one warm cursor; max batch loss 43.92154, later maximum through 2,500 is 0.029109. Source retained; training unchanged. |
 | 5 | `v4-phase5/capacity-w16-l4-warm-outliers-2500` | Freeze the first 2,500 retry updates and recorded warm-cursor outliers; no inference or training changes | Observations completed, but stdin analysis source was not retained; superseded by the recorded-source repeat. |
 | 5 | `v4-phase5/capacity-queue-recovery` | Finish remaining first-seed runs, both full protocols and final curve audits in a transient user job | Running under `ommatidia-phase5-capacity-20260928.service`; stop on any failure, no selection or second seeds. |
