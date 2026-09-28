@@ -646,3 +646,16 @@ unchanged; neither command resumes weights or optimizer state. The durable
 with both full protocols and final curve audits after each. It stops on
 failure and never restarts a job automatically. Both repeats, final capacity
 selection and Decision A remain required. Confirmation remains untouched.
+
+## 16×3 second-seed curve
+
+The first scheduled checkpoint covers all 640 causal development frames.
+`capacity-w16-l3-seed2-curve-10000/` freezes the first 10,000 losses and empty
+outlier log, using the same reference-identity proof and whole-sequence
+bootstrap as seed 1. Last-1,000 mean loss is 0.0061091, with no batch losses
+above 1 in the prefix. PSNR is 25.2895 dB, −4.981 [−6.506, −3.902] dB versus
+v3; warm PSNR is 25.2502 dB, −5.248 [−6.828, −4.060] dB behind v3. Energy
+is 1.03413 [0.96823, 1.12886], with its point estimate outside the target
+range. Temporal MSE ratio is 0.84733 [0.74724, 0.91423]. This metrics-only
+checkpoint does not claim crop/FLIP results or select a model. The fresh
+seed-2 run continues to the unchanged 60,000-update budget.

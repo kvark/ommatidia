@@ -6,6 +6,7 @@ Only development selects models. Confirmation is reserved for Phase 6.
 
 | Phase | Run | Budget / purpose | Outcome |
 |---|---|---|---|
+| 5 | `v4-phase5/capacity-w16-l3-seed2-curve-10000` | First scheduled second-seed checkpoint: causal sequence intervals, immutable 10k loss prefix and outlier telemetry | 25.2895 dB; delta −4.981 [−6.506, −3.902] dB versus v3. Energy 1.03413, temporal ratio 0.84733 [0.74724, 0.91423]; no loss outliers, fixed budget continues. |
 | 5 | `v4-phase5/second-seed-selection` | Apply the frozen cold-improvement/cost rule to all six completed first-seed pairs | Select 16×3 and 16×4 for seed 2: no larger configuration earns the cost exception; their cold-error difference remains uncertain. Not final selection or Decision A. |
 | 5 | `v4-phase5/second-seed-recipe-check` | Compare fresh seed-2 training/evaluation commands with the completed seed-1 recipes | Pass: both training commands differ only in seed and fresh output directory; evaluation recipes match, no optimizer resume. |
 | 5 | `v4-phase5/second-seed-queue` | Managed serial queue for the selected second seeds, both full protocols and final curve audits | Running under `ommatidia-phase5-second-seeds-20260928.service`; stops on failure, never resumes or selects a final model. |
