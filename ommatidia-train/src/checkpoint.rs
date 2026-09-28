@@ -73,7 +73,7 @@ impl Checkpoint {
         }
         std::fs::write(staging.join("state.f32"), &state)?;
         let checkpoint = Self {
-            schema: 1,
+            schema: 2,
             step,
             settings,
             captures,
@@ -102,9 +102,11 @@ impl Checkpoint {
             return Err("true resume requires trainer.json, cursor state and Adam moments; weights-only warm starts are forbidden".into());
         }
         let saved: Self = serde_json::from_slice(&std::fs::read(metadata)?)?;
+        if saved.schema != 2 {
+            return Err("checkpoint training-loss schema differs; start from scratch (real image edges now receive supervision)".into());
+        }
         let state = std::fs::read(directory.join("state.f32"))?;
-        if saved.schema != 1
-            || &saved.settings != settings
+        if &saved.settings != settings
             || saved.captures != captures
             || saved.step == 0
             || saved.step > settings.steps

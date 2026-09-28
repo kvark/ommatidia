@@ -43,7 +43,11 @@ necessarily reset more often). A per-life radiance gain of `2^U(-2,2)` scales
 inputs, targets and emission together, without changing exposure from 1.
 There is no prefix warm-up, no CPU history/feature round trip, and no geometric
 augmentation. Out-of-crop warp taps are dropped/renormalized; losses exclude a
-four-pixel HR margin and normalize over the retained pixels.
+four-pixel HR margin at artificial crop boundaries and normalize over the retained
+pixels. Real image edges remain supervised; masking them everywhere left a blind
+border in the initial Phase 5 fit. The four loss masks are precomputed for each
+edge combination and copied on the GPU with the crop preparation. Profiling counts
+the actual supervised pixels, including retained image borders.
 `loss-outliers.jsonl` records batches with mean loss above 1, including per-cursor
 loss, crop/gain/reset identity, input/target ranges and final carried prediction
 ranges. This is read-only diagnostic logging: no batch is skipped or clamped.
@@ -63,6 +67,8 @@ a complete matching bundle; it rejects weights-only warm starts or changed data
 and schedule settings. Use a new output directory and repeat the same training
 arguments, including the original total `--steps`; `--stop-after N` simulates an
 interruption without changing that schedule. Existing checkpoints are not overwritten.
+Training checkpoint schema 2 records this corrected loss contract; schema-1
+optimizer bundles cannot resume under it (their weights remain evaluable).
 The [measured profile](training-profile.md#phase-3-cursor-loop) excludes startup,
 checkpointing and evaluation, and counts only supervised pixels as gradients.
 

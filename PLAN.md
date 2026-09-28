@@ -467,6 +467,11 @@ single-scene diagnostic captures under `runs/quality-week-2026-09-26/data/`
 GPU-cursor loop from scratch; investigate the Phase 3 finite loss spikes before
 the budget/capacity ladder. Confirmation remains reserved for Phase 6.
 
+Sanity diagnosis, 2026-09-28: the initial fit misses both gates. Correct the
+loss-mask interpretation: the four-pixel exclusion applies to artificial crop
+borders, not real image boundaries (previously never supervised). Keep evaluation
+full-frame, all thresholds/data fixed, and restart training from scratch.
+
 Every rung reports, in one `docs/experiments.md` row per run:
 
 - development metrics under both protocols;

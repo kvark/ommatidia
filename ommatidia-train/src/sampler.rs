@@ -77,6 +77,27 @@ impl Sampler {
         })
     }
 
+    /// Bits left/top/right/bottom identify physical image edges, not crop edges.
+    pub fn image_edges(&self, origin: [u32; 2]) -> usize {
+        usize::from(origin[0] == 0)
+            | (usize::from(origin[1] == 0) << 1)
+            | (usize::from(origin[0] + self.crop[0] == self.low[0]) << 2)
+            | (usize::from(origin[1] + self.crop[1] == self.low[1]) << 3)
+    }
+
+    pub fn supervised_pixels(&self, origin: [u32; 2], scale: u32, margin: u32) -> usize {
+        let edges = self.image_edges(origin);
+        let cut = |side: usize| {
+            if edges & (1_usize << side) == 0 {
+                margin
+            } else {
+                0
+            }
+        };
+        ((self.crop[0] * scale - cut(0) - cut(2)) * (self.crop[1] * scale - cut(1) - cut(3)))
+            as usize
+    }
+
     pub fn next_windows(&mut self) -> Vec<Window> {
         let mut windows = Vec::with_capacity(self.cursors.len());
         for cursor in &mut self.cursors {
@@ -208,6 +229,20 @@ pub fn learning_rate(peak: f32, step: usize, total: usize) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn crop_boundaries_distinguish_real_image_edges() {
+        let sampler = Sampler::new(1, 1, [64; 2], 4, [128; 2], 1, 64).unwrap();
+        assert_eq!(sampler.image_edges([20, 30]), 0);
+        assert_eq!(sampler.image_edges([0, 0]), 3);
+        assert_eq!(sampler.image_edges([64, 64]), 12);
+        assert_eq!(sampler.image_edges([0, 64]), 9);
+        assert_eq!(sampler.image_edges([64, 0]), 6);
+        assert_eq!(sampler.supervised_pixels([20, 30], 2, 4), 120 * 120);
+        assert_eq!(sampler.supervised_pixels([0, 0], 2, 4), 124 * 124);
+        let full = Sampler::new(1, 1, [128; 2], 4, [128; 2], 1, 64).unwrap();
+        assert_eq!(full.image_edges([0, 0]), 15);
+        assert_eq!(full.supervised_pixels([0, 0], 2, 4), 256 * 256);
+    }
     #[test]
     fn cursor_continuity_cold_fraction_and_exact_resume() {
         let mut sampler = Sampler::new(7, 8, [64; 2], 4, [128; 2], 40, 64).unwrap();

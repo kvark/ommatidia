@@ -6,6 +6,12 @@ Only development selects models. Confirmation is reserved for Phase 6.
 
 | Phase | Run | Budget / purpose | Outcome |
 |---|---|---|---|
+| 5 | `v4-phase5/image-edge-checks` | Corrected crop-loss masks: normalization, real-edge supervision, gradients/restore fixtures; fmt/tests/Clippy/build | Compile failed on an inferred integer bitmask type; corrected explicit usize. |
+| 5 | `v4-phase5/image-edge-checks-fixed` | Repeat after bitmask type fix; include actual GPU mask transfer assertions | 98 regular tests, fmt/Clippy and release build pass; GPU suites follow. |
+| 5 | `v4-phase5/image-edge-radv` | Corrected loss masks: all GPU gates, f64 gradients, packing/state carry and schema-2 resume, debug RADV | Twelve tests pass, zero validation errors. |
+| 5 | `v4-phase5/image-edge-lavapipe` | Same full GPU checks on debug LavaPipe | Twelve tests pass, zero validation errors. |
+| 5 | `v4-phase5/spike-observations` | Inspect captured geometry/motion at the two replayed cold prediction spikes | First-frame motion peaks at 135 and 1,305 HR pixels, then drops below 1; candidate cause for a controlled cold-input test, not yet a causal attribution. |
+| 5 | `v4-phase5/sanity-image-edges-10000` | Repeat seed-1 sanity from scratch with only corrected image-edge loss masks; unchanged data/schedule/budget | Launching after 98 regular tests and twelve GPU checks on each backend pass. |
 | 5 | `v4-phase5/sanity-build` | Locked release trainer at the merged caller-encoder Meganeura pin; unchanged model/loop | Pass; previous debug correctness gates cover the identical merged source tree. |
 | 5 | `v4-phase5/sanity-10000` | From scratch, one scene, seed 1, 10,000 updates; B=8, k=4, 64² LR crops | Complete: 621.90 training seconds, 16.08 updates/s, 17.72% cold windows; independent-noise gates follow. |
 | 5 | `v4-phase5/diagnostic-radv` | Full reconstruction and cursor GPU gates after adding read-only diagnostics, debug RADV | Twelve tests pass, zero validation errors; alpha and diagnostic readbacks preserve outputs/resume exactly. |
@@ -15,8 +21,10 @@ Only development selects models. Confirmation is reserved for Phase 6.
 | 5 | `v4-phase5/spike-replay-500` | Phase 3 seed-7 ordered 40-scene replay, original 5,000-step schedule, stop after 500; read-only outlier diagnostics | Three spikes reproduce (303/396/397): cold-window prediction explosion, not extreme targets; no model promoted. |
 | 5 | `v4-phase5/diagnostic-lavapipe-full` | Full reconstruction and cursor GPU gates with diagnostic changes, debug LavaPipe | Twelve tests pass, zero validation errors. |
 | 5 | `v4-phase5/sanity-noise-linear` | Exact causal sanity rerun retaining floats for full-frame versus interior-error diagnosis | Pass: causal scores byte-identical; all 64 references match the archived Phase 2 diagnostic. |
-| 5 | `v4-phase5/sanity-dev-causal` | Initial sanity checkpoint, complete development protocol, locked crops and three fixed alpha frames | Running. |
-| 5 | `v4-phase5/sanity-dev-reset16` | Same checkpoint/development, cuts every 16 frames; locked crops and alpha frames | Queued after causal evaluation. |
+| 5 | `v4-phase5/sanity-dev-causal` | Initial sanity checkpoint, complete development protocol, locked crops and three fixed alpha frames | 19.8347 dB across 640 frames; alpha maps/histograms saved. Single-scene fit, not promoted. |
+| 5 | `v4-phase5/sanity-dev-reset16` | Same checkpoint/development, cuts every 16 frames; locked crops and alpha frames | 19.8179 dB across 640 frames/40 cuts; alpha maps/histograms saved. |
+| 5 | `v4-phase5/sanity-score-causal` | Official FLIP, paired frame/crop confidence intervals against learned v3 control | Complete: PSNR delta −10.436 dB [−12.251, −9.030], cold smooth ratio 3.080 [1.574, 4.245]; no promotion. |
+| 5 | `v4-phase5/sanity-score-reset16` | Same scoring for periodic cuts | Complete; 640 frames, frame/crop intervals retained, unsupported warm strata null. |
 | 5 | `v4-phase5/sanity-error-localization` | Compare full-frame/interior errors with the archived Phase 2 diagnostic; unchanged references | Outer 4-pixel border accounts for 28.15% of error (Phase 2: 6.85%); 4-pixel-trimmed PSNR 33.65 dB is diagnostic only, not a gate substitution. |
 | 5 | `v4-phase5/diagnostic-checks` | Format, workspace tests/Clippy, diagnostic-output parity fixtures and release build | Pass: 96 regular tests, Clippy and release build. GPU diagnostics checked separately. |
 | 5 | `v4-phase5/archive-sanity-runtime` | Preserve the executing pre-instrumentation trainer for controlled replay | Pass; archived executable hash exactly matches the sanity run's input. |

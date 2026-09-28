@@ -108,6 +108,22 @@ fn gpu_cursor_carry_matches_24_frame_causal_inference_and_packing() {
             .run_batch(&batch, None, graph::LossWeights::default())
             .unwrap();
         let state = trainer.read_states();
+        for (name, expected) in graph::LOSS_MASK_NAMES
+            .iter()
+            .zip(graph::loss_masks(config, [8; 2], [0; 4]).unwrap())
+        {
+            let buffer = trainer
+                .session
+                .plan()
+                .input_buffers
+                .iter()
+                .find(|(key, _)| key == name)
+                .unwrap()
+                .1;
+            let mut actual = vec![0.0; expected.len()];
+            trainer.session.read_buffer(buffer, &mut actual);
+            assert_eq!(actual, expected, "GPU loss mask {name}");
+        }
         let stride = state.len() / 2;
         for (c, model) in native.iter().enumerate() {
             close(
@@ -255,6 +271,17 @@ fn resume_restores_adam_schedule_rng_and_gpu_state() {
         close(a, &b, 1e-6);
     }
     close(&trainer.read_states(), &restored.read_states(), 1e-5);
+    let metadata_path = directory.join("trainer.json");
+    let metadata = std::fs::read(&metadata_path).unwrap();
+    let mut old: serde_json::Value = serde_json::from_slice(&metadata).unwrap();
+    old["schema"] = 1.into();
+    std::fs::write(&metadata_path, serde_json::to_vec(&old).unwrap()).unwrap();
+    let error = Checkpoint::restore(&checkpoint, &mut restored, &settings, &[])
+        .err()
+        .unwrap()
+        .to_string();
+    assert!(error.contains("training-loss schema differs"), "{error}");
+    std::fs::write(&metadata_path, metadata).unwrap();
     // A changed state file cannot silently turn resume into a warm start.
     std::fs::write(directory.join("state.f32"), [0; 4]).unwrap();
     assert!(Checkpoint::restore(&checkpoint, &mut restored, &settings, &[]).is_err());

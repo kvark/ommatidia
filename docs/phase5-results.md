@@ -57,3 +57,29 @@ at 30,571 versus targets peaking at 10.18 across the window (inputs: 104.43).
 This establishes a prediction explosion, not extreme target radiance; it does
 not yet establish the optimizer/root cause. Data, losses and thresholds remain
 unchanged for this read-only replay.
+
+The two spike windows also contain unusually large *observed first-frame motion*
+(135 and 1,305 HR pixels; following frames below 1 pixel). Motion enters the
+network unscaled, including on cold resets when no prior image exists. This is
+a candidate source of the cold prediction explosions, not yet an ablation result.
+The border-only repeat keeps these inputs unchanged to isolate the loss fix.
+
+The initial sanity fit's full development report is deliberately retained:
+
+| Protocol | PSNR | Delta vs v3 (95% CI) | Cold smooth MSE ratio (95% CI) | FLIP |
+|---|---:|---|---|---:|
+| Causal | 19.8347 | −10.436 [−12.251, −9.030] dB | 3.080 [1.574, 4.245] | 0.33823 |
+| Reset 16 | 19.8179 | −9.790 [−11.453, −8.434] dB | 3.080 [1.574, 4.245] | 0.33803 |
+
+All reset-age/frame/crop intervals, energy and temporal metrics are in
+`runs/v4-phase5/sanity-score-{causal,reset16}/`; raw outputs and the six alpha
+maps per protocol are in `sanity-dev-{causal,reset16}/outputs/`. Cold alpha is
+exactly zero; camera-frame means are diffuse/specular 0.797/0.668, and final
+lighting-frame means 0.784/0.618 (causal). Cost is 24,864 FLOPs/output pixel.
+This one-scene fit does not generalize and is not a candidate promotion.
+
+The image-edge correction passes 98 regular tests, all-target Clippy, and all
+twelve GPU checks on each of debug RADV/LavaPipe, with zero validation errors.
+Checks include every-parameter f64 gradients with asymmetric loss masks, all
+16 masks' spatial/coarse normalization, actual GPU mask copies and schema-2
+resume. Old training bundles are rejected for resume; inference is unchanged.

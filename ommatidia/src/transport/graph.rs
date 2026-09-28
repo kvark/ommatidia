@@ -172,26 +172,72 @@ pub fn build_training(
     build_impl(config, low, unroll, false, margin)
 }
 
-/// Binary packed mask, shared by the objective and its independent tests.
+pub const LOSS_MASK_NAMES: [&str; 4] = [
+    "loss.rgb_mask",
+    "loss.lobe_mask",
+    "loss.binary_mask",
+    "loss.coarse_mask",
+];
+
+/// Binary packed mask. Margins are left, top, right, bottom HR pixels;
+/// real image boundaries use zero, artificial crop boundaries use the margin.
 pub fn loss_mask(
     config: Config,
     low: [u32; 2],
     channels: usize,
-    margin: u32,
+    margins: [u32; 4],
 ) -> Result<Vec<f32>, String> {
     let high = low.map(|v| v * config.scale);
-    if high.iter().any(|v| margin >= v.div_ceil(2)) {
+    let [left, top, right, bottom] = margins;
+    if left.saturating_add(right) >= high[0] || top.saturating_add(bottom) >= high[1] {
         return Err("loss margin removes the whole crop".into());
     }
     let mut mask = vec![0.0; (high[0] * high[1]) as usize * channels];
     for c in 0..channels {
-        for y in margin..high[1] - margin {
-            for x in margin..high[0] - margin {
+        for y in top..high[1] - bottom {
+            for x in left..high[0] - right {
                 mask[config.index(low, c, x as usize, y as usize)] = 1.0;
             }
         }
     }
     Ok(mask)
+}
+
+/// Normalized RGB/lobe masks and binary/coarse masks for one crop. Shared by
+/// all unrolled frames; changing crop bounds does not change the model.
+pub fn loss_masks(
+    config: Config,
+    low: [u32; 2],
+    margins: [u32; 4],
+) -> Result<[Vec<f32>; 4], String> {
+    config.validate(low)?;
+    let rgb = loss_mask(config, low, 3, margins)?;
+    let norm = (rgb.len() as f32 / rgb.iter().sum::<f32>()).sqrt();
+    let rgb_normalized = rgb.iter().map(|v| v * norm).collect();
+    let lobe_normalized = loss_mask(config, low, 6, margins)?
+        .into_iter()
+        .map(|v| v * norm)
+        .collect();
+    let mut coarse = Vec::new();
+    for c in 0..3 * config.scale.pow(2) as usize {
+        for y in 0..low[1] as usize / 4 {
+            for x in 0..low[0] as usize / 4 {
+                let mut count = 0.0;
+                for dy in 0..4 {
+                    for dx in 0..4 {
+                        count +=
+                            rgb[(c * low[1] as usize + 4 * y + dy) * low[0] as usize + 4 * x + dx];
+                    }
+                }
+                coarse.push(if count > 0.0 { 16.0 / count } else { 0.0 });
+            }
+        }
+    }
+    let norm = (coarse.len() as f32 / coarse.iter().filter(|v| **v > 0.0).count() as f32).sqrt();
+    for v in &mut coarse {
+        *v *= norm;
+    }
+    Ok([rgb_normalized, lobe_normalized, rgb, coarse])
 }
 
 fn build_impl(
@@ -212,37 +258,10 @@ fn build_impl(
     let state_len = config.state_channels() * n;
     let mut b = Builder::new();
     let masks = if unroll > 0 && margin > 0 {
-        let rgb = loss_mask(config, low, 3, margin)?;
-        let norm = (rgb.len() as f32 / rgb.iter().sum::<f32>()).sqrt();
-        let rgb_normalized =
-            b.g.constant(rgb.iter().map(|v| v * norm).collect(), &[3 * n]);
-        let lobe = loss_mask(config, low, 6, margin)?;
-        let lobe_normalized =
-            b.g.constant(lobe.iter().map(|v| v * norm).collect(), &[6 * n]);
-        let mut coarse = Vec::new();
-        for c in 0..3 * slots as usize {
-            for y in 0..low[1] as usize / 4 {
-                for x in 0..low[0] as usize / 4 {
-                    let mut count = 0.0;
-                    for dy in 0..4 {
-                        for dx in 0..4 {
-                            count += rgb
-                                [(c * low[1] as usize + 4 * y + dy) * low[0] as usize + 4 * x + dx];
-                        }
-                    }
-                    coarse.push(if count > 0.0 { 16.0 / count } else { 0.0 });
-                }
-            }
-        }
-        let norm =
-            (coarse.len() as f32 / coarse.iter().filter(|v| **v > 0.0).count() as f32).sqrt();
-        let coarse_len = coarse.len();
-        let coarse = b.g.constant(
-            coarse.into_iter().map(|v| v * norm).collect(),
-            &[coarse_len],
-        );
-        let binary = b.g.constant(rgb, &[3 * n]);
-        Some((rgb_normalized, lobe_normalized, binary, coarse))
+        let values = loss_masks(config, low, [margin; 4])?;
+        let [rgb, lobe, binary, coarse] =
+            std::array::from_fn(|i| b.g.input(LOSS_MASK_NAMES[i], &[values[i].len()]));
+        Some((rgb, lobe, binary, coarse))
     } else {
         None
     };
@@ -537,6 +556,38 @@ pub fn feed_rgb(
 mod tests {
     use super::*;
     use meganeura::reference::{Feeds, evaluate_outputs};
+
+    #[test]
+    fn all_crop_edge_masks_normalize_spatial_and_coarse_losses() {
+        let config = Config::default();
+        for edges in 0..16 {
+            let margins = std::array::from_fn(|i| if edges & (1 << i) == 0 { 4 } else { 0 });
+            let [rgb, lobe, binary, coarse] = loss_masks(config, [8; 2], margins).unwrap();
+            for mask in [rgb, lobe] {
+                let mean_square = mask.iter().map(|v| v * v).sum::<f32>() / mask.len() as f32;
+                assert!((mean_square - 1.0).abs() < 1e-5);
+            }
+            let expected = 3 * (16 - margins[0] - margins[2]) * (16 - margins[1] - margins[3]);
+            assert_eq!(binary.iter().sum::<f32>(), expected as f32);
+            let mut square_sum = 0.0;
+            let mut i = 0;
+            for c in 0..12 {
+                for y in 0..2 {
+                    for x in 0..2 {
+                        let mut avg = 0.0;
+                        for dy in 0..4 {
+                            for dx in 0..4 {
+                                avg += binary[(c * 8 + y * 4 + dy) * 8 + x * 4 + dx] / 16.0;
+                            }
+                        }
+                        square_sum += (avg * coarse[i]).powi(2);
+                        i += 1;
+                    }
+                }
+            }
+            assert!((square_sum / coarse.len() as f32 - 1.0).abs() < 1e-5);
+        }
+    }
 
     fn decoder() -> Graph {
         let mut g = Graph::new();

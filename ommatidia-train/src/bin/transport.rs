@@ -812,7 +812,8 @@ seeds/catalog families must be disjoint. Use a separate final audit split."
                 "preparation":"GPU observation packing and geometric maps; GPU detached state carry",
                 "io":"immutable memory-mapped f16 crops, bounded one-worker prefetch; no requantization",
                 "sampling":"persistent 8-16-window crop lives, uniform fitting start, 0.1 extra reset probability; 2^U(-2,2) radiance gain per life",
-                "loss_margin_hr":4,"exposure":1,"gradient_clip_norm":1,
+                "loss_margin_hr":4,"loss_margin_scope":"artificial crop borders only; real image edges supervised",
+                "exposure":1,"gradient_clip_norm":1,
                 "loss_outliers":{"threshold":1,"file":"loss-outliers.jsonl","policy":"diagnostic only; no skipped/clamped batches"},
                 "resume":"Adam moments/step, full GPU state, consumed-batch sampler RNG/cursors and fixed schedule",
             }))?,
@@ -827,10 +828,12 @@ seeds/catalog families must be disjoint. Use a separate final audit split."
         let mut rows = std::fs::File::create(out.join("profile.csv"))?;
         writeln!(
             rows,
-            "update,io_wait,worker_decode,upload,preparation_submit,step_wait,carry_wait,loss_read,total"
+            "update,io_wait,worker_decode,upload,preparation_submit,step_wait,carry_wait,loss_read,total,supervised_pixel_gradients"
         )?;
         let mut totals = [0.0f64; 8];
         let mut steady = [0.0f64; 8];
+        let mut supervised = 0_usize;
+        let mut steady_supervised = 0_usize;
         for update in first_step + 1..=last_step {
             let start = Instant::now();
             let batch = prefetch.receive()?;
@@ -840,6 +843,15 @@ seeds/catalog families must be disjoint. Use a separate final audit split."
             sampler = batch.next_sampler.clone();
             let cold = batch.windows.iter().filter(|w| w.reset).count();
             let fraction = sampler.cold_windows as f64 / sampler.windows as f64;
+            let valid_pixels = batch
+                .windows
+                .iter()
+                .map(|w| sampler.supervised_pixels(w.origin, config.scale, 4) * unroll)
+                .sum::<usize>();
+            supervised += valid_pixels;
+            if update > first_step + 10 {
+                steady_supervised += valid_pixels;
+            }
             writeln!(
                 losses,
                 "{update},{loss},{lr},{cold},{batch_size},{fraction}"
@@ -868,7 +880,7 @@ seeds/catalog families must be disjoint. Use a separate final audit split."
             for value in values {
                 write!(rows, ",{value}")?;
             }
-            writeln!(rows)?;
+            writeln!(rows, ",{valid_pixels}")?;
             for i in 0..8 {
                 totals[i] += values[i];
                 if update > first_step + 10 {
@@ -915,23 +927,24 @@ seeds/catalog families must be disjoint. Use a separate final audit split."
         }
         drop(prefetch);
         let pixels = batch_size * unroll * (crop * config.scale).pow(2) as usize;
-        let valid_pixels = batch_size * unroll * (crop * config.scale - 8).pow(2) as usize;
         let baseline = 131072.0 / 0.438300;
-        let report_timing = |count: usize, values: [f64; 8]| {
+        let report_timing = |count: usize, values: [f64; 8], supervised: usize| {
             serde_json::json!({
                 "updates":count,"seconds":values[7],"updates_per_second":count as f64 / values[7],
                 "nominal_pixel_gradients_per_second":count as f64*pixels as f64/values[7],
-                "valid_pixel_gradients_per_second":count as f64*valid_pixels as f64/values[7],
-                "speedup_vs_phase1_valid":count as f64*valid_pixels as f64/values[7]/baseline,
+                "valid_pixel_gradients":supervised,
+                "valid_pixel_gradients_per_second":supervised as f64/values[7],
+                "speedup_vs_phase1_valid":supervised as f64/values[7]/baseline,
                 "seconds_by_stage":{"io_wait":values[0],"worker_decode_overlapped":values[1],"upload":values[2],"preparation_submit":values[3],"step_wait":values[4],"carry_wait":values[5],"loss_read":values[6]},
             })
         };
         let profile = serde_json::json!({
             "scope":"host update wall time including I/O and CSV loss write; excludes initialization, checkpoint, evaluation and profile CSV write; worker decode overlaps GPU work",
             "device":context.device_information().device_name,
-            "phase1_pixel_gradients_per_second":baseline,"nominal_pixels_per_update":pixels,"valid_pixels_per_update":valid_pixels,
-            "all_updates":report_timing(last_step-first_step, totals),
-            "after_first_10_updates":if last_step-first_step > 10 { report_timing(last_step-first_step-10, steady) } else { serde_json::Value::Null },
+            "phase1_pixel_gradients_per_second":baseline,"nominal_pixels_per_update":pixels,
+            "valid_pixels_per_update":supervised as f64 / (last_step-first_step) as f64,
+            "all_updates":report_timing(last_step-first_step, totals, supervised),
+            "after_first_10_updates":if last_step-first_step > 10 { report_timing(last_step-first_step-10, steady, steady_supervised) } else { serde_json::Value::Null },
             "cold_fraction":sampler.cold_windows as f64 / sampler.windows as f64,
         });
         std::fs::write(

@@ -148,8 +148,14 @@ fn crop_margin_excludes_every_spatial_loss_and_normalizes_interior() {
     );
     target_feeds(&mut feeds, "f0", &frame, &target, config);
     feeds.set("loss.weights", &graph::LossWeights::default().values());
+    for (name, values) in graph::LOSS_MASK_NAMES
+        .iter()
+        .zip(graph::loss_masks(config, low, [4; 4]).unwrap())
+    {
+        feeds.set(name, &values);
+    }
     let loss = evaluate_outputs(&model.graph, &feeds).unwrap()[0].data[0];
-    let mask = graph::loss_mask(config, low, 6, 4).unwrap();
+    let mask = graph::loss_mask(config, low, 6, [4; 4]).unwrap();
     assert_eq!(mask.iter().sum::<f32>(), 6.0 * 8.0 * 8.0);
     for (i, v) in target.lobes.iter_mut().enumerate() {
         if mask[i] == 0.0 {
@@ -171,6 +177,21 @@ fn crop_margin_excludes_every_spatial_loss_and_normalizes_interior() {
     assert_ne!(
         evaluate_outputs(&model.graph, &feeds).unwrap()[0].data[0],
         loss
+    );
+    // The exact same graph must supervise a real image edge when that margin
+    // is zero, not silently discard it like an artificial crop boundary.
+    for (name, values) in graph::LOSS_MASK_NAMES
+        .iter()
+        .zip(graph::loss_masks(config, low, [0, 4, 4, 4]).unwrap())
+    {
+        feeds.set(name, &values);
+    }
+    let with_edge = evaluate_outputs(&model.graph, &feeds).unwrap()[0].data[0];
+    target.rgb[(8 * 16) * 3] += 10.0;
+    target_feeds(&mut feeds, "f0", &frame, &target, config);
+    assert_ne!(
+        evaluate_outputs(&model.graph, &feeds).unwrap()[0].data[0],
+        with_edge
     );
     assert!(graph::build_training(config, low, 1, 8).is_err());
 }
@@ -370,6 +391,12 @@ fn accumulated_microbatch_gradient_is_the_mean_not_the_sum() {
     };
     let model = graph::build_training(config, [8; 2], 2, 4).unwrap();
     let mut session = ommatidia::gpu::training_session(&model.graph, context);
+    for (name, values) in graph::LOSS_MASK_NAMES
+        .iter()
+        .zip(graph::loss_masks(config, [8; 2], [4; 4]).unwrap())
+    {
+        session.set_input(name, &values);
+    }
     let parameters = nonzero_parameters(&model);
     for (p, v) in model.params.iter().zip(&parameters) {
         session.set_parameter(&p.name, v);
@@ -666,8 +693,14 @@ fn exposure_equivariance_through_nonzero_network_and_recurrence() {
 fn two_frame_training_matches_reference() {
     use meganeura::reference::gradients;
     let config = Config::default();
-    let model = graph::build(config, [8, 8], 2).unwrap();
+    let model = graph::build_training(config, [8, 8], 2, 4).unwrap();
     let mut feeds = Feeds::new();
+    for (name, values) in graph::LOSS_MASK_NAMES
+        .iter()
+        .zip(graph::loss_masks(config, [8; 2], [0, 4, 4, 0]).unwrap())
+    {
+        feeds.set(name, &values);
+    }
     for (p, values) in model.params.iter().zip(nonzero_parameters(&model)) {
         feeds.set(&p.name, &values);
     }
