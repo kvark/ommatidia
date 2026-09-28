@@ -144,16 +144,31 @@ curve is running at `runs/v4-phase5/budget-40-w16-l3-seed1-60000/`. Causal metri
 are recorded every 10,000 updates. It overlaps report generation and correctness
 checks, so its timing is not an isolated throughput benchmark.
 
-The first scheduled checkpoint (10,000 updates) scores **25.4850 dB**, a delta
-of −4.786 [−5.923, −3.779] dB against v3. Last-1,000-update mean training loss
-is 0.0059652, with no loss spikes above 1. Energy is 0.99146 [0.94441, 1.05554]
-and temporal MSE ratio is 0.97330 [0.85426, 1.05914]; neither interval establishes
-its decision-A gate. The report at `runs/v4-phase5/budget-curve-10000/` uses
-whole-sequence intervals and freezes the observed loss prefix. Reference hashes
+Scheduled causal development checkpoints (all 640 frames):
+
+| Updates | Last-1,000 mean training loss | PSNR | Change from previous (95% CI) |
+|---|---:|---:|---|
+| 10,000 | 0.0059652 | 25.4850 dB | — |
+| 20,000 | 0.0046064 | 26.0469 dB | +0.562 [−0.016, +1.201] dB |
+
+At 20,000, the gap against v3 remains −4.224 [−5.463, −3.258] dB. Temporal MSE
+ratio is 0.89057 [0.78584, 0.96042], but energy is 0.97125 [0.93425, 1.02969].
+PSNR's positive point change is not yet a statistically established improvement;
+energy's point estimate is outside the target. No gate pass or early selection
+is inferred. Reports at `runs/v4-phase5/budget-curve-{10000,20000}/` use
+whole-sequence intervals and freeze each observed loss prefix. Reference hashes
 are transferred from a completed full evaluation only after verifying identical
-recorded executable and ordered development capture/provenance hashes. This
-metrics-only checkpoint does not claim FLIP/crop results or early selection;
-training continues to the pre-registered 60,000 updates.
+recorded executable and ordered development capture/provenance hashes. These
+metrics-only checkpoints do not claim FLIP/crop results; training continues to
+the pre-registered 60,000 updates.
+
+At update 15,991, the first long-budget loss above 1 is recorded (batch 1.0605;
+one cold HDR cursor 8.4269). Its predicted peak is 1,225.6 versus a target peak
+of 120.7, with finite state; observed motion stays below 0.521 HR pixels, unlike
+the earlier absent-frame motion spikes. Subsequent batch losses fall below
+0.06. This is retained as a finite prediction overshoot, not treated as proof of
+its root cause or a reason to alter the run. The read-only observation report is
+`runs/v4-phase5/budget-outlier-15991/`.
 
 Before capacity training, all three additional planned sizes (16×4, 32×3, 32×4)
 pass recurrent HDR/reset parity, every-parameter f64 gradients (fused/unfused),

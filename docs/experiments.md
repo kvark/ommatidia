@@ -6,6 +6,8 @@ Only development selects models. Confirmation is reserved for Phase 6.
 
 | Phase | Run | Budget / purpose | Outcome |
 |---|---|---|---|
+| 5 | `v4-phase5/budget-curve-20000` | Second scheduled checkpoint: paired sequence intervals against 10,000 updates and v3, with the complete loss prefix | 26.0469 dB; improvement vs 10,000 is +0.562 [−0.016, +1.201] dB. Energy 0.97125; one finite outlier. Continue the fixed budget. |
+| 5 | `v4-phase5/budget-outlier-15991` | Read-only observation check for the first long-budget finite loss outlier; preserve recorded cursor diagnostics | Batch loss 1.0605, one cold HDR cursor 8.4269; predicted peak 1,225.6 vs target 120.7. Motion ≤0.521 pixels, not the earlier large-motion signature; no training changes. |
 | 5 | `v4-phase5/budget-curve-10000` | First scheduled budget-curve checkpoint: metrics-only causal development, whole-sequence intervals and frozen loss prefix | 25.4850 dB; delta vs v3 −4.786 [−5.923, −3.779] dB. No loss spikes >1; continue the unchanged 60,000-step budget. |
 | 5 | `v4-phase5/ladder-checks` | Workspace regular tests/fmt plus frame/crop reporting tests and unchanged-gallery verification after capacity-test parameterization | 99 regular Rust tests, seven frame and twelve crop tests pass; fmt and gallery verification pass. |
 | 5 | `v4-phase5/budget-40-w16-l3-seed1-60000` | Budget curve: original 40 scenes, width 16/three levels, seed 1, 60,000 updates from scratch; causal development every 10,000 | Running; overlaps sanity reporting/correctness checks, so timing is not an isolated throughput benchmark. |
