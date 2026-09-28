@@ -242,12 +242,16 @@ frames; paired intervals resample whole sequences:
 |---|---:|---:|---|---|
 | 10,000 | 0.0079259 | 25.5216 | — | −4.749 [−5.397, −4.108] |
 | 20,000 | 0.0082268 | 26.8564 | +1.335 [0.596, 1.924] | −3.414 [−4.628, −2.487] |
+| 30,000 | 0.0046552 | 27.0808 | +0.224 [−0.173, 0.644] | −3.190 [−4.080, −2.404] |
 
-At 20,000 updates, cold/warm PSNR are 24.9389/26.9092 dB; the warm difference
-against v3 is −3.589 [−4.853, −2.530] dB. Energy is 1.03208
-[1.00071, 1.08462], and temporal MSE ratio is 1.03540 [0.89117, 1.14835].
-The frozen prefix contains one finite loss above 1 (1.474924 at update 19,829),
-versus none through 10,000. Reports are `capacity-w16-l3-seed1-curve-{step}/`
+At 30,000 updates, cold/warm PSNR are 25.0528/27.2070 dB; the warm difference
+against v3 is −3.291 [−4.233, −2.375] dB. Energy is 0.99131
+[0.96105, 1.03621], and temporal MSE ratio is 0.91559 [0.81387, 0.98831].
+The PSNR gain since 20,000 is uncertain; the energy point estimate is in range,
+but its interval is not contained within the target. The temporal interval is
+below parity, without establishing the separate lighting-final condition.
+The frozen 30,000-update prefix still contains only one finite loss above 1
+(1.474924 at update 19,829). Reports are `capacity-w16-l3-seed1-curve-{step}/`
 under `runs/v4-phase5/`. These interim metrics-only checkpoints do not establish
 a capacity ranking or claim FLIP/crop results. The unchanged run continues to
 60,000 updates before its complete two-protocol report.
