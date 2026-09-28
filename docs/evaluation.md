@@ -32,6 +32,8 @@ corpus (larger captures contribute more). Evaluation can use another resolution.
 The [verified 200-scene corpus](training-corpus.md) records capture reproduction
 and admission checks. Its [manifest](training-corpus.json) gives the ordered
 training paths and hashes; pass each dataset path with `--data`.
+`--channels` and `--levels` select width/depth of this same v4 network (defaults
+16 and 3); the Phase 5 capacity ladder uses widths 16/32 and depths 3/4.
 Default training uses eight persistent cursors, each with a fixed 64² LR crop
 and four-frame gradient windows. Each life reserves 8–16 windows where possible;
 its start is uniform among positions that fit that lifetime. Cursors respawn
@@ -42,6 +44,9 @@ inputs, targets and emission together, without changing exposure from 1.
 There is no prefix warm-up, no CPU history/feature round trip, and no geometric
 augmentation. Out-of-crop warp taps are dropped/renormalized; losses exclude a
 four-pixel HR margin and normalize over the retained pixels.
+`loss-outliers.jsonl` records batches with mean loss above 1, including per-cursor
+loss, crop/gain/reset identity, input/target ranges and final carried prediction
+ranges. This is read-only diagnostic logging: no batch is skipped or clamped.
 
 One clipped Adam update uses the mean gradient over the cursors, with a 500-step
 linear warm-up then cosine decay to 10%. Read-only memory maps and a bounded
@@ -111,6 +116,20 @@ Use `--save-lobes` for matched component PNGs. `--eval-only --reset-history`
 resets the model before every frame; all temporal pairs are excluded. It is a
 spatial diagnostic, not the causal production result.
 
+Repeat `--alpha-frame SEQUENCE:FRAME` during evaluation to save both learned
+history gates at predeclared frames. Maps are row-major little-endian scalar f32
+and direct linear grayscale PNGs, not radiance-compressed or sRGB. With
+`--no-images`, raw maps and histograms are still saved. `diagnostics.json` records
+20 equal-width histogram bins; reset gates must be zero. Exposing the diagnostic
+outputs must leave reconstruction bit-identical. [Phase 5's fixed frames](phase5-results.md)
+are shared by every rung and both reset protocols.
+
+Crop scoring now also reports 1,000 paired whole-sequence bootstrap resamples,
+with 95% intervals on MSE/gradient differences and ratios in each age/kind group.
+All crops and frames of a sampled sequence stay together; RGB-value and
+gradient-neighbor weights are retained. Missing strata or zero control error
+yield null intervals, never artificial passes.
+
 For frozen comparisons, save unquantized images with `--save-linear` and first
 verify the recorded dataset/benchmark hashes with `scripts/score-regions.py` as
 described in the [archived quality protocol](archive/quality-week.md). For a selected learned
@@ -144,9 +163,13 @@ python3 scripts/bootstrap-evaluation.py \
 ```
 
 The bootstrap uses 1,000 **paired, whole-sequence** resamples (seed 31), retaining
-frame weighting within each sample. It reports after-minus-before differences and
-percentile 95% intervals for PSNR, FLIP, temporal MSE and linear energy ratio, both
-overall and by reset age. Matching frame identities, protocol and per-frame
+frame weighting within each sample. It reports after-minus-before differences,
+absolute before/after means, after/before ratios of means and their percentile
+95% intervals for PSNR, FLIP, temporal MSE and linear energy ratio, both overall
+and by reset age. Use the absolute after interval for the ±2% energy gate, not
+the difference interval shifted by the overall control mean. Ratio intervals
+exclude nonpositive denominators and report their valid resample count.
+Matching frame identities, protocol and per-frame
 reference hashes are required. Missing temporal pairs stay missing; unsupported
 strata are null. To measure the v3 control against its zero-head guide, use the same
 CSV twice with `--before-prefix baseline`. This is not a v4 improvement claim.

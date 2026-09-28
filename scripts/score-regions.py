@@ -13,6 +13,7 @@ import hashlib
 import json
 import math
 from pathlib import Path
+import random
 import sys
 from evaluation_metrics import bucket
 
@@ -186,6 +187,70 @@ def summarize(rows):
     return result
 
 
+def bootstrap_regions(rows, sequences, seed=31, resamples=1000):
+    """Paired sequence resampling, retaining all crops/frames and area weights."""
+    if sequences < 1 or resamples < 2:
+        raise ValueError("invalid sequence/resample count")
+    if any(not 0 <= row["sequence"] < sequences for row in rows):
+        raise ValueError("crop sequence outside corpus")
+    rng = random.Random(seed)
+    draws = [rng.choices(range(sequences), k=sequences) for _ in range(resamples)]
+
+    def interval(values):
+        if not values:
+            return None
+        values = sorted(values)
+        def quantile(p):
+            i = (len(values) - 1) * p
+            a, b = math.floor(i), math.ceil(i)
+            return values[a] + (values[b] - values[a]) * (i - a)
+        return [quantile(0.025), quantile(0.975)]
+
+    groups = {}
+    for age in ("all", "cold", "early", "settling", "warm"):
+        groups[age] = {}
+        for kind in ("smooth", "edge", "texture"):
+            selected = [r for r in rows if r["kind"] == kind and
+                        (age == "all" or bucket(r["frames_since_reset"]) == age)]
+            entry = {"crop_frames": len(selected),
+                     "sequences": len({r["sequence"] for r in selected}), "metrics": {}}
+            for metric, error_key, count_key in (("mse", "squared_sum", "values"),
+                                                ("gradient_mse", "gradient_squared_sum", "gradient_values")):
+                clusters = [[0.0, 0.0, 0] for _ in range(sequences)]
+                for row in selected:
+                    a, b = row["before"], row["after"]
+                    if (a[count_key] != b[count_key] or a[count_key] <= 0 or
+                            any(not math.isfinite(v) or v < 0 for v in (a[error_key], b[error_key]))):
+                        raise ValueError("invalid or unpaired crop statistics")
+                    c = clusters[row["sequence"]]
+                    c[0] += a[error_key]
+                    c[1] += b[error_key]
+                    c[2] += a[count_key]
+                before = math.fsum(c[0] for c in clusters)
+                after = math.fsum(c[1] for c in clusters)
+                count = sum(c[2] for c in clusters)
+                differences, ratios = [], []
+                for draw in draws:
+                    n = sum(clusters[s][2] for s in draw)
+                    if n:
+                        a = math.fsum(clusters[s][0] for s in draw)
+                        b = math.fsum(clusters[s][1] for s in draw)
+                        differences.append((b - a) / n)
+                        if a:
+                            ratios.append(b / a)
+                entry["metrics"][metric] = {
+                    "values": count, "difference": (after - before) / count if count else None,
+                    "ratio": after / before if before else None,
+                    "difference_ci95": interval(differences), "ratio_ci95": interval(ratios),
+                    "valid_difference_resamples": len(differences), "valid_ratio_resamples": len(ratios),
+                }
+            groups[age][kind] = entry
+    return {"unit": "whole sequences, paired resampling with replacement",
+            "aggregation": "RGB-value weighted; gradient-neighbor weighted; absent strata stay null",
+            "interval": "percentile 95%, linear interpolation", "seed": seed,
+            "resamples": resamples, "corpus_sequences": sequences, "groups": groups}
+
+
 def score(benchmark, before, after, before_role="learned", after_role="learned", reset_every=None):
     rows = []
     case_by_sequence = [case["name"] for case in benchmark["datasets"] for _ in range(case["sequences"])]
@@ -249,6 +314,7 @@ def main():
             or before_quality["history_mode"] != after_quality["history_mode"]):
         raise ValueError("crop comparison reset protocols differ")
     result = score(benchmark, before, after, args.before_role, args.after_role, reset_every)
+    result["bootstrap"] = bootstrap_regions(result["frames"], sum(d["sequences"] for d in benchmark["datasets"]))
     result["benchmark_sha256"] = sha256(args.benchmark)
     result["run_manifest_sha256"] = {"before": before_hash, "after": after_hash}
     if selection is not None:

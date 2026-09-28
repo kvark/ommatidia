@@ -177,6 +177,53 @@ fn crop_margin_excludes_every_spatial_loss_and_normalizes_interior() {
 
 #[test]
 #[ignore = "requires Vulkan or Metal"]
+fn alpha_output_preserves_reconstruction_and_reset_gates() {
+    let context = gpu_context(false);
+    let config = Config {
+        channels: 2,
+        ..Config::default()
+    };
+    let mut plain = native::Native::new(Arc::clone(&context), config, [8; 2]).unwrap();
+    let mut debug = native::Native::with_alpha_output(context, config, [8; 2]).unwrap();
+    for (p, values) in plain
+        .network
+        .params
+        .iter()
+        .zip(nonzero_parameters(&plain.network))
+    {
+        plain.session.set_parameter(&p.name, &values);
+        debug.session.set_parameter(&p.name, &values);
+    }
+    assert!(plain.read_alpha().is_none());
+    for step in 0..4 {
+        let frame = fixture(config, step, 67).0;
+        if step == 3 {
+            plain.reset();
+            debug.reset();
+        }
+        let expected = plain.process(&frame).unwrap();
+        let actual = debug.process(&frame).unwrap();
+        assert_eq!(
+            actual.iter().map(|v| v.to_bits()).collect::<Vec<_>>(),
+            expected.iter().map(|v| v.to_bits()).collect::<Vec<_>>()
+        );
+        let alpha = debug.read_alpha().unwrap();
+        assert_eq!(alpha.len(), frame.surfaces.len() * 2);
+        assert!(
+            alpha
+                .iter()
+                .all(|v| v.is_finite() && (0.0..=1.0).contains(v))
+        );
+        if step == 0 || step == 3 {
+            assert!(alpha.iter().all(|v| *v == 0.0));
+        } else {
+            assert!(alpha.iter().any(|v| *v > 0.0));
+        }
+    }
+}
+
+#[test]
+#[ignore = "requires Vulkan or Metal"]
 fn caller_encoder_matches_offline_across_frames_and_cuts() {
     use blade_graphics as gpu;
     let context = gpu_context(false);

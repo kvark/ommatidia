@@ -15,6 +15,38 @@ spec.loader.exec_module(scorer)
 
 
 class RegionTests(unittest.TestCase):
+    def test_crop_bootstrap_uses_sequences_not_independent_frames(self):
+        rows = []
+        for sequence, ratio in enumerate((1, 3)):
+            for frame in range(32):
+                rows.append({"sequence": sequence, "frames_since_reset": frame, "kind": "smooth",
+                             "before": {"squared_sum": 12, "values": 12, "gradient_squared_sum": 0, "gradient_values": 12},
+                             "after": {"squared_sum": 12 * ratio, "values": 12, "gradient_squared_sum": 0, "gradient_values": 12}})
+        result = scorer.bootstrap_regions(rows, 2)
+        for age in ("all", "cold", "early", "settling", "warm"):
+            entry = result["groups"][age]["smooth"]["metrics"]
+            self.assertEqual(entry["mse"]["ratio"], 2)
+            self.assertEqual(entry["mse"]["ratio_ci95"], [1, 3])
+            self.assertEqual(entry["mse"]["difference_ci95"], [0, 2])
+            self.assertIsNone(entry["gradient_mse"]["ratio_ci95"])
+            self.assertEqual(entry["gradient_mse"]["difference_ci95"], [0, 0])
+            self.assertIsNone(result["groups"][age]["edge"]["metrics"]["mse"]["ratio"])
+        self.assertEqual(result, scorer.bootstrap_regions(rows, 2))
+
+    def test_crop_bootstrap_area_weighting_missing_strata_and_bad_pairs(self):
+        rows = [{"sequence": i, "frames_since_reset": 0, "kind": "smooth",
+                 "before": {"squared_sum": n, "values": n, "gradient_squared_sum": n, "gradient_values": n},
+                 "after": {"squared_sum": n * ratio, "values": n, "gradient_squared_sum": n * ratio, "gradient_values": n}}
+                for i, n, ratio in [(0, 1, 1), (1, 3, 3)]]
+        result = scorer.bootstrap_regions(rows, 3)["groups"]
+        self.assertEqual(result["cold"]["smooth"]["metrics"]["mse"]["ratio"], 2.5)
+        self.assertIsNone(result["warm"]["smooth"]["metrics"]["mse"]["ratio_ci95"])
+        for key, value in [("values", 2), ("squared_sum", float("nan")), ("gradient_squared_sum", -1)]:
+            bad = copy.deepcopy(rows)
+            bad[0]["after"][key] = value
+            with self.assertRaises(ValueError):
+                scorer.bootstrap_regions(bad, 3)
+
     def test_development_crops_are_valid_and_identify_all_captures(self):
         root = Path(__file__).resolve().parents[1]
         benchmark = json.loads((root / "docs/dev-crops.json").read_text())

@@ -209,13 +209,17 @@ fn resume_restores_adam_schedule_rng_and_gpu_state() {
     )
     .unwrap();
     for step in 3..=4 {
-        trainer
+        let (loss, _) = trainer
             .step(
                 &batch(&mut sampler, config),
                 learning_rate(settings.peak_rate, step, 4),
                 settings.weights,
             )
             .unwrap();
+        let microbatch = trainer.last_microbatch_losses();
+        assert_eq!(microbatch.len(), 2);
+        assert_eq!(loss, microbatch.iter().sum::<f32>() / 2.0);
+        assert!(trainer.read_states().iter().all(|v| v.is_finite()));
     }
     let mut restored = Trainer::new(Arc::clone(&context), config, [8; 2], 4, 2, 4).unwrap();
     let checkpoint = directory.join("model.safetensors");

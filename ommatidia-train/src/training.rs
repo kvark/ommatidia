@@ -328,7 +328,12 @@ impl Trainer {
         timing.loss_read = start.elapsed().as_secs_f64();
         Ok((loss, timing))
     }
-    /// Checkpoint-only readback; never called by the ordinary update loop.
+    /// Diagnostic readback after a completed batch; never changes parameters/state.
+    pub fn last_microbatch_losses(&self) -> Vec<f32> {
+        // run_batch waits for the final carry submission before returning.
+        unsafe { std::slice::from_raw_parts(self.losses.data().cast::<f32>(), self.batch).to_vec() }
+    }
+    /// Checkpoint/diagnostic readback; never called by the ordinary update loop.
     pub fn read_states(&mut self) -> Vec<f32> {
         self.session.wait();
         unsafe {

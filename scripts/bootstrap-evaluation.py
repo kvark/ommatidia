@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Paired frame-mean differences with 1,000 whole-sequence bootstrap resamples.
+"""Paired frame means, differences and ratios with whole-sequence bootstraps.
 
 Inputs are score-flip.py's enriched frames.csv (reference hashes are required).
 Positive differences mean AFTER minus BEFORE, irrespective of metric direction.
@@ -26,6 +26,8 @@ def percentile(values, probability):
 def compare(before, after, before_prefix="learned", after_prefix="learned", seed=31, resamples=1000):
     if not before or len(before) != len(after):
         raise ValueError("empty or differently sized frame lists")
+    if resamples <= 0:
+        raise ValueError("resamples must be positive")
     keys = ("sequence", "frame", "frames_since_reset", "reference_sha256")
     for left, right in zip(before, after):
         if any(left[key] != right[key] for key in keys):
@@ -56,19 +58,33 @@ def compare(before, after, before_prefix="learned", after_prefix="learned", seed
             count = sum(c[2] for c in clusters.values())
             entry = {"frames": count, "sequences": sum(c[2] > 0 for c in clusters.values()),
                      "before": None, "after": None, "difference": None,
-                     "ci95": None, "valid_resamples": 0}
+                     "ci95": None, "valid_resamples": 0,
+                     "before_ci95": None, "after_ci95": None,
+                     "ratio": None, "ratio_ci95": None, "ratio_valid_resamples": 0}
             if count:
                 entry["before"] = math.fsum(c[0] for c in clusters.values()) / count
                 entry["after"] = math.fsum(c[1] for c in clusters.values()) / count
                 entry["difference"] = entry["after"] - entry["before"]
+                if entry["before"] > 0:
+                    entry["ratio"] = entry["after"] / entry["before"]
                 samples = []
+                before_samples, after_samples, ratios = [], [], []
                 for draw in draws:
                     size = sum(clusters[s][2] for s in draw)
                     if size:
                         samples.append(math.fsum(clusters[s][1] - clusters[s][0] for s in draw) / size)
+                        a = math.fsum(clusters[s][0] for s in draw) / size
+                        b = math.fsum(clusters[s][1] for s in draw) / size
+                        before_samples.append(a)
+                        after_samples.append(b)
+                        if a > 0:
+                            ratios.append(b / a)
                 entry["valid_resamples"] = len(samples)
-                if samples:
-                    entry["ci95"] = [percentile(samples, 0.025), percentile(samples, 0.975)]
+                entry["ratio_valid_resamples"] = len(ratios)
+                for key, values in (("ci95", samples), ("before_ci95", before_samples),
+                                    ("after_ci95", after_samples), ("ratio_ci95", ratios)):
+                    if values:
+                        entry[key] = [percentile(values, 0.025), percentile(values, 0.975)]
             result[group][name] = entry
     return result
 
@@ -90,6 +106,7 @@ def main():
         "aggregation": "frame-weighted means; undefined pairs excluded, never zero-filled",
         "direction": "after minus before; PSNR higher is better, FLIP/temporal MSE lower is better; energy ratio target is 1",
         "interval": "percentile 95%, linear interpolation", "resamples": 1000, "seed": args.seed,
+        "ratio_definition": "ratio of paired frame-weighted means, after/before; undefined for nonpositive denominators",
         "before": {"csv": str(args.before), "sha256": sha256(args.before), "prefix": args.before_prefix},
         "after": {"csv": str(args.after), "sha256": sha256(args.after), "prefix": args.after_prefix},
         "groups": compare(before, after, args.before_prefix, args.after_prefix, args.seed),

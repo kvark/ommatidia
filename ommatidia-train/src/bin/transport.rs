@@ -7,7 +7,7 @@ use ommatidia_train::{
     checkpoint::{Checkpoint, Settings},
     corpus::Corpus,
     evaluation::{self, ControlRun},
-    sampler::{Prefetch, Sampler, learning_rate},
+    sampler::{Batch, Prefetch, Sampler, learning_rate},
     save_linear, save_png,
     training::Trainer,
 };
@@ -212,6 +212,7 @@ struct EvaluationOptions {
     save_linear: bool,
     no_images: bool,
     control_run: Option<PathBuf>,
+    alpha_frames: Vec<[usize; 2]>,
 }
 impl EvaluationOptions {
     fn training() -> Self {
@@ -229,12 +230,20 @@ fn evaluate(
     out: &Path,
     options: &EvaluationOptions,
 ) -> Result<serde_json::Value> {
+    if options
+        .alpha_frames
+        .iter()
+        .any(|&[sequence, frame]| sequence >= corpus.sequences.len() || frame >= corpus.length)
+    {
+        return Err("alpha diagnostic frame outside evaluation corpus".into());
+    }
     let mut report = serde_json::json!({
         "schema":2, "capture":corpus.provenance,
         "extent":corpus.low.map(|v| v * config.scale),
         "sequence_length":corpus.length,"frames":corpus.len(),
         "reset_every":options.reset_every,"save_linear":options.save_linear,
         "control_run":options.control_run,
+        "alpha_frames":options.alpha_frames,
         "history_mode":if options.reset_every.is_some() { "periodic-cuts" } else { "causal" },
         "metric_space":"PSNR/SSIM/gradient/lobe MSE: x/(1+x); energy: scene-linear; PNG: same compression then sRGB",
         "temporal_scope":"motion-compensated change residual; pairs crossing resets are excluded; undefined metrics are null",
@@ -371,6 +380,40 @@ fn evaluate(
             "frame": index % corpus.length,
             "reference_composition_mse": metrics::error(&composition, &target.rgb),
         });
+        if options
+            .alpha_frames
+            .contains(&[index / corpus.length, index % corpus.length])
+        {
+            let packed = learned
+                .read_alpha()
+                .ok_or("alpha diagnostic output is unavailable")?;
+            let width = extent[0] as usize;
+            for (lobe, name) in ["diffuse", "specular"].into_iter().enumerate() {
+                let alpha: Vec<_> = (0..frame.surfaces.len())
+                    .map(|i| packed[config.index(frame.low, lobe, i % width, i / width)])
+                    .collect();
+                let summary = alpha_summary(&alpha)?;
+                let raw = format!("{prefix}-alpha-{name}.f32");
+                save_linear(&out.join(&raw), &alpha)?;
+                if !options.no_images {
+                    // Alpha is a probability, not radiance: encode direct linear
+                    // grayscale, without the radiance display transform.
+                    let bytes: Vec<_> = alpha.iter().map(|v| (v * 255.0).round() as u8).collect();
+                    let mut encoder = png::Encoder::new(
+                        std::fs::File::create(out.join(format!("{prefix}-alpha-{name}.png")))?,
+                        extent[0],
+                        extent[1],
+                    );
+                    encoder.set_color(png::ColorType::Grayscale);
+                    encoder.set_depth(png::BitDepth::Eight);
+                    encoder.write_header()?.write_image_data(&bytes)?;
+                }
+                diagnostic[format!("alpha_{name}")] = serde_json::json!({
+                    "summary":summary,"raw":raw,"layout":"row-major little-endian f32 probability",
+                    "histogram_bins":"20 equal-width bins on [0,1]; right edge 1 belongs to the final bin",
+                });
+            }
+        }
         for (name, model) in [("learned", &*learned)] {
             let state = model.read_state();
             let width = extent[0] as usize;
@@ -452,6 +495,68 @@ fn evaluate(
     );
     Ok(report)
 }
+fn alpha_summary(values: &[f32]) -> Result<serde_json::Value> {
+    if values.is_empty()
+        || values
+            .iter()
+            .any(|v| !v.is_finite() || !(0.0..=1.0).contains(v))
+    {
+        return Err("alpha must contain finite probabilities in [0,1]".into());
+    }
+    let mut histogram = [0_usize; 20];
+    for &value in values {
+        histogram[((value * 20.0) as usize).min(19)] += 1;
+    }
+    let mut summary = finite_summary(values.iter().copied());
+    summary["histogram"] = serde_json::json!(histogram);
+    Ok(summary)
+}
+
+fn finite_summary(values: impl Iterator<Item = f32>) -> serde_json::Value {
+    let mut count = 0;
+    let mut nonfinite = 0;
+    let mut min = f32::INFINITY;
+    let mut max = f32::NEG_INFINITY;
+    let mut sum = 0.0_f64;
+    for value in values {
+        if value.is_finite() {
+            count += 1;
+            min = min.min(value);
+            max = max.max(value);
+            sum += value as f64;
+        } else {
+            nonfinite += 1;
+        }
+    }
+    serde_json::json!({
+        "finite":count,"nonfinite":nonfinite,
+        "min":(count>0).then_some(min),"max":(count>0).then_some(max),
+        "mean":(count>0).then_some(sum / count.max(1) as f64),
+    })
+}
+
+fn loss_diagnostics(trainer: &mut Trainer, batch: &Batch, config: Config) -> serde_json::Value {
+    let states = trainer.read_states();
+    let losses = trainer.last_microbatch_losses();
+    let n = batch.frames[0][0].0.surfaces.len();
+    let state_len = n * config.state_channels();
+    let cursors: Vec<_> = batch.windows.iter().enumerate().map(|(index, window)| {
+        let state = &states[index * state_len..(index + 1) * state_len];
+        let frames = &batch.frames[index];
+        serde_json::json!({
+            "cursor":index,"window":window,"loss":losses[index],
+            "input_lobes":finite_summary(frames.iter().flat_map(|(f, _)| f.rays.iter())
+                .flat_map(|r| r.diffuse[..3].iter().chain(&r.specular[..3])).copied()),
+            "target_lobes":finite_summary(frames.iter().flat_map(|(_, t)| t.lobes.iter()).copied()),
+            "target_rgb":finite_summary(frames.iter().flat_map(|(_, t)| t.rgb.iter()).copied()),
+            "last_frame_predicted_lobes":finite_summary(state[..6*n].iter().copied()),
+            "last_frame_latent":finite_summary(state[6*n..(6+config.latent_channels as usize)*n].iter().copied()),
+        })
+    }).collect();
+    serde_json::json!({"scope":"read-only, post-update; predictions are the carried final-frame forward outputs before the optimizer update",
+        "cursors":cursors})
+}
+
 fn main() -> Result<()> {
     env_logger::init();
     let mut data = Vec::new();
@@ -460,6 +565,7 @@ fn main() -> Result<()> {
     let mut steps = 4000usize;
     let mut unroll = 4usize;
     let mut channels = 16;
+    let mut levels = 3;
     let mut seed = 7u64;
     let mut rate = 0.0003f32;
     let mut eval_only = false;
@@ -477,7 +583,7 @@ fn main() -> Result<()> {
         if arg == "--help" {
             println!(
                 "transport --data TRAIN.omd --eval-data DEV.omd --out DIR
-  --steps N [4000] --unroll N [4] --channels N [16] --seed N [7]
+  --steps N [4000] --unroll N [4] --channels N [16] --levels N [3] --seed N [7]
   --lr F [0.0003] --eval-every N [10000] (causal metrics, no images) --device-id ID
   --batch N [8] --crop N [64] (LR pixels; persistent GPU cursors)\n  --stop-after N (checkpoint an interruption; --steps retains the planned schedule)
   --reset-every N [off] (evaluation: simulated cut each N frames, within each sequence)
@@ -487,6 +593,7 @@ fn main() -> Result<()> {
   --reset-history (eval-only diagnostic: reset the model before every frame)
   --save-lobes (save diffuse/specular images alongside per-frame diagnostics)
   --save-linear (save row-major, little-endian scene-linear RGB f32 for crop scoring)
+  --alpha-frame SEQUENCE:FRAME (repeatable, eval-only: raw gates, maps and histograms)
   --no-images (skip PNG writing; compatible with --save-linear)
   --control-run DIR (compare saved control outputs; identical ordered data and reset protocol)
   --compressed-weight F [1] --physical-weight F [0.005]
@@ -535,6 +642,7 @@ seeds/catalog families must be disjoint. Use a separate final audit split."
             "--steps" => steps = v.parse()?,
             "--unroll" => unroll = v.parse()?,
             "--channels" => channels = v.parse()?,
+            "--levels" => levels = v.parse()?,
             "--seed" => seed = v.parse()?,
             "--lr" => rate = v.parse()?,
             "--eval-every" => eval_every = v.parse()?,
@@ -549,6 +657,16 @@ seeds/catalog families must be disjoint. Use a separate final audit split."
             "--control-run" => evaluation.control_run = Some(PathBuf::from(v).canonicalize()?),
             "--checkpoint" => checkpoint_input = Some(v.into()),
             "--device-id" => device_id = Some(ommatidia::gpu::parse_device_id(&v)?),
+            "--alpha-frame" => {
+                let (sequence, frame) = v
+                    .split_once(':')
+                    .ok_or("alpha frame must be SEQUENCE:FRAME")?;
+                let pair = [sequence.parse()?, frame.parse()?];
+                if evaluation.alpha_frames.contains(&pair) {
+                    return Err("duplicate alpha diagnostic frame".into());
+                }
+                evaluation.alpha_frames.push(pair);
+            }
             "--compressed-weight" => weights.compressed = v.parse()?,
             "--physical-weight" => weights.physical = v.parse()?,
             "--low-frequency-weight" => weights.low_frequency = v.parse()?,
@@ -570,9 +688,11 @@ seeds/catalog families must be disjoint. Use a separate final audit split."
     if evaluation.no_images && evaluation.save_lobes {
         return Err("--no-images and --save-lobes are mutually exclusive".into());
     }
-    if !eval_only && (evaluation.save_linear || evaluation.save_lobes) {
+    if !eval_only
+        && (evaluation.save_linear || evaluation.save_lobes || !evaluation.alpha_frames.is_empty())
+    {
         return Err(
-            "--save-linear/--save-lobes require --eval-only; training checks save metrics only"
+            "--save-linear/--save-lobes/--alpha-frame require --eval-only; training checks save metrics only"
                 .into(),
         );
     }
@@ -597,6 +717,7 @@ seeds/catalog families must be disjoint. Use a separate final audit split."
     } else {
         Config {
             channels,
+            levels,
             ..Config::default()
         }
     };
@@ -611,7 +732,11 @@ seeds/catalog families must be disjoint. Use a separate final audit split."
         inference_macs as f64 * 2.0e-9
     );
     let context = ommatidia::gpu::create_context(device_id, false);
-    let mut learned = native::Native::new(Arc::clone(&context), config, low)?;
+    let mut learned = if evaluation.alpha_frames.is_empty() {
+        native::Native::new(Arc::clone(&context), config, low)?
+    } else {
+        native::Native::with_alpha_output(Arc::clone(&context), config, low)?
+    };
     if eval_only {
         learned
             .session
@@ -688,11 +813,13 @@ seeds/catalog families must be disjoint. Use a separate final audit split."
                 "io":"immutable memory-mapped f16 crops, bounded one-worker prefetch; no requantization",
                 "sampling":"persistent 8-16-window crop lives, uniform fitting start, 0.1 extra reset probability; 2^U(-2,2) radiance gain per life",
                 "loss_margin_hr":4,"exposure":1,"gradient_clip_norm":1,
+                "loss_outliers":{"threshold":1,"file":"loss-outliers.jsonl","policy":"diagnostic only; no skipped/clamped batches"},
                 "resume":"Adam moments/step, full GPU state, consumed-batch sampler RNG/cursors and fixed schedule",
             }))?,
         )?;
         let prefetch = Prefetch::new(Arc::clone(&train), config, sampler.clone());
         let mut losses = std::fs::File::create(out.join("loss.csv"))?;
+        let mut outliers = std::fs::File::create(out.join("loss-outliers.jsonl"))?;
         writeln!(
             losses,
             "update,loss,learning_rate,cold_windows,windows,cold_fraction"
@@ -717,6 +844,15 @@ seeds/catalog families must be disjoint. Use a separate final audit split."
                 losses,
                 "{update},{loss},{lr},{cold},{batch_size},{fraction}"
             )?;
+            // Observation only: the fixed threshold matches the Phase 3 spike
+            // report. It never drops a batch, changes the objective or clips data.
+            if loss > 1.0 {
+                let mut diagnostic = loss_diagnostics(&mut trainer, &batch, config);
+                diagnostic["update"] = update.into();
+                diagnostic["mean_loss"] = loss.into();
+                writeln!(outliers, "{}", serde_json::to_string(&diagnostic)?)?;
+                outliers.flush()?;
+            }
             let total = start.elapsed().as_secs_f64();
             let values = [
                 io,
@@ -872,6 +1008,35 @@ seeds/catalog families must be disjoint. Use a separate final audit split."
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn alpha_histogram_preserves_endpoints_and_rejects_invalid_values() {
+        let s = alpha_summary(&[0.0, 0.049, 0.5, 0.999, 1.0]).unwrap();
+        let histogram = s["histogram"].as_array().unwrap();
+        assert_eq!(histogram[0], 2);
+        assert_eq!(histogram[10], 1);
+        assert_eq!(histogram[19], 2);
+        assert_eq!(
+            histogram.iter().map(|n| n.as_u64().unwrap()).sum::<u64>(),
+            5
+        );
+        for invalid in [f32::NAN, f32::INFINITY, -0.001, 1.001] {
+            assert!(alpha_summary(&[invalid]).is_err());
+        }
+        assert!(alpha_summary(&[]).is_err());
+    }
+
+    #[test]
+    fn outlier_summary_preserves_extremes_and_reports_nonfinite_values() {
+        let s = finite_summary([0.0, 2.0, 10.0, f32::NAN, f32::INFINITY].into_iter());
+        assert_eq!(s["finite"], 3);
+        assert_eq!(s["nonfinite"], 2);
+        assert_eq!(s["min"], 0.0);
+        assert_eq!(s["max"], 10.0);
+        assert_eq!(s["mean"], 4.0);
+        let empty = finite_summary(std::iter::empty());
+        assert!(empty["min"].is_null() && empty["max"].is_null() && empty["mean"].is_null());
+    }
 
     #[test]
     fn training_evaluation_is_causal_and_does_not_save_images() {

@@ -160,10 +160,28 @@ impl Native {
         low: [u32; 2],
         timing: bool,
     ) -> Result<Self, String> {
+        Self::create(context, config, low, timing, false)
+    }
+    /// Append the learned history gates as a diagnostic output. This changes
+    /// neither the reconstruction equations nor the checkpoint parameter set.
+    pub fn with_alpha_output(
+        context: Arc<gpu::Context>,
+        config: Config,
+        low: [u32; 2],
+    ) -> Result<Self, String> {
+        Self::create(context, config, low, false, true)
+    }
+    fn create(
+        context: Arc<gpu::Context>,
+        config: Config,
+        low: [u32; 2],
+        timing: bool,
+        alpha_output: bool,
+    ) -> Result<Self, String> {
         if timing && !context.capabilities().timing {
             return Err("GPU timestamps unavailable".into());
         }
-        let network = graph::build(config, low, 0)?;
+        let network = graph::build_with_debug(config, low, 0, alpha_output)?;
         let mut session =
             crate::gpu::inference_session_with_timing(&network.graph, Arc::clone(&context), timing);
         network.initialize(&mut session, 1);
@@ -471,6 +489,17 @@ impl Native {
                 self.read_input(&format!("f0.coeff{k}"), state_len)
             }),
         }
+    }
+    /// Two subpixel-packed alpha planes, diffuse then specular. Available only
+    /// with `with_alpha_output`; call after a completed process/resolve and wait.
+    pub fn read_alpha(&self) -> Option<Vec<f32>> {
+        if self.network.graph.outputs().len() != 4 {
+            return None;
+        }
+        let n = (self.low[0] * self.low[1] * self.config.scale.pow(2)) as usize;
+        let mut alpha = vec![0.0; 2 * n];
+        self.session.read_output_by_index(3, &mut alpha);
+        Some(alpha)
     }
     /// Only call after waiting for the resolve submission.
     pub fn read_state(&self) -> State {

@@ -6,6 +6,22 @@ Only development selects models. Confirmation is reserved for Phase 6.
 
 | Phase | Run | Budget / purpose | Outcome |
 |---|---|---|---|
+| 5 | `v4-phase5/sanity-build` | Locked release trainer at the merged caller-encoder Meganeura pin; unchanged model/loop | Pass; previous debug correctness gates cover the identical merged source tree. |
+| 5 | `v4-phase5/sanity-10000` | From scratch, one scene, seed 1, 10,000 updates; B=8, k=4, 64² LR crops | Complete: 621.90 training seconds, 16.08 updates/s, 17.72% cold windows; independent-noise gates follow. |
+| 5 | `v4-phase5/diagnostic-radv` | Full reconstruction and cursor GPU gates after adding read-only diagnostics, debug RADV | Twelve tests pass, zero validation errors; alpha and diagnostic readbacks preserve outputs/resume exactly. |
+| 5 | `v4-phase5/absolute-bootstrap-tests` | Absolute energy and paired ratio confidence intervals, including zero denominators | Six evaluation and twelve crop tests pass; published-gallery verification unchanged. |
+| 5 | `v4-phase5/sanity-noise-causal` | Final sanity checkpoint, independent input noise, causal evaluation | 32.4875 dB; misses ≥32.6 dB sanity gate. Longer ladder held for model/loop diagnosis. |
+| 5 | `v4-phase5/sanity-noise-reset1` | Same checkpoint/noise stream, history reset every frame | 31.3621 dB; misses ≥31.6 dB sanity gate. No threshold/data change. |
+| 5 | `v4-phase5/spike-replay-500` | Phase 3 seed-7 ordered 40-scene replay, original 5,000-step schedule, stop after 500; read-only outlier diagnostics | Three spikes reproduce (303/396/397): cold-window prediction explosion, not extreme targets; no model promoted. |
+| 5 | `v4-phase5/diagnostic-lavapipe-full` | Full reconstruction and cursor GPU gates with diagnostic changes, debug LavaPipe | Twelve tests pass, zero validation errors. |
+| 5 | `v4-phase5/sanity-noise-linear` | Exact causal sanity rerun retaining floats for full-frame versus interior-error diagnosis | Pass: causal scores byte-identical; all 64 references match the archived Phase 2 diagnostic. |
+| 5 | `v4-phase5/sanity-dev-causal` | Initial sanity checkpoint, complete development protocol, locked crops and three fixed alpha frames | Running. |
+| 5 | `v4-phase5/sanity-dev-reset16` | Same checkpoint/development, cuts every 16 frames; locked crops and alpha frames | Queued after causal evaluation. |
+| 5 | `v4-phase5/sanity-error-localization` | Compare full-frame/interior errors with the archived Phase 2 diagnostic; unchanged references | Outer 4-pixel border accounts for 28.15% of error (Phase 2: 6.85%); 4-pixel-trimmed PSNR 33.65 dB is diagnostic only, not a gate substitution. |
+| 5 | `v4-phase5/diagnostic-checks` | Format, workspace tests/Clippy, diagnostic-output parity fixtures and release build | Pass: 96 regular tests, Clippy and release build. GPU diagnostics checked separately. |
+| 5 | `v4-phase5/archive-sanity-runtime` | Preserve the executing pre-instrumentation trainer for controlled replay | Pass; archived executable hash exactly matches the sanity run's input. |
+| 5 | `v4-phase5/diagnostic-lavapipe` | Alpha-output parity plus cursor/diagnostic readback and exact resume, debug LavaPipe | Three tests pass, zero validation errors; alpha output leaves reconstruction bit-identical. |
+| 5 | `v4-phase5/crop-bootstrap-tests` | Paired whole-sequence crop intervals with area weighting and missing strata | Pass: twelve crop tests, five frame/bootstrap tests, unchanged published-gallery verification. |
 | Integration | `blade-encoder/format` | Format caller-encoder example, API documentation and parity test | Pass. |
 | Integration | `blade-encoder/build` | Build all workspace targets with Meganeura `7c29497`; debug assertions, debug symbols disabled | Pass. |
 | Integration | `blade-encoder/radv-gpu` | Full reconstruction GPU suite, including caller-encoder recurrence/cuts; debug RADV | Failed validation: new test reused caller command buffers without frame fences; corrected test lifetime handling. |

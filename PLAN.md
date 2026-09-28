@@ -461,6 +461,12 @@ hash-identical. No model evaluation, training or gallery promotion.
 
 ## 9. Phase 5: training ladder and decision point A (3 days)
 
+In progress, 2026-09-27. D6 thresholds below are frozen. Start with the original
+single-scene diagnostic captures under `runs/quality-week-2026-09-26/data/`
+(the baseline table's `data/` paths are relative to that archive). Use the current
+GPU-cursor loop from scratch; investigate the Phase 3 finite loss spikes before
+the budget/capacity ladder. Confirmation remains reserved for Phase 6.
+
 Every rung reports, in one `docs/experiments.md` row per run:
 
 - development metrics under both protocols;

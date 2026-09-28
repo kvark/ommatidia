@@ -39,9 +39,15 @@ class EvaluationTests(unittest.TestCase):
             # Two correlated sequence clusters give [1, 3], not the tight
             # interval incorrectly obtained by treating 64 frames as independent.
             self.assertEqual(result[group]["psnr"]["ci95"], [1, 3])
+            self.assertEqual(result[group]["psnr"]["before_ci95"], [10, 10])
+            self.assertEqual(result[group]["psnr"]["after_ci95"], [11, 13])
+            self.assertEqual(result[group]["psnr"]["ratio"], 1.2)
+            self.assertEqual(result[group]["psnr"]["ratio_ci95"], [1.1, 1.3])
             self.assertEqual(result[group]["psnr"]["valid_resamples"], 1000)
         self.assertIsNone(result["cold"]["temporal_mse"]["difference"])
         self.assertIsNone(result["cold"]["temporal_mse"]["ci95"])
+        self.assertIsNone(result["cold"]["temporal_mse"]["after_ci95"])
+        self.assertIsNone(result["cold"]["temporal_mse"]["ratio_ci95"])
         self.assertEqual(result["all"]["temporal_mse"]["frames"], 62)
         self.assertEqual(result, bootstrap.compare(values, values, "baseline", "learned"))
 
@@ -51,6 +57,27 @@ class EvaluationTests(unittest.TestCase):
         self.assertEqual(result["early"]["flip"]["ci95"], [2, 2])
         self.assertIsNone(result["warm"]["flip"]["difference"])
         self.assertEqual(result["warm"]["flip"]["frames"], 0)
+
+    def test_absolute_and_ratio_intervals_use_paired_means(self):
+        values = rows(4)
+        for row in values:
+            row["baseline_energy_ratio"] = "1" if row["sequence"] == "0" else "3"
+            row["learned_energy_ratio"] = "2" if row["sequence"] == "0" else "3"
+        result = bootstrap.compare(values, values, "baseline", "learned")["all"]["energy_ratio"]
+        # Absolute after CI is not the overall before mean plus the difference CI.
+        self.assertEqual(result["after_ci95"], [2, 3])
+        self.assertEqual(result["ci95"], [0, 1])
+        self.assertEqual(result["ratio"], 1.25)  # not mean([2/1, 3/3])
+        self.assertEqual(result["ratio_ci95"], [1, 2])
+        for row in values:
+            row["baseline_energy_ratio"] = "0"
+        result = bootstrap.compare(values, values, "baseline", "learned")["all"]["energy_ratio"]
+        self.assertIsNone(result["ratio"])
+        self.assertIsNone(result["ratio_ci95"])
+        self.assertEqual(result["ratio_valid_resamples"], 0)
+        self.assertEqual(result["after_ci95"], [2, 3])
+        with self.assertRaises(ValueError):
+            bootstrap.compare(values, values, resamples=0)
 
     def test_frame_weighting_with_unequal_temporal_counts(self):
         values = rows(4)
