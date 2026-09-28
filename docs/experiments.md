@@ -6,6 +6,7 @@ Only development selects models. Confirmation is reserved for Phase 6.
 
 | Phase | Run | Budget / purpose | Outcome |
 |---|---|---|---|
+| 5 | `v4-phase5/capacity-w32-l4-seed1-curve-40000` | Scheduled 32×4 checkpoint: causal intervals, immutable 40k loss prefix and retained outlier diagnostics | 28.1300 dB; +0.768 [0.464, 1.019] dB versus 30k, −2.141 [−2.784, −1.507] versus v3. Energy 1.00370; temporal ratio 0.98572 [0.84280, 1.10413]; eleven loss outliers. |
 | 5 | `v4-phase5/capacity-w32-l4-seed1-curve-30000` | Scheduled 32×4 checkpoint: causal intervals, immutable 30k loss prefix and retained outlier diagnostics | 27.3616 dB; +0.396 [0.101, 0.733] dB versus 20k, −2.909 [−3.681, −2.167] versus v3. Energy 1.00618; temporal ratio 0.88552 [0.80060, 0.94602]; eleven loss outliers. |
 | 5 | `v4-phase5/capacity-w32-l4-seed1-curve-20000` | Scheduled 32×4 checkpoint: causal intervals, immutable 20k loss prefix and retained outlier diagnostics | 26.9652 dB; +0.895 [0.632, 1.216] dB versus 10k, −3.306 [−4.053, −2.601] versus v3. Energy 1.00841; temporal ratio 0.96706 [0.84694, 1.07511]; eleven loss outliers. |
 | 5 | `v4-phase5/capacity-w32-l4-seed1-curve-10000` | First scheduled 32×4 checkpoint: causal intervals, immutable 10k loss prefix and retained outlier diagnostics | 26.0701 dB; delta −4.201 [−4.948, −3.615] dB versus v3. Energy 1.00754; temporal ratio 0.87832 [0.77590, 0.94341]; eight loss outliers, fixed budget continues. |
