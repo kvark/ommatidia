@@ -7,7 +7,9 @@ Wrap this command with record-run.py and record the binary and both captures.
 import argparse
 import csv
 import json
+import math
 from pathlib import Path
+import struct
 import subprocess
 
 
@@ -33,12 +35,33 @@ def main():
     resumed_metadata = json.loads((resumed / "training.json").read_text())
     assert resumed_metadata["optimizer_resumed"] and resumed_metadata["start_step"] == 1
     checkpoint = train / "model.safetensors"
-    base += ["--eval-only", "--checkpoint", str(checkpoint), "--save-linear"]
+    base += ["--eval-only", "--checkpoint", str(checkpoint), "--save-linear",
+             "--alpha-frame", "0:0", "--alpha-frame", "0:1"]
     causal = args.out / "causal"
     subprocess.run(base + ["--out", str(causal)], check=True)
     assert not list(train.rglob("*.png")), "training evaluation wrote PNGs"
     assert (train / "dev-1/frames.csv").is_file(), "periodic evaluation did not run"
     assert (train / "frames.csv").read_bytes() == (causal / "frames.csv").read_bytes(), "reload metrics changed"
+    quality = json.loads((causal / "quality.json").read_text())
+    assert quality["alpha_frames"] == [[0, 0], [0, 1]]
+    for frame in json.loads((causal / "diagnostics.json").read_text()):
+        for lobe in ("diffuse", "specular"):
+            gate = frame[f"alpha_{lobe}"]
+            path = causal / gate["raw"]
+            values = [v for (v,) in struct.iter_unpack("<f", path.read_bytes())]
+            assert len(values) == math.prod(quality["extent"])
+            assert all(math.isfinite(v) and 0 <= v <= 1 for v in values)
+            histogram = [0] * 20
+            for value in values:
+                product, = struct.unpack("<f", struct.pack("<f", value * 20))
+                histogram[min(int(product), 19)] += 1
+            assert histogram == gate["summary"]["histogram"]
+            if frame["frame"] == 0:
+                assert all(v == 0 for v in values), "cold alpha must be zero"
+            png = path.with_suffix(".png").read_bytes()
+            assert png[:8] == b"\x89PNG\r\n\x1a\n"
+            width, height, depth, color = struct.unpack(">IIBB", png[16:26])
+            assert [width, height] == quality["extent"] and (depth, color) == (8, 0)
     compared = args.out / "compared"
     subprocess.run(base + ["--out", str(compared), "--control-run", str(causal), "--no-images"], check=True)
     assert not list(compared.glob("*.png"))
@@ -70,7 +93,7 @@ def main():
     rejected = subprocess.run(base + ["--out", str(args.out / "mismatched-control"),
         "--reset-every", "1", "--control-run", str(causal)], capture_output=True, text=True)
     assert rejected.returncode != 0 and "control run reset_every differs" in rejected.stderr, rejected.stderr
-    print("PASS: metrics-only periodic/final training evaluation, interrupted optimizer/cursor resume, exact reload, zero control deltas, reset-1/16, mismatched-control rejection")
+    print("PASS: metrics-only periodic/final training evaluation, interrupted optimizer/cursor resume, exact reload, alpha maps/histograms, shared reference identity, zero control deltas, reset-1/16, mismatched-control rejection")
 
 
 if __name__ == "__main__":

@@ -21,7 +21,7 @@ def rows(length=32, shifts=(1, 3)):
         for frame in range(length):
             row = {"sequence": str(sequence), "frame": str(frame), "frames_since_reset": str(frame),
                    "reference_sha256": "a" * 64}
-            for name in bootstrap.METRICS:
+            for name in (*bootstrap.METRICS, "linear_mse"):
                 row[f"baseline_{name}"] = "10"
                 row[f"learned_{name}"] = str(10 + shift)
             if frame == 0:
@@ -31,6 +31,25 @@ def rows(length=32, shifts=(1, 3)):
 
 
 class EvaluationTests(unittest.TestCase):
+    def test_final_frames_preserve_individual_regressions_and_cluster_intervals(self):
+        values = rows(4, (-2, -2, 8))
+        values[3]["learned_psnr"] = "9"
+        values[7]["learned_psnr"] = "13"
+        result = bootstrap.final_frames(values, values, [0, 1], 4, "baseline", "learned")
+        self.assertEqual([(r["sequence"], r["frame"]) for r in result["frames"]], [(0, 3), (1, 3)])
+        self.assertEqual([r["metrics"]["psnr"]["difference"] for r in result["frames"]], [-1, 3])
+        self.assertEqual(result["pooled"]["psnr"]["difference"], 1)
+        self.assertEqual(result["pooled"]["psnr"]["ci95"], [-1, 3])
+        self.assertEqual(result["pooled"]["psnr"]["frames"], 2)
+        self.assertEqual(result["pooled"]["linear_mse"]["ratio"], 0.8)
+        for selected in ([], [0, 0], [-1], [99]):
+            with self.assertRaises(ValueError):
+                bootstrap.final_frames(values, values, selected, 4)
+        changed = copy.deepcopy(values)
+        changed[3]["reference_sha256"] = "b" * 64
+        with self.assertRaises(ValueError):
+            bootstrap.final_frames(values, changed, [0], 4)
+
     def test_cluster_resampling_and_cold_null(self):
         values = rows()
         result = bootstrap.compare(values, values, "baseline", "learned")

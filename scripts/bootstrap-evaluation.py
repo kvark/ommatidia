@@ -23,7 +23,8 @@ def percentile(values, probability):
     return ordered[lo] + (ordered[hi] - ordered[lo]) * (index - lo)
 
 
-def compare(before, after, before_prefix="learned", after_prefix="learned", seed=31, resamples=1000):
+def compare(before, after, before_prefix="learned", after_prefix="learned", seed=31, resamples=1000,
+            metrics=METRICS):
     if not before or len(before) != len(after):
         raise ValueError("empty or differently sized frame lists")
     if resamples <= 0:
@@ -41,7 +42,7 @@ def compare(before, after, before_prefix="learned", after_prefix="learned", seed
     result = {}
     for group in BUCKETS:
         result[group] = {}
-        for name in METRICS:
+        for name in metrics:
             # Whole-sequence totals retain frame weighting, even with missing temporal pairs.
             clusters = {sequence: [0.0, 0.0, 0] for sequence in sequences}
             for left, right in zip(before, after):
@@ -89,6 +90,41 @@ def compare(before, after, before_prefix="learned", after_prefix="learned", seed
     return result
 
 
+def final_frames(before, after, sequences, sequence_length,
+                 before_prefix="learned", after_prefix="learned", seed=31):
+    """Report fixed sequences' final frames individually as well as pooled.
+
+    Individual points prevent a good lighting sequence from hiding a regressing
+    one. Only the pooled report has a sequence-bootstrap confidence interval.
+    """
+    if not sequences or len(sequences) != len(set(sequences)):
+        raise ValueError("final-frame sequences must be nonempty and unique")
+    if sequence_length <= 0 or any(sequence < 0 for sequence in sequences):
+        raise ValueError("invalid final-frame selection")
+    selected = []
+    for rows in (before, after):
+        chosen = [row for row in rows if int(row["sequence"]) in sequences
+                  and int(row["frame"]) == sequence_length - 1]
+        if sorted(int(row["sequence"]) for row in chosen) != sorted(sequences):
+            raise ValueError("missing or duplicate selected final frame")
+        selected.append(chosen)
+    metrics = (*METRICS, "linear_mse")
+    pooled = compare(*selected, before_prefix, after_prefix, seed, metrics=metrics)["all"]
+    points = []
+    for left, right in zip(*selected):
+        values = {}
+        for name in metrics:
+            a = metric(left, f"{before_prefix}_{name}")
+            b = metric(right, f"{after_prefix}_{name}")
+            values[name] = {"before": a, "after": b,
+                            "difference": b - a if a is not None else None,
+                            "ratio": b / a if a is not None and a > 0 else None}
+        points.append({"sequence": int(left["sequence"]), "frame": int(left["frame"]),
+                       "metrics": values})
+    return {"sequences": sorted(sequences), "frames": points, "pooled": pooled,
+            "scope": "selected final frames only; individual points have no independent frame uncertainty"}
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--before", type=Path, required=True)
@@ -96,6 +132,8 @@ def main():
     parser.add_argument("--before-prefix", default="learned", choices=("learned", "baseline", "control"))
     parser.add_argument("--after-prefix", default="learned", choices=("learned", "baseline", "control"))
     parser.add_argument("--seed", type=int, default=31)
+    parser.add_argument("--final-sequence", type=int, action="append", default=[],
+                        help="also report this sequence's last frame (repeatable; select before scoring)")
     parser.add_argument("--out", type=Path, required=True)
     args = parser.parse_args()
     before_quality, _, before = read_frames(args.before)
@@ -111,6 +149,9 @@ def main():
         "after": {"csv": str(args.after), "sha256": sha256(args.after), "prefix": args.after_prefix},
         "groups": compare(before, after, args.before_prefix, args.after_prefix, args.seed),
     }
+    if args.final_sequence:
+        report["final_frames"] = final_frames(before, after, args.final_sequence,
+            before_quality["sequence_length"], args.before_prefix, args.after_prefix, args.seed)
     with args.out.open("x") as stream:
         json.dump(report, stream, indent=2, allow_nan=False)
         stream.write("\n")

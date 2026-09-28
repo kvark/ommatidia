@@ -6,6 +6,12 @@ Only development selects models. Confirmation is reserved for Phase 6.
 
 | Phase | Run | Budget / purpose | Outcome |
 |---|---|---|---|
+| 5 | `v4-phase5/final-frame-bootstrap-tests` | Lighting-final reporting: fixed sequence selection, individual regression visibility and sequence-cluster intervals | Seven frame and twelve crop tests pass; published-gallery verification unchanged. |
+| 5 | `v4-phase5/final-frame-bootstrap-smoke` | Existing sanity/v3 scores, both protocols: exercise fixed lighting-final reporting without rerunning models | Pass: selects exactly frames 6:63/7:63; all existing bucket/interval outputs remain identical. |
+| 5 | `v4-phase5/sanity-corrected-10000` | Fresh seed-1 single-scene fit with both verified corrections; unchanged data, 10,000-step schedule and thresholds | Running; independent-noise gates follow. |
+| 5 | `v4-phase5/replay-5000-audit` | Audit complete corrected seed-7 replay, including parent prefix, optimizer continuation and full development | Ancillary audit assertion failed: counted Adam moments as model parameters. Training completed successfully; corrected audit below. |
+| 5 | `v4-phase5/replay-5000-audit-fixed` | Same audit with parameter/optimizer tensor counts distinguished | Pass: 5,000 updates, identical sampling/schedule, no spikes >1 (old: 14); finite weights/moments, exact reload. |
+| 5 | `v4-phase5/alpha-evaluation-smoke` | End-to-end CLI alpha outputs: exact raw probabilities/histograms, cold zeros and grayscale PNG headers, plus resume/control smoke | Pass on debug LavaPipe, including exact resume/reload; zero validation errors. |
 | 5 | `v4-phase5/reference-sharing-checks` | Byte-verified immutable control references: hard links/copy fallback, mismatch and overwrite rejection | 99 regular tests, Clippy/fmt/debug build and unchanged gallery verification pass. |
 | 5 | `v4-phase5/reference-sharing-smoke` | Full debug evaluation/resume smoke plus byte identity and actual shared-file count | Pass on LavaPipe: exact resume/reload, both reference frames shared, zero validation errors. |
 | 5 | `v4-phase5/spike-pair-audit` | Compare complete seed-7 prefixes, data/settings/sampler identity, outlier counts and loss ranges | Identical 4,000 windows/settings/data; update-303 loss 557,953.06 → 0.02509; corrected maximum 0.09408, no spikes >1. |
@@ -22,7 +28,7 @@ Only development selects models. Confirmation is reserved for Phase 6.
 | 5 | `v4-phase5/image-edge-spike-500` | Controlled seed-7 40-scene prefix, corrected borders but original reset-motion features; archived runtime | Completes; update 303 spikes to 557,953.06 despite border fix. |
 | 5 | `v4-phase5/reset-motion-spike-500` | Identical prefix with only cold-motion feature correction added | Completes with no spikes >1 (maximum 0.09408); finite parameters and exact reload. |
 | 5 | `v4-phase5/stable-runtime-build` | Locked release trainer after numerical fixes and storage-only reference sharing | Pass; numerical model/loop unchanged by reference storage. |
-| 5 | `v4-phase5/reset-motion-replay-5000` | Finish the original seed-7 5,000-step diagnostic via true schema-3 resume from step 500, then full causal development | Launching; not a warm start or production candidate. |
+| 5 | `v4-phase5/reset-motion-replay-5000` | Finish the original seed-7 5,000-step diagnostic via true schema-3 resume from step 500, then full causal development | Complete: causal 24.8592 dB (old 24.6385), cold 23.9078 (old 21.1600); no loss spikes >1. Not a production candidate. |
 | 5 | `v4-phase5/archive-image-edge-runtime` | Preserve the executing border-only trainer/evaluator before testing reset-motion changes | Pass: archived hash exactly matches the running fit's recorded executable. |
 | 5 | `v4-phase5/image-edge-checks` | Corrected crop-loss masks: normalization, real-edge supervision, gradients/restore fixtures; fmt/tests/Clippy/build | Compile failed on an inferred integer bitmask type; corrected explicit usize. |
 | 5 | `v4-phase5/image-edge-checks-fixed` | Repeat after bitmask type fix; include actual GPU mask transfer assertions | 98 regular tests, fmt/Clippy and release build pass; GPU suites follow. |

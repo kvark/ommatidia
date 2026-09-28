@@ -27,6 +27,11 @@ Request `--alpha-frame 0:0 --alpha-frame 2:31 --alpha-frame 6:63`. Both lobe
 gates are saved as exact row-major f32 maps and direct linear grayscale PNGs,
 with 20-bin histograms in `diagnostics.json`. They are diagnostic outputs only.
 No radiance compression or sRGB transform is applied to alpha maps.
+Lighting response is also reported at frame 63 of both lighting sequences (6
+and 7), individually and with a pooled whole-sequence interval. Use
+`bootstrap-evaluation.py --final-sequence 6 --final-sequence 7`; a good sequence
+must not hide a regression in the other. Only two lighting sequences contribute
+to that interval, not 128 independent frames.
 
 The ladder is sanity → 40-scene/60,000-update budget curve → four configurations
 on 200 scenes ({16,32} channels × {3,4} levels), then second seeds for the best
@@ -105,3 +110,12 @@ and +0.6266 dB over the initial fit). It uses the archived matching runtime,
 unchanged seed/data/10,000-step schedule and full-frame scoring, with no warm
 start or inference change. It is a controlled diagnostic, not a promotion;
 the final corrected input contract still needs its own from-scratch sanity fit.
+
+The corrected seed-7 replay now completes all 5,000 updates with identical
+sampling and schedule to the original Phase 3 run. There are **zero loss spikes
+above 1** (original: 14); maximum loss is 0.43470. All 174,576 parameters and
+349,152 Adam moment values are finite, with bit-exact parameter reload. Full
+causal development is **24.8592 dB** versus 24.6385 originally; cold PSNR improves
+from 21.1600 to 23.9078 dB. This diagnostic remains far below v3 and does not
+replace the from-scratch seed-1 budget curve. A fresh corrected sanity fit is
+running before that ladder is unlocked.
