@@ -754,7 +754,7 @@ without skips, clamps or restart; the immutable loss-prefix SHA-256 is
 
 ## 16×4 second-seed curve
 
-`capacity-w16-l4-seed2-curve-{10000,20000,30000,40000}/` covers all 640 causal development
+`capacity-w16-l4-seed2-curve-{10000,20000,30000,40000,50000}/` covers all 640 causal development
 frames with the same reference-identity proof and whole-sequence bootstrap.
 Each report freezes its loss prefix and the one-event outlier telemetry.
 
@@ -764,6 +764,7 @@ Each report freezes its loss prefix and the one-event outlier telemetry.
 | 20,000 | 0.0051748 | 26.8478 | +1.162 [0.478, 1.996] | −3.423 [−3.751, −3.079] |
 | 30,000 | 0.0048583 | 27.0901 | +0.242 [−0.209, 0.630] | −3.181 [−3.765, −2.564] |
 | 40,000 | 0.0048389 | 27.6519 | +0.562 [0.322, 0.830] | −2.619 [−3.317, −1.975] |
+| 50,000 | 0.0037824 | 27.6353 | −0.017 [−0.305, 0.354] | −2.635 [−3.085, −2.107] |
 
 Warm PSNR is 25.7272 dB, −4.771 [−5.843, −3.677] dB behind v3.
 Energy is 0.98470 [0.94197, 1.04113]: the point is in range, not its entire
@@ -795,3 +796,12 @@ range; temporal MSE ratio is 0.86567 [0.77566, 0.92881]. The outlier count
 remains one. The immutable 40k loss-prefix SHA-256 is
 `c471d25d1d2656aff166d93413806b5fdbc02c44bf72cd852590c717dbe2d719`.
 This is still a metrics-only checkpoint, not a crop/FLIP result or selection.
+
+At 50k, the PSNR change from 40k includes zero while training loss falls.
+Warm PSNR is 27.7760 dB, −2.722 [−3.297, −2.005] dB behind v3. Energy is
+0.96962 [0.94912, 0.99634], with its point below the [0.98, 1.02] target;
+temporal MSE ratio is 0.82328 [0.73891, 0.88342]. The outlier count remains
+one. The immutable 50k loss-prefix SHA-256 is
+`7aa9da9b1dba15415b3d66a4c03ecc87938d205950776b7c911f81b4fd4d9962`.
+The same 60k schedule continues; neither the lower training loss nor the
+temporal result establishes a spatial-quality pass.

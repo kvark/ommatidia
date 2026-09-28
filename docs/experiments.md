@@ -6,6 +6,7 @@ Only development selects models. Confirmation is reserved for Phase 6.
 
 | Phase | Run | Budget / purpose | Outcome |
 |---|---|---|---|
+| 5 | `v4-phase5/capacity-w16-l4-seed2-curve-50000` | Scheduled four-level second-seed checkpoint: causal intervals, immutable 50k loss prefix and outlier telemetry | 27.6353 dB; −0.017 [−0.305, 0.354] dB versus 40k, −2.635 [−3.085, −2.107] versus v3. Energy 0.96962 is below range; temporal ratio 0.82328 [0.73891, 0.88342], one finite loss outlier. |
 | 5 | `v4-phase5/capacity-w16-l4-seed2-curve-40000` | Scheduled four-level second-seed checkpoint: causal intervals, immutable 40k loss prefix and outlier telemetry | 27.6519 dB; +0.562 [0.322, 0.830] dB versus 30k, −2.619 [−3.317, −1.975] versus v3. Energy 0.99579, temporal ratio 0.86567 [0.77566, 0.92881]; one finite loss outlier. |
 | 5 | `v4-phase5/capacity-w16-l4-seed2-curve-30000` | Half-budget four-level second-seed checkpoint: causal intervals, immutable 30k loss prefix and outlier telemetry | 27.0901 dB; +0.242 [−0.209, 0.630] dB versus 20k, −3.181 [−3.765, −2.564] versus v3. Energy 0.98582, temporal ratio 0.89064 [0.79488, 0.95658]; one finite loss outlier. |
 | 5 | `v4-phase5/capacity-w16-l4-seed2-curve-20000` | Scheduled four-level second-seed checkpoint: causal intervals, immutable 20k loss prefix and outlier telemetry | 26.8478 dB; +1.162 [0.478, 1.996] dB versus 10k, −3.423 [−3.751, −3.079] versus v3. Energy 0.98980, temporal ratio 0.89182 [0.76935, 0.97858]; one finite loss outlier. |
