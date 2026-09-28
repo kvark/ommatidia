@@ -106,10 +106,11 @@ architecture switches or compatibility interpretations of their weights.
 The retained runtime is `ommatidia::transport::native::Native`, config version 4.
 It rejects v3 weights; use the archived executable to reproduce the gallery.
 
-v4 passes 94 regular tests and eleven GPU gates on both RADV and LavaPipe with
+v4 passes 99 regular tests and thirteen GPU gates on both RADV and LavaPipe with
 zero validation errors, including recurrent HDR/reset parity, f64 gradients,
 production-size directional gradients, mean-gradient accumulation, GPU cursor
-carry, optimizer/cursor resume, caller-encoder parity and exact reload. Fresh LavaPipe captures
+carry, optimizer/cursor resume, caller-encoder parity, reset-motion independence
+and exact reload. Fresh LavaPipe captures
 also pass the trainer/evaluator integration smoke. [Recorded runs](docs/experiments.md).
 The pinned compiler correction addresses a reproduced Workgroup-array layout
 failure, not all possible compiler bugs.

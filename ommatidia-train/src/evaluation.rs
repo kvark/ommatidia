@@ -1,6 +1,7 @@
 //! Evaluation protocol and archived-control validation, independent of the model.
 use crate::Result;
 use std::{
+    io::Write,
     num::NonZeroUsize,
     path::{Path, PathBuf},
 };
@@ -111,13 +112,44 @@ impl ControlRun {
         })
     }
 
-    pub fn load(&self, prefix: &str, reference: &[f32]) -> Result<Vec<f32>> {
+    fn reference_bytes(&self, prefix: &str, reference: &[f32]) -> Result<Vec<u8>> {
         let saved = std::fs::read(self.directory.join(format!("{prefix}-reference.rgbf32")))?;
         let bytes: Vec<_> = reference.iter().flat_map(|v| v.to_le_bytes()).collect();
         // Float equality would incorrectly accept -0.0 vs +0.0 and lose byte identity.
         if saved != bytes {
             return Err(format!("control reference differs byte for byte at {prefix}").into());
         }
+        Ok(bytes)
+    }
+
+    /// Preserve byte-identical immutable references without duplicating their
+    /// storage. Cross-filesystem/unsupported links fall back to a new copy.
+    /// Neither path overwrites an existing destination or changes the control.
+    pub fn save_reference(
+        &self,
+        prefix: &str,
+        reference: &[f32],
+        destination: &Path,
+    ) -> Result<bool> {
+        let bytes = self.reference_bytes(prefix, reference)?;
+        if std::fs::hard_link(
+            self.directory.join(format!("{prefix}-reference.rgbf32")),
+            destination,
+        )
+        .is_ok()
+        {
+            return Ok(true);
+        }
+        let mut output = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(destination)?;
+        output.write_all(&bytes)?;
+        Ok(false)
+    }
+
+    pub fn load(&self, prefix: &str, reference: &[f32]) -> Result<Vec<f32>> {
+        self.reference_bytes(prefix, reference)?;
         decode_linear(
             &std::fs::read(self.directory.join(format!("{prefix}-learned.rgbf32")))?,
             reference.len(),
@@ -191,6 +223,29 @@ mod tests {
             [3.0, 4.0, 5.0]
         );
         assert!(control.load("000-000", &[-0.0, 1.0, 2.0]).is_err());
+        let shared = dir.join("shared-reference.rgbf32");
+        assert!(
+            control
+                .save_reference("000-000", &[-0.0, 1.0, 2.0], &shared)
+                .is_err()
+        );
+        assert!(!shared.exists());
+        control
+            .save_reference("000-000", &[0.0, 1.0, 2.0], &shared)
+            .unwrap();
+        let expected = std::fs::read(dir.join("000-000-reference.rgbf32")).unwrap();
+        assert_eq!(std::fs::read(&shared).unwrap(), expected);
+        assert!(
+            control
+                .save_reference("000-000", &[0.0, 1.0, 2.0], &shared)
+                .is_err()
+        );
+        assert_eq!(std::fs::read(&shared).unwrap(), expected);
+        std::fs::remove_file(shared).unwrap();
+        assert_eq!(
+            std::fs::read(dir.join("000-000-reference.rgbf32")).unwrap(),
+            expected
+        );
         let mut changed = report.clone();
         changed["capture"]["captures"]
             .as_array_mut()

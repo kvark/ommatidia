@@ -290,6 +290,7 @@ fn evaluate(
         }
     }
     writeln!(rows)?;
+    let mut shared_references = 0_usize;
     for index in 0..corpus.len() {
         let (frame, target) = corpus.decode(index, config)?;
         if target.rgb.iter().all(|v| *v <= 1e-6) {
@@ -464,7 +465,15 @@ fn evaluate(
                 save_png(&out.join(format!("{prefix}-{name}.png")), image, extent)?;
             }
             if options.save_linear {
-                save_linear(&out.join(format!("{prefix}-{name}.rgbf32")), image)?;
+                let path = out.join(format!("{prefix}-{name}.rgbf32"));
+                if name == "reference"
+                    && let Some(control) = &control
+                {
+                    shared_references +=
+                        usize::from(control.save_reference(&prefix, image, &path)?);
+                } else {
+                    save_linear(&path, image)?;
+                }
             }
         }
         previous = Some((images, target.rgb.clone(), current));
@@ -476,6 +485,7 @@ fn evaluate(
     for (role, score) in roles.iter().zip(&scores) {
         report[*role] = score.report();
     }
+    report["shared_reference_frames"] = shared_references.into();
     report["buckets"] = serde_json::Value::Object(
         buckets
             .into_iter()

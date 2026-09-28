@@ -90,8 +90,14 @@ GPU output: changing only motion to the observed 1,305/−306-pixel magnitude
 changes cold output despite absent reconstruction history. The fix zeros only
 these reset-frame motion features; warm vectors and geometric warp math remain
 unchanged. Checkpoint schema 3 rejects resume across this input-contract change.
-This proves and corrects cold-motion dependence; the controlled training replay
-must still establish its effect on the observed loss spikes.
+The controlled 500-update training pair keeps data, settings and all 4,000
+sampled windows identical, changing only the reset-motion feature contract.
+With corrected borders but old motion features, update 303 still spikes to
+557,953.06 loss. With reset-motion fixed it is 0.02509; maximum loss is 0.09408
+and there are no spikes above 1. This establishes the effect on the reproduced
+failure, not a stability guarantee for the full training budget. Both complete
+with finite weights and exact reload. All 13 GPU gates now pass on each of
+RADV/LavaPipe; the full CLI evaluation/resume smoke also passes.
 
 The border-only seed-1 repeat clears the sanity gates on the unchanged independent
 noise stream: **31.7441 dB reset-every-frame** and **33.1141 dB causal** (+0.3820

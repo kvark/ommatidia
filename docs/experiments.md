@@ -6,6 +6,9 @@ Only development selects models. Confirmation is reserved for Phase 6.
 
 | Phase | Run | Budget / purpose | Outcome |
 |---|---|---|---|
+| 5 | `v4-phase5/reference-sharing-checks` | Byte-verified immutable control references: hard links/copy fallback, mismatch and overwrite rejection | 99 regular tests, Clippy/fmt/debug build and unchanged gallery verification pass. |
+| 5 | `v4-phase5/reference-sharing-smoke` | Full debug evaluation/resume smoke plus byte identity and actual shared-file count | Pass on LavaPipe: exact resume/reload, both reference frames shared, zero validation errors. |
+| 5 | `v4-phase5/spike-pair-audit` | Compare complete seed-7 prefixes, data/settings/sampler identity, outlier counts and loss ranges | Identical 4,000 windows/settings/data; update-303 loss 557,953.06 → 0.02509; corrected maximum 0.09408, no spikes >1. |
 | 5 | `v4-phase5/reset-motion-regression-before` | Counterfactual regression: change only irrelevant cold-frame motion to the observed spike magnitude | Fails as expected: cold feature 3584 changes from 0 to 1,305 despite absent history. |
 | 5 | `v4-phase5/reset-motion-gpu-before` | Same cold-motion counterfactual through the unfixed native GPU path and recurrent state | Invalid check: used an older workspace test artifact and matched zero tests. Corrected below. |
 | 5 | `v4-phase5/reset-motion-gpu-before-corrected` | Run the newly built regression artifact on debug LavaPipe | Fails as expected: cold output changes from 1.41825 to 0.79996 solely from absent-frame motion. |
@@ -16,8 +19,10 @@ Only development selects models. Confirmation is reserved for Phase 6.
 | 5 | `v4-phase5/image-edge-noise-causal` | Border-only checkpoint, independent noise, archived matching runtime, causal | 33.1141 dB: passes ≥32.6 dB, +0.6266 dB versus initial fit. |
 | 5 | `v4-phase5/image-edge-noise-reset1` | Same border-only checkpoint/runtime, history reset every frame | 31.7441 dB: passes ≥31.6 dB, +0.3820 dB versus initial fit. |
 | 5 | `v4-phase5/reset-motion-radv` | Full GPU checks with reset-motion correction and schema-3 resume, debug RADV | Thirteen tests pass, zero validation errors. |
-| 5 | `v4-phase5/image-edge-spike-500` | Controlled seed-7 40-scene prefix, corrected borders but original reset-motion features; archived runtime | Launching; original 5,000-step schedule, stop at 500, no warm start. |
-| 5 | `v4-phase5/reset-motion-spike-500` | Identical prefix with only cold-motion feature correction added | Queued after border-only control. |
+| 5 | `v4-phase5/image-edge-spike-500` | Controlled seed-7 40-scene prefix, corrected borders but original reset-motion features; archived runtime | Completes; update 303 spikes to 557,953.06 despite border fix. |
+| 5 | `v4-phase5/reset-motion-spike-500` | Identical prefix with only cold-motion feature correction added | Completes with no spikes >1 (maximum 0.09408); finite parameters and exact reload. |
+| 5 | `v4-phase5/stable-runtime-build` | Locked release trainer after numerical fixes and storage-only reference sharing | Pass; numerical model/loop unchanged by reference storage. |
+| 5 | `v4-phase5/reset-motion-replay-5000` | Finish the original seed-7 5,000-step diagnostic via true schema-3 resume from step 500, then full causal development | Launching; not a warm start or production candidate. |
 | 5 | `v4-phase5/archive-image-edge-runtime` | Preserve the executing border-only trainer/evaluator before testing reset-motion changes | Pass: archived hash exactly matches the running fit's recorded executable. |
 | 5 | `v4-phase5/image-edge-checks` | Corrected crop-loss masks: normalization, real-edge supervision, gradients/restore fixtures; fmt/tests/Clippy/build | Compile failed on an inferred integer bitmask type; corrected explicit usize. |
 | 5 | `v4-phase5/image-edge-checks-fixed` | Repeat after bitmask type fix; include actual GPU mask transfer assertions | 98 regular tests, fmt/Clippy and release build pass; GPU suites follow. |

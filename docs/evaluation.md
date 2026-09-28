@@ -92,6 +92,12 @@ so cold temporal MSE is also null, not zero.
 ordered capture provenance, extent, sequence length, complete frame ordering and
 reset protocol. References must match **byte for byte** at every frame. Missing,
 invalid or mismatched outputs fail the run; they are not silently skipped.
+With `--save-linear`, byte-verified control references are hard-linked into the
+new output directory where supported (otherwise copied); `shared_reference_frames`
+reports the actual count. This saves about 0.5 GB per full development protocol
+without dropping frames or precision. All evaluation files, including linked
+references, are immutable: never edit them in place. Existing destinations are
+not overwritten and the source control is unchanged.
 When updating a published result, also evaluate the previous trained checkpoint
 on exactly the same new frames. A different dataset or stronger fixed-guide
 comparison alone does not establish an improvement over the previous model.

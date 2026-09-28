@@ -42,6 +42,12 @@ def main():
     compared = args.out / "compared"
     subprocess.run(base + ["--out", str(compared), "--control-run", str(causal), "--no-images"], check=True)
     assert not list(compared.glob("*.png"))
+    shared = 0
+    for source in causal.glob("*-reference.rgbf32"):
+        destination = compared / source.name
+        assert source.read_bytes() == destination.read_bytes(), "shared reference changed"
+        shared += destination.samefile(source)
+    assert json.loads((compared / "quality.json").read_text())["shared_reference_frames"] == shared
     with (compared / "frames.csv").open() as stream:
         rows = list(csv.DictReader(stream))
     for row in rows:
