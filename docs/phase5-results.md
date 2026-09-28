@@ -234,3 +234,14 @@ The frozen-prefix report is `runs/v4-phase5/capacity-prefix-timing/`. This
 identifies input delivery as the current measured bottleneck, not its exact
 underlying cause or an isolated speed comparison. The active schedule, model,
 loss and data are unchanged.
+
+The first scheduled **200-scene 16×3, seed-1, 10,000-update** checkpoint scores
+25.5216 dB on all 640 causal development frames: −4.749 [−5.397, −4.108] dB
+against v3. Cold/warm PSNR are 24.6199/25.5544 dB; the warm difference is
+−4.944 [−5.704, −4.133] dB. Energy is 0.94467 [0.90736, 0.99011], and temporal
+MSE ratio is 0.97140 [0.85282, 1.05723], whose interval spans parity.
+Last-1,000 mean training loss is 0.0079259, with no loss outliers above 1 in
+the frozen prefix. The report is `capacity-w16-l3-seed1-curve-10000/` under
+`runs/v4-phase5/`. This interim metrics-only checkpoint does not establish a
+capacity ranking or claim FLIP/crop results. The unchanged run continues to
+60,000 updates before its complete two-protocol report.

@@ -6,6 +6,7 @@ Only development selects models. Confirmation is reserved for Phase 6.
 
 | Phase | Run | Budget / purpose | Outcome |
 |---|---|---|---|
+| 5 | `v4-phase5/capacity-w16-l3-seed1-curve-10000` | First scheduled 200-scene checkpoint: causal development intervals against v3 and immutable loss prefix | 25.5216 dB; delta −4.749 [−5.397, −4.108] dB, energy 0.94467, temporal ratio 0.97140 [0.85282, 1.05723]. No loss outliers; continue the fixed budget. |
 | 5 | `v4-phase5/capacity-comparison-checks` | Verify paired report comparisons against raw-pixel crops, self-pairs and the fixed 10%/CI rule; no new model evaluation | Four checks pass: pixel-exact cached pairing, zero self-differences, mismatch rejection and both threshold conditions. No ranking or selection. |
 | 5 | `v4-phase5/capacity-prefix-timing` | Read-only timing of updates 11–2,500 on 40 versus 200 scenes, identical executable/settings; retain immutable CSV prefixes | 14.16 vs 5.38 updates/s: step/wait ~64 ms in both, input wait 0.13 →116.48 ms (62.6% of 200-scene wall time). Observational, not an isolated speed claim; run unchanged. |
 | 5 | `v4-phase5/budget-report-audit` | Verify completed reports, exact causal metric reproduction, all shared references and fixed alpha maps/histograms | Ancillary audit failed: Python f64 binning differs by one boundary sample from the writer's f32 multiplication. Reporting unchanged; corrected snapshotted audit follows. |
