@@ -215,8 +215,8 @@ Before capacity training, all three additional planned sizes (16×4, 32×3, 32×
 pass recurrent HDR/reset parity, every-parameter f64 gradients (fused/unfused),
 and production-extent gradient-direction checks on debug RADV and LavaPipe,
 with zero validation errors. These are correctness checks, not capacity results.
-The 200-scene first-seed 16×3 run and both full reports are complete; 16×4 is
-restarting from scratch after the execution interruption below, with 32×3 and
+The 200-scene first-seed 16×3 run and both full reports are complete; the 16×4
+from-scratch retry is training after the execution interruption below, with 32×3 and
 32×4 queued. Each trains for 60,000 updates and is followed by both complete
 development protocols. Every child run is recorded independently;
 any failed command stops the queue. The best two configurations' second seeds
@@ -322,3 +322,15 @@ Cold smooth MSE is 1.230 [0.726, 1.628] times the 40-scene run: no established
 improvement or regression. Thus data expansion helps overall quality here,
 but does not solve the cold-crop failure. The remaining capacity configurations
 and best-two second seeds are still required before Decision A.
+
+## 16×4 retry: early training observation
+
+The immutable first-2,500-update audit records three finite batch-loss spikes
+at 1,589–1,591 (4.5442, 43.9215, 1.6969), all from cursor 5 on warm windows
+29/33/37 of sequence 50 (`train-objects-00.omd`, scene 5307974659).
+At the largest spike, input/target/prediction peaks are 1,031.8/73.1/7,238.0;
+the recorded latent state remains finite. Subsequent batch loss through update
+2,500 is at most 0.029109. This localizes a transient prediction overshoot,
+not its root cause. No batch is skipped and no loss/model/schedule is changed.
+The reproducible report is `capacity-w16-l4-warm-outliers-2500-recorded/`;
+its source snapshot corrects the first audit's missing stdin-script provenance.

@@ -6,10 +6,12 @@ Only development selects models. Confirmation is reserved for Phase 6.
 
 | Phase | Run | Budget / purpose | Outcome |
 |---|---|---|---|
+| 5 | `v4-phase5/capacity-w16-l4-warm-outliers-2500-recorded` | Repeat the frozen-prefix audit with its source retained as a recorder input | Three finite spikes at 1,589–1,591 in one warm cursor; max batch loss 43.92154, later maximum through 2,500 is 0.029109. Source retained; training unchanged. |
+| 5 | `v4-phase5/capacity-w16-l4-warm-outliers-2500` | Freeze the first 2,500 retry updates and recorded warm-cursor outliers; no inference or training changes | Observations completed, but stdin analysis source was not retained; superseded by the recorded-source repeat. |
 | 5 | `v4-phase5/capacity-queue-recovery` | Finish remaining first-seed runs, both full protocols and final curve audits in a transient user job | Running under `ommatidia-phase5-capacity-20260928.service`; stop on any failure, no selection or second seeds. |
 | 5 | `v4-phase5/capacity-retry-recipe-check` | Validate fresh retry directory and unchanged numerical command; dry-run remaining first-seed launch recipes | Pass: retry command differs only in output directory, all three launch recipes pass, unsafe suffix rejected. |
 | 5 | `v4-phase5/capacity-w16-l4-interruption` | Read-only audit of the interrupted attempt: process absence, loss prefix and checkpoint availability | 792 finite updates, max loss 0.544915, no spikes >1 or resumable checkpoint; all four execution processes absent. Cause unestablished; originals unchanged. |
-| 5 | `v4-phase5/capacity-200-w16-l4-seed1-60000-retry1` | Repeat interrupted 16×4 attempt from scratch, same seed/data/60k schedule, fresh output directory | Recovery launched; no optimizer resume or numerical command change. |
+| 5 | `v4-phase5/capacity-200-w16-l4-seed1-60000-retry1` | Repeat interrupted 16×4 attempt from scratch, same seed/data/60k schedule, fresh output directory | Running; all 100 capture/provenance hashes match, exact same numerical command, no optimizer resume. Early warm-cursor spikes recorded separately; full budget unchanged. |
 | 5 | `v4-phase5/capacity-w16-l4-seed1-curve-60000` | Complete scheduled causal checkpoint curve and final weights/optimizer/state/sampling audit for 16×4 | Queued after successful training completion; no checkpoint selection. |
 | 5 | `v4-phase5/capacity-w32-l3-seed1-curve-60000` | Same complete curve and final-training audit for 32×3 | Queued after successful training completion; no checkpoint selection. |
 | 5 | `v4-phase5/capacity-w32-l4-seed1-curve-60000` | Same complete curve and final-training audit for 32×4 | Queued after successful training completion; no checkpoint selection. |
