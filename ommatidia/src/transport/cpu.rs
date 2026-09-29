@@ -4,6 +4,8 @@ use super::*;
 #[derive(Clone, Debug)]
 pub struct Prepared {
     pub features: Vec<f32>,
+    /// Linear exposure-normalized samples, [RGB lobe channel, LR pixel, 25 taps].
+    pub samples: Vec<f32>,
     pub history: Vec<f32>,
     pub validity: Vec<f32>,
     pub metadata: Vec<f32>,
@@ -63,6 +65,7 @@ pub fn prepare(frame: &Frame, previous: &State, config: Config) -> Prepared {
     assert!(!ready || previous.values.len() == count);
     let mut p = Prepared {
         features: vec![0.0; config.observation_channels() * lr],
+        samples: vec![0.0; 6 * lr * KERNEL_TAPS],
         history: if ready {
             previous.values.clone()
         } else {
@@ -83,6 +86,18 @@ pub fn prepare(frame: &Frame, previous: &State, config: Config) -> Prepared {
         p.features[9 * lr + i] = encode(ray.normal_depth[3], 1.0);
         p.features[10 * lr + i] = frame.jitter[0];
         p.features[11 * lr + i] = frame.jitter[1];
+        for tap in 0..KERNEL_TAPS {
+            let x = (i as i32 % frame.low[0] as i32 + tap as i32 % 5 - 2)
+                .clamp(0, frame.low[0] as i32 - 1) as usize;
+            let y = (i as i32 / frame.low[0] as i32 + tap as i32 / 5 - 2)
+                .clamp(0, frame.low[1] as i32 - 1) as usize;
+            let neighbor = &frame.rays[y * frame.low[0] as usize + x];
+            for c in 0..3 {
+                p.samples[(c * lr + i) * KERNEL_TAPS + tap] = neighbor.diffuse[c] * frame.exposure;
+                p.samples[((c + 3) * lr + i) * KERNEL_TAPS + tap] =
+                    neighbor.specular[c] * frame.exposure;
+            }
+        }
     }
     for (i, s) in frame.surfaces.iter().enumerate() {
         let (x, y) = (i % width, i / width);
@@ -194,6 +209,65 @@ pub fn commit(frame: &Frame, lobes: &[f32], latent: &[f32], config: Config) -> (
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn kernel_samples_are_linear_hdr_channel_major_and_extend_edges() {
+        let config = Config::default();
+        let low = [8, 16];
+        let lr = (low[0] * low[1]) as usize;
+        let rays = (0..lr)
+            .map(|i| {
+                let value = |c: usize| 65_536.0 + (c * 10_000 + i / 8 * 100 + i % 8) as f32;
+                Ray {
+                    diffuse: [value(0), value(1), value(2), 0.0],
+                    specular: [value(3), value(4), value(5), 0.0],
+                    normal_depth: [0.0, 0.0, 1.0, 1.0],
+                }
+            })
+            .collect();
+        let mut frame = Frame {
+            low,
+            jitter: [0.25, -0.25],
+            exposure: 0.5,
+            rays,
+            surfaces: vec![Surface::default(); lr * 4],
+        };
+        let prepared = prepare(&frame, &State::default(), config);
+        // Explicit corners and an interior stencil: clamp coordinates, not energy.
+        for (pixel, tap, neighbor) in [
+            (0, 0, 0),
+            (0, 12, 0),
+            (0, 24, 18),
+            (127, 0, 109),
+            (127, 24, 127),
+            (27, 0, 9),
+            (27, 24, 45),
+        ] {
+            for c in 0..6 {
+                let ray = &frame.rays[neighbor];
+                let expected = if c < 3 {
+                    ray.diffuse[c]
+                } else {
+                    ray.specular[c - 3]
+                } * 0.5;
+                assert_eq!(
+                    prepared.samples[(c * lr + pixel) * KERNEL_TAPS + tap],
+                    expected
+                );
+            }
+        }
+        assert!(prepared.samples.iter().all(|v| *v > 1.0));
+        frame.exposure /= 8.0;
+        for ray in &mut frame.rays {
+            for c in 0..3 {
+                ray.diffuse[c] *= 8.0;
+                ray.specular[c] *= 8.0;
+            }
+        }
+        assert_eq!(
+            prepared.samples,
+            prepare(&frame, &State::default(), config).samples
+        );
+    }
     #[test]
     fn warp_renormalizes_partial_border_and_rejects_only_no_coverage_or_reset() {
         let (ids, weights) = taps([-0.25, 0.5], [8, 8], [0, 2], true);

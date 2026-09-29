@@ -1,4 +1,4 @@
-//! One biased U-Net predicts spatial radiance, history gates and recurrent latent.
+//! One biased U-Net predicts kernel/direct radiance, history gates and latent.
 //! Reprojection of both radiance and latent is differentiated through the unroll.
 use super::*;
 use meganeura::{Graph, NodeId};
@@ -106,13 +106,7 @@ fn scaled_mse(g: &mut Graph, a: NodeId, b: NodeId, scale: NodeId) -> NodeId {
     g.mse_loss(a, b)
 }
 
-fn decode(
-    g: &mut Graph,
-    z: NodeId,
-    history: NodeId,
-    alpha_rgb: NodeId,
-    exposure: NodeId,
-) -> NodeId {
+fn direct_radiance(g: &mut Graph, z: NodeId) -> NodeId {
     // Pinned Meganeura's Clamp is inference-only. Explicit piecewise selection
     // has the same value and derivative (away from the two nondifferentiable
     // endpoints). Greater has zero derivative. Unlike subtracting nested ReLUs,
@@ -130,15 +124,50 @@ fn decode(
     let top = g.mul(above, high);
     let boundary = g.add(bottom, top);
     let z = g.add(interior, boundary);
-    let spatial = g.exp(z);
-    let scale = broadcast(g, exposure, g.node(spatial).ty.num_elements());
-    let spatial = g.div(spatial, scale);
-    let one = filled(g, alpha_rgb, 1.0);
-    let negative = g.neg(alpha_rgb);
+    g.exp(z)
+}
+
+fn blend(g: &mut Graph, incoming: NodeId, retained: NodeId, weight: NodeId) -> NodeId {
+    let one = filled(g, weight, 1.0);
+    let negative = g.neg(weight);
     let incoming_weight = g.add(one, negative);
-    let incoming = g.mul(incoming_weight, spatial);
-    let retained = g.mul(alpha_rgb, history);
+    let incoming = g.mul(incoming_weight, incoming);
+    let retained = g.mul(weight, retained);
     g.add(incoming, retained)
+}
+
+/// Kernel head layout is [tap, lobe, HR slot, LR pixel]. Softmax runs over
+/// taps for each lobe/output pixel, never over space or color channels.
+fn kernel_radiance(
+    g: &mut Graph,
+    logits: NodeId,
+    samples: NodeId,
+    slots: u32,
+    spatial: u32,
+) -> (NodeId, NodeId) {
+    let n = (slots * spatial) as usize;
+    let logits = g.reshape(logits, &[KERNEL_TAPS, 2 * n]);
+    let logits = g.transpose(logits);
+    let weights = g.softmax(logits);
+    let flat = g.reshape(weights, &[2 * n * KERNEL_TAPS]);
+    let rgb = rgb_weights(g, flat, slots, spatial * KERNEL_TAPS as u32);
+    // Replicate observed LR neighborhoods across HR slots, not across colors.
+    // GPU preparation writes them once per LR pixel, independent of output scale.
+    let mut neighborhoods = samples;
+    for count in 1..slots {
+        neighborhoods = g.concat(
+            neighborhoods,
+            samples,
+            6,
+            count,
+            1,
+            spatial * KERNEL_TAPS as u32,
+        );
+    }
+    let weighted = g.mul(rgb, neighborhoods);
+    let weighted = g.reshape(weighted, &[6 * n, KERNEL_TAPS]);
+    let filtered = g.sum_inner(weighted);
+    (g.reshape(filtered, &[6 * n]), weights)
 }
 
 /// `unroll == 0` builds inference; positive values build a tied-weight training
@@ -280,6 +309,10 @@ fn build_impl(
             &[config.observation_channels() * spatial as usize],
         );
         let exposure = b.g.input(&format!("{tag}.exposure"), &[1]);
+        let samples = b.g.input(
+            &format!("{tag}.samples"),
+            &[6 * spatial as usize * KERNEL_TAPS],
+        );
         let valid = b.g.input(&format!("{tag}.valid"), &[n]);
         let metadata = b.g.input(&format!("{tag}.metadata"), &[7 * n]);
         let maps = std::array::from_fn(|k| {
@@ -347,12 +380,27 @@ fn build_impl(
             config.latent_channels * slots,
             0.0,
         );
+        let kernels = b.head(
+            features,
+            "head.kernel",
+            shape,
+            2 * KERNEL_TAPS as u32 * slots,
+            0.0,
+        );
+        let mixture = b.head(features, "head.mix", shape, 2 * slots, 0.0);
+        let (filtered, _) = kernel_radiance(&mut b.g, kernels, samples, slots, spatial);
+        let mixture = b.g.sigmoid(mixture);
+        let mixture = rgb_weights(&mut b.g, mixture, slots, spatial);
+        let direct = direct_radiance(&mut b.g, z);
+        let spatial_estimate = blend(&mut b.g, direct, filtered, mixture);
+        let scale = broadcast(&mut b.g, exposure, 6 * n);
+        let spatial_estimate = b.g.div(spatial_estimate, scale);
         let latent = b.g.tanh(s);
         let alpha = b.g.sigmoid(a);
         let valid2 = b.g.concat(valid, valid, 1, slots, slots, spatial);
         let alpha = b.g.mul(alpha, valid2);
         let alpha_rgb = rgb_weights(&mut b.g, alpha, slots, spatial);
-        let image = decode(&mut b.g, z, history, alpha_rgb, exposure);
+        let image = blend(&mut b.g, spatial_estimate, history, alpha_rgb);
         let state = b.g.concat(
             image,
             latent,
@@ -511,6 +559,7 @@ pub fn feed(
 ) {
     LossWeights::default().feed(session);
     session.set_input(&format!("{tag}.features"), &p.features);
+    session.set_input(&format!("{tag}.samples"), &p.samples);
     session.set_input(&format!("{tag}.exposure"), &[p.exposure]);
     session.set_input(&format!("{tag}.valid"), &p.validity);
     session.set_input(&format!("{tag}.metadata"), &p.metadata);
@@ -558,6 +607,90 @@ mod tests {
     use meganeura::reference::{Feeds, evaluate_outputs};
 
     #[test]
+    fn kernel_layout_softmax_and_mixture_match_scalar_and_gradients() {
+        for slots in [1, 4, 9] {
+            let spatial = 6;
+            let n = slots * spatial;
+            let mut g = Graph::new();
+            let logits = g.parameter("kernel", &[KERNEL_TAPS * 2 * n]);
+            let samples = g.input("samples", &[6 * spatial * KERNEL_TAPS]);
+            let mix_logits = g.parameter("mix", &[2 * n]);
+            let (filtered, weights) =
+                kernel_radiance(&mut g, logits, samples, slots as u32, spatial as u32);
+            let mixture = g.sigmoid(mix_logits);
+            let mixture = rgb_weights(&mut g, mixture, slots as u32, spatial as u32);
+            let direct = g.constant(vec![0.7; 6 * n], &[6 * n]);
+            let mixed = blend(&mut g, direct, filtered, mixture);
+            let target = g.constant(vec![0.3; 6 * n], &[6 * n]);
+            let loss = g.mse_loss(mixed, target);
+            g.set_outputs(vec![loss, mixed, weights]);
+            let logits: Vec<f32> = (0..KERNEL_TAPS * 2 * n)
+                .map(|i| (i % 17) as f32 * 0.17 - 1.0)
+                .collect();
+            let samples: Vec<f32> = (0..6 * spatial * KERNEL_TAPS)
+                .map(|i| (i % 103) as f32 * 0.03)
+                .collect();
+            let mix: Vec<f32> = (0..2 * n).map(|i| (i % 7) as f32 - 3.0).collect();
+            let mut feeds = Feeds::new();
+            feeds.set("kernel", &logits);
+            feeds.set("samples", &samples);
+            feeds.set("mix", &mix);
+            let output = evaluate_outputs(&g, &feeds).unwrap();
+            for c in 0..6 {
+                for p in 0..n {
+                    let row = (c / 3) * n + p;
+                    let unnormalized: Vec<_> = (0..KERNEL_TAPS)
+                        .map(|tap| f64::from(logits[tap * 2 * n + row]).exp())
+                        .collect();
+                    let total: f64 = unnormalized.iter().sum();
+                    let mut filtered = 0.0;
+                    for (tap, value) in unnormalized.iter().enumerate() {
+                        let probability = value / total;
+                        assert!(
+                            (output[2].data[row * KERNEL_TAPS + tap] - probability).abs() < 1e-12
+                        );
+                        filtered += probability
+                            * f64::from(samples[(c * spatial + p % spatial) * KERNEL_TAPS + tap]);
+                    }
+                    let m = 1.0 / (1.0 + (-f64::from(mix[row])).exp());
+                    let expected = (1.0 - m) * f64::from(0.7_f32) + m * filtered;
+                    assert!((output[1].data[c * n + p] - expected).abs() < 1e-12);
+                }
+            }
+            let report =
+                meganeura::reference::gradients::check(&g, &feeds, &Default::default()).unwrap();
+            assert!(report.passed(), "{report}");
+        }
+    }
+
+    #[test]
+    fn kernel_extreme_logits_preserve_constant_channels_and_select_the_right_tap() {
+        let mut g = Graph::new();
+        let logits = g.input("kernel", &[KERNEL_TAPS * 2 * 4]);
+        let samples = g.input("samples", &[6 * KERNEL_TAPS]);
+        let (image, weights) = kernel_radiance(&mut g, logits, samples, 4, 1);
+        g.set_outputs(vec![image, weights]);
+        let mut feeds = Feeds::new();
+        let samples: Vec<_> = (0..6)
+            .flat_map(|c| (0..KERNEL_TAPS).map(move |_| (c + 1) as f32))
+            .collect();
+        feeds.set("samples", &samples);
+        for selected in [0, 12, 24] {
+            let mut logits = vec![-1000.0; KERNEL_TAPS * 8];
+            logits[selected * 8..(selected + 1) * 8].fill(1000.0);
+            feeds.set("kernel", &logits);
+            let outputs = evaluate_outputs(&g, &feeds).unwrap();
+            for (i, &value) in outputs[0].data.iter().enumerate() {
+                assert_eq!(value, (i / 4 + 1) as f64);
+            }
+            for row in outputs[1].data.chunks_exact(KERNEL_TAPS) {
+                assert_eq!(row.iter().sum::<f64>(), 1.0);
+                assert_eq!(row[selected], 1.0);
+            }
+        }
+    }
+
+    #[test]
     fn all_crop_edge_masks_normalize_spatial_and_coarse_losses() {
         let config = Config::default();
         for edges in 0..16 {
@@ -595,7 +728,9 @@ mod tests {
         let history = g.input("history", &[1]);
         let alpha = g.input("alpha", &[1]);
         let exposure = g.input("exposure", &[1]);
-        let out = decode(&mut g, z, history, alpha, exposure);
+        let spatial = direct_radiance(&mut g, z);
+        let spatial = g.div(spatial, exposure);
+        let out = blend(&mut g, spatial, history, alpha);
         g.set_outputs(vec![out]);
         g
     }
@@ -622,9 +757,7 @@ mod tests {
     fn log_clamp_stays_bounded_and_has_the_piecewise_derivative() {
         let mut g = Graph::new();
         let z = g.parameter("z", &[1]);
-        let zero = g.constant(vec![0.0], &[1]);
-        let one = g.constant(vec![1.0], &[1]);
-        let out = decode(&mut g, z, zero, zero, one);
+        let out = direct_radiance(&mut g, z);
         g.set_outputs(vec![out]);
         let backward = meganeura::autodiff::differentiate(&g);
         for value in [-1e20_f32, -17.0, -15.0, 0.25, 10.0, 12.0, 1e20] {

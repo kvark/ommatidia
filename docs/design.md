@@ -1,8 +1,9 @@
 # One recurrent reconstruction model (v4)
 
-The only maintained model is a biased, three-level U-Net: width 16, four latent
-channels, 2× output scale. It predicts six spatial radiance channels, two history
-gates and four latent channels per output pixel. Config v3 and its weights are
+The only maintained model is the F1 replacement: a biased, four-level U-Net,
+width 16, four latent channels, 2× output scale. It predicts six direct radiance
+channels, two 25-tap kernels, two kernel/direct mix weights, two history gates
+and four latent channels per output pixel. Config v3 and its weights are
 rejected; the last v3 source is tagged locally `archive/v3-guide-residual`,
 and its [built control runtime](archive/README.md) remains usable offline.
 
@@ -14,7 +15,11 @@ HR signals are subpixel-packed onto the LR grid. Sample offsets describe each
 output pixel relative to its jittered input sample. Radiance is encoded as
 `c(exposure * radiance)`, where `c(x) = x/(1+x)`; nonnegative depth uses `c(depth)`.
 The host supplies positive per-frame exposure, which never changes output units.
-Targets have a separate API and cannot enter observation packing.
+Targets have a separate API and cannot enter observation packing. F1 additionally
+packs linear `exposure * radiance` over a row-major 5×5 LR neighborhood, once
+per LR pixel and RGB lobe channel. Frame/crop edges use nearest-edge extension;
+this is coordinate addressing, not a radiance clamp. The graph reuses these
+observations for each HR subpixel. Compressed features are never inverted.
 
 Previous linear lobes, latent and normal/depth are bilinearly warped **inside
 the graph**. The GPU constructs taps; out-of-frame taps are dropped and the rest
@@ -24,8 +29,10 @@ filters, ages, moments, material/depth rejection thresholds or reactive weights.
 ```text
 features = U-Net(observations, c(exposure * warped_lobes),
                  warped_latent, warped_normal_depth, valid)
-z, a, s  = three biased 1×1 heads(features)
-spatial  = exp(clamp(z, -16, 11)) / exposure
+z, k, m, a, s = five biased 1×1 heads(features)
+direct   = exp(clamp(z, -16, 11))
+kernel   = sum(softmax(k) * exposure_normalized_LR_neighborhood)
+spatial  = ((1 - sigmoid(m)) * direct + sigmoid(m) * kernel) / exposure
 alpha    = sigmoid(a) * valid
 lobes    = alpha * warped_lobes + (1 - alpha) * spatial
 latent   = tanh(s)
@@ -35,8 +42,13 @@ next     = lobes, latent, current_normal_depth, current_albedo
 
 The radiance bias is the log of each training-corpus mean normalized lobe,
 restricted to the decoder's representable log range. Gate bias is logit(0.8).
-Head weights and latent bias start at zero; encoder kernels use Kaiming
-initialization and zero biases. No v3 checkpoint initializes v4.
+Head weights, kernel/mix logits and latent bias start at zero: uniform initial
+kernels and an equal learned mix, with no fixed filter or blend in inference.
+Kernel and mix weights are independent per lobe/HR pixel, shared across that
+lobe's RGB. Softmax is over 25 taps, not spatial pixels or colors. Encoder
+kernels use Kaiming initialization and zero biases. No old checkpoint initializes
+F1. Old direct-only v4 checkpoints fail the exact parameter-layout check;
+training bundle schema 4 also rejects pre-F1 optimizer/state resumes.
 
 Four-frame tied-weight BPTT differentiates through both lobes and latent.
 The objective retains compressed RGB and lobe MSE, exposure-normalized linear
@@ -54,10 +66,13 @@ cursor life. Checkpoints include Adam, schedule, cursor/RNG state and capture
 hashes; weights-only warm starts are rejected. Phase 3 passes the throughput and
 5,000-step full-corpus gates, but its checkpoint remains well below v3 quality.
 
-At 128×128 → 256×256: **132 input channels, 174,576 parameters, 814,743,552
-convolution MACs = 1.62949 GFLOP/frame = 24,864 FLOPs/output pixel**.
+At 128×128 → 256×256: **132 encoder input channels, 657,792 parameters,
+1,076,887,552 convolution MACs = 2.15378 GFLOP/frame = 32,864 FLOPs/output pixel**.
 These are dense forward-convolution counts, not timing measurements; they omit
-activations, warps and backward. The archived v3 count was 2.08876 GFLOP/frame.
+activations, kernel weighting/reduction, warps and backward. The extra neighborhood
+input is separate from the encoder. This exceeds archived v3's 2.08876 GFLOP/frame;
+performance remains reported, not gated. F1 correctness/training are in progress;
+no improved quality or throughput is claimed for the replacement yet.
 
 The renderer records `Native::record_prepare(..., jitter, exposure)`,
 `native.session.record(&mut encoder)`, then `record_resolve` into its own started

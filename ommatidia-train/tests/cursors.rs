@@ -158,6 +158,19 @@ fn gpu_cursor_carry_matches_24_frame_causal_inference_and_packing() {
                 result
             };
             assert_eq!(read("target", target.lobes.len()), target.lobes);
+            let observed = ommatidia::transport::cpu::prepare(frame, &Default::default(), config);
+            for (i, (actual, expected)) in read("samples", observed.samples.len())
+                .into_iter()
+                .zip(observed.samples)
+                .enumerate()
+            {
+                // WGSL multiplication may flush subnormals to zero. Every
+                // normal value must still match exactly: no indexing tolerance.
+                assert!(
+                    actual == expected || (actual == 0.0 && expected.abs() < f32::MIN_POSITIVE),
+                    "sample {i}: {actual} vs {expected}"
+                );
+            }
             let n = frame.surfaces.len();
             let mut rgb = vec![0.0; 3 * n];
             let mut albedo = rgb.clone();
@@ -274,7 +287,7 @@ fn resume_restores_adam_schedule_rng_and_gpu_state() {
     let metadata_path = directory.join("trainer.json");
     let metadata = std::fs::read(&metadata_path).unwrap();
     let mut old: serde_json::Value = serde_json::from_slice(&metadata).unwrap();
-    for schema in [1, 2] {
+    for schema in [1, 2, 3] {
         old["schema"] = schema.into();
         std::fs::write(&metadata_path, serde_json::to_vec(&old).unwrap()).unwrap();
         let error = Checkpoint::restore(&checkpoint, &mut restored, &settings, &[])

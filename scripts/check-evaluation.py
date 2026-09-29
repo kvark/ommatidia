@@ -19,9 +19,12 @@ def main():
     parser.add_argument("--train-data", type=Path, required=True)
     parser.add_argument("--eval-data", type=Path, required=True)
     parser.add_argument("--out", type=Path, required=True)
+    parser.add_argument("--device-id", help="forward an explicit adapter ID to every trainer/evaluator invocation")
     args = parser.parse_args()
     args.out.mkdir(parents=True, exist_ok=False)
     base = [str(args.binary), "--eval-data", str(args.eval_data)]
+    if args.device_id is not None:
+        base += ["--device-id", args.device_id]
     train = args.out / "train"
     settings = ["--data", str(args.train_data), "--steps", "2", "--channels", "4",
                 "--unroll", "2", "--batch", "2", "--crop", "16", "--eval-every", "1"]

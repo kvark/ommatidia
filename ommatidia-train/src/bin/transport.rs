@@ -575,7 +575,7 @@ fn main() -> Result<()> {
     let mut steps = 4000usize;
     let mut unroll = 4usize;
     let mut channels = 16;
-    let mut levels = 3;
+    let mut levels = Config::default().levels;
     let mut seed = 7u64;
     let mut rate = 0.0003f32;
     let mut eval_only = false;
@@ -593,7 +593,7 @@ fn main() -> Result<()> {
         if arg == "--help" {
             println!(
                 "transport --data TRAIN.omd --eval-data DEV.omd --out DIR
-  --steps N [4000] --unroll N [4] --channels N [16] --levels N [3] --seed N [7]
+  --steps N [4000] --unroll N [4] --channels N [16] --levels N [4] --seed N [7]
   --lr F [0.0003] --eval-every N [10000] (causal metrics, no images) --device-id ID
   --batch N [8] --crop N [64] (LR pixels; persistent GPU cursors)\n  --stop-after N (checkpoint an interruption; --steps retains the planned schedule)
   --reset-every N [off] (evaluation: simulated cut each N frames, within each sequence)

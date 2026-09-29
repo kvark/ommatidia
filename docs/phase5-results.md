@@ -2,7 +2,9 @@
 
 The six-run capacity matrix is complete; **Decision A fails**. Select 16×4
 under the frozen cost rule and stop for the [owner handoff](#decision-a-owner-handoff)
-before the one fallback. Phase 5 is not complete. The thresholds in
+before the one fallback. The owner approved **F1 on 2026-09-29**; the replacement
+is implemented and passes both-GPU correctness, with fresh training next.
+Phase 5 is not complete. The thresholds in
 [PLAN.md §9](../PLAN.md#9-phase-5-training-ladder-and-decision-point-a-3-days)
 are unchanged. Every run, including failed diagnostics, is in the [ledger](experiments.md).
 The sections below preserve the chronological evidence; earlier pending-work
@@ -930,3 +932,39 @@ The managed training queue has exited successfully (MainPID 0, exit status 0).
 No fallback is implemented or running. Stop here under PLAN §3 and request
 owner direction. Confirmation, README/gallery, runtime defaults and model code
 remain unchanged; this is not a Phase 6 checkpoint freeze.
+
+## Approved F1 replacement (2026-09-29)
+
+The owner authorized the one F1 fallback. The maintained model is now 16×4
+with learned 5×5 LR kernels and learned direct/kernel mixing per lobe/HR pixel;
+there is no architecture toggle or old direct-only implementation branch.
+See [the equations and initialization](design.md). Convolution accounting is
+657,792 parameters and 32,864 FLOPs/output pixel (2.153775 GFLOP at 256×256),
+excluding kernel weighting/reduction. This is a cost report, not a quality gain.
+The old evaluator is preserved byte-for-byte in `runs/v4-f1/archive-base-runtime/`.
+
+Correctness before production training:
+
+- 102 regular tests, Clippy, formatting, debug/release builds and unchanged
+  published-gallery verification pass.
+- Scalar fixtures check LR stencil/channel order, nearest-edge extension,
+  linear HDR/exposure units, per-output/lobe softmax and mixture, extreme logits
+  and finite-difference gradients.
+- Thirteen GPU gates and the single-encoder Blade example pass on RADV and
+  LavaPipe: recurrence/cuts/HDR, CPU/WGSL packing, f64 every-parameter gradients
+  under fused/unfused lowering, 128² gradient directions, accumulation and resume.
+- Debug CLI smoke passes on the explicitly selected RX 7900 XT and LavaPipe,
+  including exact resume/reload, alpha maps/histograms, resets and control checks.
+
+Failures remain in the ledger. The only GPU test correction permits GPU
+flush-to-zero of CPU subnormals: the failed exact-packing comparison contained
+132 differences ≤8.996×10⁻³⁹ among 9,600 values, with every normal value identical.
+No arithmetic, quality tolerance or training recipe changed to fix that assertion.
+Training bundle schema 4 rejects the old contract; exact parameter-layout checks
+reject direct-only checkpoints. All production training starts from scratch.
+
+The seed-1 launch copies the selected direct-only 16×4 recipe: identical ordered
+200-scene corpus, 60k updates, B=8, four-frame unroll, crop 64, losses and learning
+rate. Full causal/reset-16 scoring and fixed alpha frames follow completion;
+the queue never restarts a failed job or promotes a checkpoint automatically.
+The published gallery remains the archived result, not an F1 quality claim.

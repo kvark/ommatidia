@@ -26,6 +26,7 @@ struct Data {
     surfaces: gpu::BufferPiece,
     previous: gpu::BufferPiece,
     features: gpu::BufferPiece,
+    samples: gpu::BufferPiece,
     history: gpu::BufferPiece,
     metadata: gpu::BufferPiece,
     valid: gpu::BufferPiece,
@@ -100,6 +101,7 @@ impl Packer {
             surfaces: input.surfaces,
             previous: input.previous,
             features: get("features"),
+            samples: get("samples"),
             history: session.input_buffer("f0.history").unwrap(),
             metadata: get("metadata"),
             valid: get("valid"),
@@ -294,6 +296,7 @@ impl Native {
             next: self.state[1 - self.current].into(),
             output,
             features: self.session.input_buffer("f0.features").unwrap(),
+            samples: self.session.input_buffer("f0.samples").unwrap(),
             history: self.session.input_buffer("f0.history").unwrap(),
             metadata: self.session.input_buffer("f0.metadata").unwrap(),
             valid: self.session.input_buffer("f0.valid").unwrap(),
@@ -475,6 +478,7 @@ impl Native {
         let state_len = n * self.config.state_channels();
         cpu::Prepared {
             features: self.read_features(),
+            samples: self.read_input("f0.samples", 6 * frame.rays.len() * KERNEL_TAPS),
             validity: self.read_history_validity(),
             history: self.read_input("f0.history", state_len),
             metadata: self.read_input("f0.metadata", 7 * n),

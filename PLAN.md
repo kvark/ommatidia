@@ -1,7 +1,7 @@
 # Plan: one end-to-end reconstruction model (config v4)
 
-Status: adopted, 2026-09-27; Phases 0–4 complete. Phase 5 at failed Decision A,
-awaiting owner direction on the one fallback. Owner: kvark.
+Status: adopted, 2026-09-27; Phases 0–4 complete. Owner-approved Phase 5 F1
+is implemented and passes correctness; fresh 60k training next. Owner: kvark.
 Read all of §0–§3 before starting. Open decisions for the owner are in §12.
 
 Implementation started from `origin/main` at `232a278`, after the owner merged
@@ -513,7 +513,21 @@ regress. Energy points are in range; their full intervals are not. See the
 [gate table and owner handoff](docs/phase5-results.md#decision-a-owner-handoff).
 Training is stopped at the §3 owner checkpoint. Recommend the pre-registered
 **F1 replacement**, fresh at the same 60k budget; it is not implemented or
-started. Phase 5 is not complete, and Phase 6/README promotion is not authorized.
+started at that handoff. Phase 5 is not complete, and Phase 6/README promotion
+is not authorized.
+
+**Owner decision, 2026-09-29:** proceed with F1. Replace the spatial estimator
+in the selected 16×4 model; no architecture switch, F2/F3 combination or new
+capacity sweep. Predict one 25-tap softmax kernel and sigmoid direct/kernel mix
+per output pixel and lobe (weights shared across each lobe's RGB). Filter linear,
+exposure-normalized LR samples with nearest-edge extension; do not invert the
+compressed feature encoding. Kernel logits and mix logits initialize to zero
+(uniform kernel, equal learned mix), with the existing radiance-mean initialization.
+History/latent paths, data, losses and thresholds remain unchanged. Run correctness
+gates on RADV and LavaPipe before fresh seed-1 training: 200 scenes, 60k updates,
+B=8, unroll 4, crop 64, unchanged learning-rate schedule. Add a second seed only
+under the existing uncertainty rule. Report both development protocols and all
+Decision A requirements; no confirmation use or publication before a pass.
 
 Every rung reports, in one `docs/experiments.md` row per run:
 

@@ -356,7 +356,10 @@ mod tests {
         let sidecar = path.with_extension("transport.json");
         let provenance = serde_json::json!({"matching_path_depth":true,"input_estimator":"independent-paths","records":32,"scene_seeds":[7,8],"family_ids":["chair"]});
         std::fs::write(&sidecar, serde_json::to_vec(&provenance).unwrap()).unwrap();
-        let config = Config::default();
+        let config = Config {
+            levels: 3,
+            ..Config::default()
+        }; // 4x4 crop fixture.
         let corpus =
             std::sync::Arc::new(Corpus::open(std::slice::from_ref(&path), config).unwrap());
         let sample = Reader::open(&path).unwrap().sample(19).unwrap();

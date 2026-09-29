@@ -1,4 +1,4 @@
-//! One direct-radiance recurrent model. Linear lobes and learned latent state.
+//! One recurrent kernel/direct-radiance model. Linear lobes and learned latent state.
 //!
 //! `Frame` contains observations only. `Target` is a separate training type.
 //! No ground-truth geometry, light or radiance can enter through the target API.
@@ -13,6 +13,8 @@ use serde::{Deserialize, Serialize};
 pub const LR_FEATURES: usize = 12;
 /// HR normal/depth (4), albedo/roughness (4), F0 (3), motion (2), sample offsets (2).
 pub const SURFACE_FEATURES: usize = 15;
+/// F1's fixed support, not a selectable architecture or filter weight.
+pub const KERNEL_TAPS: usize = 25;
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -30,7 +32,7 @@ impl Default for Config {
             scale: 2,
             channels: 16,
             latent_channels: 4,
-            levels: 3,
+            levels: 4,
         }
     }
 }

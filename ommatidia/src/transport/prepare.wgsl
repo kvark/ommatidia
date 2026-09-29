@@ -8,6 +8,8 @@ var<storage> rays:array<Ray>;
 var<storage> surfaces:array<Surface>;
 var<storage> previous:array<f32>;
 var<storage,read_write> features:array<f32>;
+// Linear samples, [lobe RGB channel, LR pixel, 5x5 row-major tap].
+var<storage,read_write> samples:array<f32>;
 var<storage,read_write> history:array<f32>;
 var<storage,read_write> metadata:array<f32>;
 var<storage,read_write> valid:array<f32>;
@@ -39,6 +41,15 @@ fn pack(@builtin(global_invocation_id) id:vec3<u32>) {
     if all(p%vec2(params.scale)==vec2(0u)) {
         let i=(p.y/params.scale)*params.w+p.x/params.scale;
         let r=rays[i];
+        for(var tap=0u;tap<25u;tap++) {
+            let q=clamp(vec2<i32>(p/params.scale)+vec2(i32(tap%5u)-2,i32(tap/5u)-2),
+                        vec2(0),vec2<i32>(i32(params.w)-1,i32(params.h)-1));
+            let neighbor=rays[u32(q.y)*params.w+u32(q.x)];
+            for(var c=0u;c<3u;c++) {
+                samples[(c*lr+i)*25u+tap]=neighbor.diffuse[c]*params.exposure;
+                samples[((c+3u)*lr+i)*25u+tap]=neighbor.specular[c]*params.exposure;
+            }
+        }
         for(var c=0u;c<3u;c++) {
             features[c*lr+i]=enc(r.diffuse[c],params.exposure);
             features[(c+3u)*lr+i]=enc(r.specular[c],params.exposure);
