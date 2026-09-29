@@ -3,7 +3,7 @@
 The six-run capacity matrix is complete; **Decision A fails**. Select 16×4
 under the frozen cost rule and stop for the [owner handoff](#decision-a-owner-handoff)
 before the one fallback. The owner approved **F1 on 2026-09-29**; the replacement
-is implemented and passes both-GPU correctness, with fresh training next.
+is implemented and passes both-GPU correctness; fresh seed-1 training is running.
 Phase 5 is not complete. The thresholds in
 [PLAN.md §9](../PLAN.md#9-phase-5-training-ladder-and-decision-point-a-3-days)
 are unchanged. Every run, including failed diagnostics, is in the [ledger](experiments.md).
@@ -963,8 +963,15 @@ No arithmetic, quality tolerance or training recipe changed to fix that assertio
 Training bundle schema 4 rejects the old contract; exact parameter-layout checks
 reject direct-only checkpoints. All production training starts from scratch.
 
-The seed-1 launch copies the selected direct-only 16×4 recipe: identical ordered
+The seed-1 run started on 2026-09-29 at 05:13 UTC on the RX 7900 XT, under
+`ommatidia-phase5-f1-seed1-20260929.service`; optimizer updates are underway.
+It copies the selected direct-only 16×4 recipe: identical ordered
 200-scene corpus, 60k updates, B=8, four-frame unroll, crop 64, losses and learning
 rate. Full causal/reset-16 scoring and fixed alpha frames follow completion;
 the queue never restarts a failed job or promotes a checkpoint automatically.
+The prepared curve/reference audit will use this F1 executable's full report and
+bundle schema 4, not the pre-F1 evaluator's proof. The launch audit verifies all
+100 training capture/provenance hashes and unchanged settings; the first 512
+losses are finite. This is initial health, not a quality result. Full curve and
+export audits remain pending after evaluation; Phase 5 is still in progress.
 The published gallery remains the archived result, not an F1 quality claim.

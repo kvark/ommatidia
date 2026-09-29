@@ -6,10 +6,11 @@ Only development selects models. Confirmation is reserved for Phase 6.
 
 | Phase | Run | Budget / purpose | Outcome |
 |---|---|---|---|
+| 5 F1 | `v4-f1/analysis-readiness` | Verify schema-4 curve/export audit adaptation, frozen live-run identities and initial finite-loss prefix | Pass: only audit paths/schema and stricter proof assertions change; 100 capture/provenance hashes and settings match, first 512 losses finite, gallery unchanged. No quality claim. |
 | 5 F1 | `v4-f1/pretraining-handoff-checks` | Final diff/gallery consistency and verification of recorded correctness/recipe prerequisites | Pass: eight completed prerequisites, unchanged recipe/executable, unique ledger coverage and unchanged published gallery. |
 | 5 F1 | `v4-f1/recipe-check` | Check frozen seed-1 recipe, corpus order, release source identity and completed correctness prerequisites | Pass: all seven prerequisites complete, unchanged numerical sources/data order and 60k recipe; executable e79b4d4d…100c265. |
-| 5 F1 | `v4-f1/seed1-queue` | Managed F1 seed-1 training and both full development protocols | Registered; stops on failure, no automatic restart or promotion. |
-| 5 F1 | `v4-f1/train-seed1-60000` | Fresh F1 16×4, seed 1, 200 scenes, 60k updates; B=8, unroll 4, crop 64 | Registered after both-GPU correctness; same loss/schedule/data, no warm start. |
+| 5 F1 | `v4-f1/seed1-queue` | Managed F1 seed-1 training and both full development protocols | Running under `ommatidia-phase5-f1-seed1-20260929.service`; stops on failure, no automatic restart or promotion. |
+| 5 F1 | `v4-f1/train-seed1-60000` | Fresh F1 16×4, seed 1, 200 scenes, 60k updates; B=8, unroll 4, crop 64 | Running since 2026-09-29 05:13 UTC; optimizer updates observed on RX 7900 XT, same loss/schedule/data, no warm start. |
 | 5 F1 | `v4-f1/seed1-dev-causal` | Final F1 checkpoint, full causal development and fixed alpha exports | Queued after training. |
 | 5 F1 | `v4-f1/seed1-score-causal` | Official FLIP, paired crop/frame intervals and lighting-final comparisons against learned v3 | Queued after causal evaluation. |
 | 5 F1 | `v4-f1/seed1-dev-reset16` | Same F1 checkpoint/development with periodic cuts and fixed alpha exports | Queued after training. |

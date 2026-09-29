@@ -1,7 +1,7 @@
 # Plan: one end-to-end reconstruction model (config v4)
 
 Status: adopted, 2026-09-27; Phases 0–4 complete. Owner-approved Phase 5 F1
-is implemented and passes correctness; fresh 60k training next. Owner: kvark.
+is implemented and passes correctness; fresh 60k training is running. Owner: kvark.
 Read all of §0–§3 before starting. Open decisions for the owner are in §12.
 
 Implementation started from `origin/main` at `232a278`, after the owner merged
