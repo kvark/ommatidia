@@ -48,6 +48,7 @@ impl Probe {
             name: "ommatidia-radiance-probe",
             data_layouts: &[&layout],
             compute: shader.at("probe"),
+            full_subgroup_size: None,
         });
         let len = plane_set().channels() * (size.width * size.height) as usize;
         let buffer = context.create_buffer(gpu::BufferDesc {

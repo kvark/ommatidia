@@ -71,6 +71,7 @@ impl Packer {
             name: "training-observation-pack",
             data_layouts: &[&<Data as gpu::ShaderData>::layout()],
             compute: shader.at("pack"),
+            full_subgroup_size: None,
         });
         Ok(Self {
             context,
@@ -197,6 +198,7 @@ impl Native {
                 name,
                 data_layouts: &[&layout],
                 compute: shader.at(name),
+                full_subgroup_size: None,
             })
         });
         let n = (low[0] * low[1] * config.scale.pow(2)) as usize;

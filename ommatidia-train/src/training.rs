@@ -85,6 +85,7 @@ impl Trainer {
             name: "training-targets",
             data_layouts: &[&<Targets as gpu::ShaderData>::layout()],
             compute: shader.at("pack_targets"),
+            full_subgroup_size: None,
         });
         let pixels = (low[0] * low[1]) as usize;
         let n = pixels * config.scale.pow(2) as usize;

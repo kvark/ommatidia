@@ -3,7 +3,9 @@
 The six-run capacity matrix is complete; **Decision A fails**. Select 16×4
 under the frozen cost rule and stop for the [owner handoff](#decision-a-owner-handoff)
 before the one fallback. The owner approved **F1 on 2026-09-29**; the replacement
-is implemented and passes both-GPU correctness; fresh seed-1 training is running.
+is implemented and passes both-GPU correctness. The September seed-1 run started.
+On November 18 the service and its local run directory were absent from this
+workstation. Its final checkpoint and development scores remain unverified.
 Phase 5 is not complete. The thresholds in
 [PLAN.md §9](../PLAN.md#9-phase-5-training-ladder-and-decision-point-a-3-days)
 are unchanged. Every run, including failed diagnostics, is in the [ledger](experiments.md).
@@ -964,7 +966,7 @@ Training bundle schema 4 rejects the old contract; exact parameter-layout checks
 reject direct-only checkpoints. All production training starts from scratch.
 
 The seed-1 run started on 2026-09-29 at 05:13 UTC on the RX 7900 XT, under
-`ommatidia-phase5-f1-seed1-20260929.service`; optimizer updates are underway.
+`ommatidia-phase5-f1-seed1-20260929.service`, where optimizer updates were observed.
 It copies the selected direct-only 16×4 recipe: identical ordered
 200-scene corpus, 60k updates, B=8, four-frame unroll, crop 64, losses and learning
 rate. Full causal/reset-16 scoring and fixed alpha frames follow completion;

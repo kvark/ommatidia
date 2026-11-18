@@ -66,14 +66,15 @@ these are fresh scenes using the same four audit families as the previous report
 
 ## Build and train
 
-Rust 1.92+. Place `ommatidia` and `blade` in sibling directories.
-Cargo pins Blade to `fbb4f28` and Meganeura to `7c29497`; only Blade has a local
-sibling override. Keep Blade's shader directory at the same revision.
-Naga also needs the tracked [workgroup-layout correction](patches/README.md);
-the preparation command below installs it into the ignored build directory.
+Rust 1.92+. Cargo fetches Meganeura `25ed41c`, Blade `d9112e2` and Blade's
+Naga fork `9964733`, which includes the workgroup-layout fix. Capture loads WGSL
+from that same Blade revision. The catalog unit test uses two example meshes
+from a sibling Blade checkout.
 
 ```sh
-python3 scripts/prepare-naga.py
+# For a fresh test checkout
+git clone https://github.com/kvark/blade ../blade && \
+  git -C ../blade checkout --detach d9112e26ab1244d9e206e7d27387295a28cb3fa3
 cargo +1.92.0 test --workspace --locked
 cargo build --release --workspace
 cargo run --release -p ommatidia-train --bin transport -- \
@@ -109,11 +110,9 @@ architecture switches or compatibility interpretations of their weights.
 The retained runtime is `ommatidia::transport::native::Native`, config version 4.
 It rejects v3 weights; use the archived executable to reproduce the gallery.
 
-v4 passes 99 regular tests and thirteen GPU gates on both RADV and LavaPipe with
+F1 passes 102 regular tests and thirteen GPU gates on both RADV and LavaPipe with
 zero validation errors, including recurrent HDR/reset parity, f64 gradients,
 production-size directional gradients, mean-gradient accumulation, GPU cursor
 carry, optimizer/cursor resume, caller-encoder parity, reset-motion independence
 and exact reload. Fresh LavaPipe captures
 also pass the trainer/evaluator integration smoke. [Recorded runs](docs/experiments.md).
-The pinned compiler correction addresses a reproduced Workgroup-array layout
-failure, not all possible compiler bugs.

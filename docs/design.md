@@ -71,8 +71,8 @@ At 128×128 → 256×256: **132 encoder input channels, 657,792 parameters,
 These are dense forward-convolution counts, not timing measurements; they omit
 activations, kernel weighting/reduction, warps and backward. The extra neighborhood
 input is separate from the encoder. This exceeds archived v3's 2.08876 GFLOP/frame;
-performance remains reported, not gated. F1 correctness/training are in progress;
-no improved quality or throughput is claimed for the replacement yet.
+performance remains reported, not gated. The fixed-budget F1 development
+scores remain unverified.
 
 The renderer records `Native::record_prepare(..., jitter, exposure)`,
 `native.session.record(&mut encoder)`, then `record_resolve` into its own started
@@ -87,8 +87,76 @@ recorded, so do not discard recorded frames. See the
 [runnable example](../ommatidia/examples/blade.rs). Only packing and RGB/state
 resolve remain in WGSL. Reset on cuts; recreate on extent changes.
 `process` is an offline upload/readback convenience, not a latency benchmark.
-Inference keeps the verified f32/unfused policy and pinned Naga layout fix.
+Inference uses f32 operands and unfused dispatches. Blade's pinned Naga fork
+includes the workgroup layout correction.
 Tests independently check CPU/WGSL packing and taps, 24-frame recurrent HDR/reset
 parity, exposure equivariance, f64 loss/every-parameter gradients under both
 lowerings, production-size directional gradients and bit-exact reload.
 Current evidence and outstanding gates are in [the run ledger](experiments.md).
+
+## Architecture review, November 18, 2026
+
+Keep F1 as the single quality experiment. A kernel can average observed light
+even on a cut. The direct head can estimate radiance outside the range of the
+25 local observations. Reprojection lets both lobes reuse prior samples
+when the same surface remains visible. Primary-surface motion is a weaker cue
+for reflected highlights and lighting changes. Inspect the separate specular
+outputs and the lighting-final frames when judging whether recurrence helps.
+
+The predecessor shows why this distinction matters. On the same development
+sequences, direct-only 16×4 seed 2 reduced causal temporal MSE to 0.81× v3
+while warm smooth-crop MSE rose to 3.25× (95% interval 2.44–3.71) and FLIP
+rose from 0.108 to 0.171. A stable, blurry or biased image can score well on
+the first measure. The F1 decision still needs the fixed 60k checkpoint, both
+reset protocols and paired comparisons to v3. [Decision A](phase5-results.md#decision-a-owner-handoff).
+
+The 200 synthetic scenes cover motion, cuts and known targets well enough for
+this development decision. Ten development sequences, with cold smooth crops
+from four scenes, give limited evidence about generalization. A game-quality
+claim needs held-out, game-like sequences with glossy motion, disocclusion,
+thin geometry and changing light, paired with converged references. Replay
+identical sparse inputs through each reconstructor and disclose differences in
+guides, path depth, history resets and exposure. [Corpus](training-corpus.md)
+and [evaluation protocol](evaluation.md).
+
+Two parts of the graph expand the data stored for every pixel.
+
+- Reprojection writes four u32 indices and four f32 weights for **each of 17
+  state channels**. That costs **544 bytes per output pixel** in input buffers.
+  All channels share the same geometry. A warp that computes the channel offset
+  during sampling could consume one set of taps per pixel.
+- The filter expands six radiance channels across 25 taps for every HR pixel.
+  One expanded f32 tensor represents **600 bytes per output pixel** (1.24 GB
+  for nominal 1080p). This is a logical tensor size. Peak allocation also
+  depends on lowering and buffer reuse. A fused stencil could load the LR
+  neighborhood directly and reduce into six output values.
+
+The current release build requested **291 MB** of resident buffers at just
+128×128 → 256×256, including the offline upload and readback buffers. On the
+Ryzen 5 9600X integrated Radeon (RADV, Mesa 26.2.3), the summed GPU passes
+took **82.25 ms p50 and 85.09 ms p95**. Median stage times were 14.52 ms
+for preparation, 66.49 ms for the network and 1.29 ms for resolve. The RX
+7900 XT was busy with another workload. These timestamps exclude CPU work,
+compilation and gaps between submissions. The benchmark used the full F1
+shape with two-update smoke weights, two warmup sequences and five measured
+replays of the same 16 frames. [Timing and memory report](f1-timing.json).
+
+Both optimizations can preserve the learned weights and equations. Qualify
+each against F1 forward outputs, gradients and recurrent rollouts. Measure
+allocation and GPU p50/p95 on the same clip and adapter. A shipping comparison
+also needs GPU timestamps around the caller's single-encoder reconstruction,
+at a common output resolution, and a matched ray-reconstruction baseline.
+
+Apex publishes frame-generation timings on the RTX 5090 at 4K. Its current
+2X table gives 1.01 ms per synthesized frame for ANR FG and 1.26 ms for DLSS
+FG. Its ray-reconstruction and super-resolution betas are listed as upcoming.
+The transferable idea is to replay identical inputs and compare synchronized
+sequences across devices. [Apex measurements](https://apexcompute.com/neural-rendering)
+and [ANR release and replay tooling](https://github.com/apex-compute/ANR).
+
+REGEN trains a lightweight game-image translator on paired teacher outputs.
+Our paired target is already available from the high-sample renderer.
+OpenDLSS-NR implements same-resolution generative rendering and checks
+intermediate activations against fixtures. Its per-layer parity checks would
+help qualify fused or reduced-precision execution of F1. [REGEN](https://github.com/stefanos50/REGEN)
+and [OpenDLSS-NR](https://github.com/maanHimself/OpenDLSS-NR).

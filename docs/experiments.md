@@ -6,11 +6,23 @@ Only development selects models. Confirmation is reserved for Phase 6.
 
 | Phase | Run | Budget / purpose | Outcome |
 |---|---|---|---|
+| Integration | `meganeura-20261118/check` | Locked workspace and all targets on the new renderer/compiler pins | Compile identified the new Blade compute pipeline subgroup field. |
+| Integration | `meganeura-20261118/workspace` | Locked all-target Clippy and workspace tests with updated pipeline descriptors | Passed Clippy and all 102 regular tests. |
+| Integration | `meganeura-20261118/radv` | Debug reconstruction, training cursors/resume and caller-encoder example on RX 7900 XT | All 13 passed, one submission, zero validation errors. |
+| Integration | `meganeura-20261118/lavapipe` | Same debug checks on the software Vulkan backend | All 13 passed, one submission, zero validation errors. |
+| Integration | `meganeura-20261118/captures` | Fresh procedural training-smoke and timing fixtures with the pinned renderer shaders | Three LavaPipe sequences (4, 4 and 16 frames), zero validation errors. |
+| Integration | `meganeura-20261118/release` | Locked release benchmark | Passed. |
+| Integration | `meganeura-20261118/smoke-weights` | Two updates of the full F1 shape on tiny disjoint procedural fixtures for timing weights | All parameters finite, bit-exact reload on LavaPipe. |
+| Integration | `meganeura-20261118/timing-raphael` | Fixed 16-frame, 128² → 256² clip on integrated Radeon 0x13c0, two warmup and five measured sequences, release F1 with smoke weights | Pass spans p50/p95 85.77/91.23 ms, 291,382,788 requested buffer bytes. Concurrent CPU LavaPipe correctness work. |
+| Integration | `meganeura-20261118/capture-cache` | Cold/warm LavaPipe capture identity with pinned Blade shaders | Byte-identical. Both SHA-256 values start with 98f83c49. |
+| Integration | `meganeura-20261118/cli` | Two-frame LavaPipe fixtures and CLI training/resume/reload with reset and control checks | Exact interrupted resume/reload, alpha exports, reset-1/16 and shared references passed, zero validation errors. |
+| Integration | `meganeura-20261118/timing-raphael-repeat` | Same executable, checkpoint, clip and adapter after local CPU Vulkan tests finished | Pass spans p50/p95 82.25/85.09 ms, 291,382,788 requested buffer bytes across the runtime. |
+| Integration | `meganeura-20261118/final-checks` | Locked dependency identity, formatting, gallery verification and diff checks | Passed. The renderer and Meganeura share a single Blade graphics crate and shader compiler. |
 | 5 F1 | `v4-f1/analysis-readiness` | Verify schema-4 curve/export audit adaptation, frozen live-run identities and initial finite-loss prefix | Pass: only audit paths/schema and stricter proof assertions change; 100 capture/provenance hashes and settings match, first 512 losses finite, gallery unchanged. No quality claim. |
 | 5 F1 | `v4-f1/pretraining-handoff-checks` | Final diff/gallery consistency and verification of recorded correctness/recipe prerequisites | Pass: eight completed prerequisites, unchanged recipe/executable, unique ledger coverage and unchanged published gallery. |
 | 5 F1 | `v4-f1/recipe-check` | Check frozen seed-1 recipe, corpus order, release source identity and completed correctness prerequisites | Pass: all seven prerequisites complete, unchanged numerical sources/data order and 60k recipe; executable e79b4d4d…100c265. |
-| 5 F1 | `v4-f1/seed1-queue` | Managed F1 seed-1 training and both full development protocols | Running under `ommatidia-phase5-f1-seed1-20260929.service`; stops on failure, no automatic restart or promotion. |
-| 5 F1 | `v4-f1/train-seed1-60000` | Fresh F1 16×4, seed 1, 200 scenes, 60k updates; B=8, unroll 4, crop 64 | Running since 2026-09-29 05:13 UTC; optimizer updates observed on RX 7900 XT, same loss/schedule/data, no warm start. |
+| 5 F1 | `v4-f1/seed1-queue` | Managed F1 seed-1 training and both full development protocols | Active at the September handoff. Service and run directory unavailable here on November 18. Final status unknown. |
+| 5 F1 | `v4-f1/train-seed1-60000` | Fresh F1 16×4, seed 1, 200 scenes, 60k updates; B=8, unroll 4, crop 64 | Started 2026-09-29 05:13 UTC on RX 7900 XT. Optimizer updates observed. Final checkpoint and queued scores unverified. |
 | 5 F1 | `v4-f1/seed1-dev-causal` | Final F1 checkpoint, full causal development and fixed alpha exports | Queued after training. |
 | 5 F1 | `v4-f1/seed1-score-causal` | Official FLIP, paired crop/frame intervals and lighting-final comparisons against learned v3 | Queued after causal evaluation. |
 | 5 F1 | `v4-f1/seed1-dev-reset16` | Same F1 checkpoint/development with periodic cuts and fixed alpha exports | Queued after training. |

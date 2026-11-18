@@ -75,6 +75,7 @@ impl Probe {
             name: "ommatidia-gbuffer-probe",
             data_layouts: &[&layout],
             compute: shader.at("probe"),
+            full_subgroup_size: None,
         });
 
         let len = channels(include_motion) * (size.width * size.height) as usize;

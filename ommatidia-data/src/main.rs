@@ -157,7 +157,7 @@ usage: ommatidia-data [options]
                             direct emission as separate input/reference planes
   --seed N                  base seed for scenes and cameras  [0]
   --device-id ID            adapter ID for this standalone process (hex or decimal)
-  --shader-dir PATH         blade-render shader directory [../blade/blade-render/code]
+  --shader-dir PATH         override the shader directory from the pinned blade-render
   --preview DIR             also write PNGs of the first few pairs
   --no-gbuffer              store only colour, leaving out the G-buffer planes
   --hr-gbuffer              also store a high-resolution G-buffer for
@@ -473,20 +473,6 @@ impl ActiveSequence {
     }
 }
 
-/// Where blade-render keeps its shader sources.
-///
-/// The renderer loads WGSL from disk at runtime, so the generator has to be
-/// told where the checkout is. It sits beside ommatidia by default.
-fn shader_dir(override_dir: Option<&std::path::Path>) -> PathBuf {
-    if let Some(dir) = override_dir {
-        return dir.to_owned();
-    }
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../blade/blade-render/code")
-        .canonicalize()
-        .unwrap_or_else(|e| panic!("cannot find blade's shader directory; pass --shader-dir: {e}"))
-}
-
 /// Brings up the context, worker pool, asset hub, and cooked shaders.
 struct Harness {
     context: std::sync::Arc<gpu::Context>,
@@ -533,8 +519,8 @@ impl Harness {
                 PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../target/data-assets")
             });
         let asset_hub = blade_render::AssetHub::new(&cache, &choir, &context);
-        let (shaders, task) =
-            blade_render::Shaders::load(&shader_dir(shader_dir_override), &asset_hub, true);
+        let shader_dir = shader_dir_override.map_or_else(blade_render::shader_dir, PathBuf::from);
+        let (shaders, task) = blade_render::Shaders::load(&shader_dir, &asset_hub, true);
         task.join();
 
         Self {

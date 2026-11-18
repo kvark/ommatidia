@@ -16,8 +16,6 @@ concurrency:
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
-  # Only Blade has a sibling override; Cargo fetches pinned Meganeura directly.
-  BLADE_REV: fbb4f28c4869e81ae15de58925945b423b9c1ac5
 
 jobs:
   platform:
@@ -39,17 +37,8 @@ jobs:
         uses: actions/checkout@v4
         with:
           path: ommatidia
-      - name: Check out Blade
-        uses: actions/checkout@v4
-        with:
-          repository: kvark/blade
-          ref: ${{ env.BLADE_REV }}
-          path: blade
       - name: Install Rust
         run: rustup toolchain install 1.92.0 --profile minimal
-      - name: Prepare corrected shader compiler
-        working-directory: ommatidia
-        run: python3 scripts/prepare-naga.py
       - name: Check workspace
         working-directory: ommatidia
         run: cargo +1.92.0 check --workspace --all-targets --locked
@@ -63,24 +52,21 @@ jobs:
         uses: actions/checkout@v4
         with:
           path: ommatidia
-      - name: Check out Blade
+      - name: Check out Blade's catalog test meshes
         uses: actions/checkout@v4
         with:
           repository: kvark/blade
-          ref: ${{ env.BLADE_REV }}
+          ref: d9112e26ab1244d9e206e7d27387295a28cb3fa3
           path: blade
       - name: Install Rust
         run: rustup toolchain install 1.92.0 --profile minimal --component rustfmt,clippy
-      - name: Prepare corrected shader compiler
-        working-directory: ommatidia
-        run: python3 scripts/prepare-naga.py
       - name: Format
         working-directory: ommatidia
         run: cargo +1.92.0 fmt --all -- --check
       - name: Check quality harness syntax
         working-directory: ommatidia
         run: |
-          python3 -m py_compile scripts/prepare-naga.py scripts/record-run.py scripts/verify-results.py scripts/fetch-catalog.py scripts/score-regions.py scripts/render-comparisons.py
+          python3 -m py_compile scripts/record-run.py scripts/verify-results.py scripts/fetch-catalog.py scripts/score-regions.py scripts/render-comparisons.py
           python3 scripts/test-fetch-catalog.py
           python3 scripts/test-score-regions.py
           python3 scripts/test-evaluation.py
@@ -114,20 +100,11 @@ jobs:
         uses: actions/checkout@v4
         with:
           path: ommatidia
-      - name: Check out Blade
-        uses: actions/checkout@v4
-        with:
-          repository: kvark/blade
-          ref: ${{ env.BLADE_REV }}
-          path: blade
       - name: Install Rust and LavaPipe
         run: |
           rustup toolchain install 1.92.0 --profile minimal
           sudo apt-get update -o Acquire::Retries=3
           sudo apt-get install -y libvulkan1 mesa-vulkan-drivers vulkan-validationlayers
-      - name: Prepare corrected shader compiler
-        working-directory: ommatidia
-        run: python3 scripts/prepare-naga.py
       - name: Check gradients, raw features, recurrence, HDR and reload
         working-directory: ommatidia
         run: python3 scripts/record-run.py target/ci-gpu -- cargo +1.92.0 test -p ommatidia --test transport --locked -- --ignored --nocapture --test-threads=1

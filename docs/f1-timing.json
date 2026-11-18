@@ -1,0 +1,101 @@
+{
+  "capture": {
+    "canonical_frames": 2,
+    "capture_seed": 49,
+    "catalog_layout": null,
+    "device": {
+      "driver": "llvmpipe",
+      "driver_info": "Mesa 26.0.8-1ubuntu0.3 (LLVM 21.1.8)",
+      "name": "llvmpipe (LLVM 21.1.8, 256 bits)",
+      "software": true,
+      "validation": true
+    },
+    "family_ids": [],
+    "input_estimator": "independent-paths",
+    "input_frames": 1,
+    "input_max_bounces": 8,
+    "input_rng_schedule": "blade-frame-index; prefix-discard-once; retained [offset+1,offset+records*input_frames]",
+    "input_sample_offset": 0,
+    "light_motion": 0.0,
+    "matching_path_depth": true,
+    "minimum_catalog_visible_fraction": null,
+    "note": "Matching path depth is necessary, not sufficient, for a matched integrator. Copied-reference depth is unknown; null is not a match.",
+    "records": 16,
+    "reference_from": null,
+    "reference_max_bounces": 8,
+    "reference_sample_offset": 0,
+    "scene_seeds": [
+      49
+    ],
+    "schema": 1
+  },
+  "checkpoint": "runs/meganeura-20261118/smoke-weights/model/model.safetensors",
+  "config": {
+    "channels": 16,
+    "latent_channels": 4,
+    "levels": 4,
+    "scale": 2,
+    "version": 4
+  },
+  "dataset": "runs/meganeura-20261118/captures/timing.omd",
+  "device": {
+    "driver": "radv",
+    "driver_info": "Mesa 26.2.3-1ubuntu1",
+    "name": "AMD Ryzen 5 9600X 6-Core Processor (RADV RAPHAEL_MENDOCINO)",
+    "software": false
+  },
+  "excluded_from_time": "capture, compilation, CPU validation/upload/readback, submission and inter-submission queue gaps; not end-to-end frame time or throughput",
+  "input_extent": [
+    128,
+    128
+  ],
+  "measured_sequences": 5,
+  "memory": {
+    "max_observed_device_usage_bytes": 386863104,
+    "minimum_reported_device_budget_bytes": 11098775552,
+    "requested_resident_buffer_bytes": 291382788,
+    "scope": "resident buffers include Native offline upload/readback; driver usage sampled after loading and each completed frame, including warmup; not a transient peak or host-RAM measurement; unsupported driver queries are null"
+  },
+  "method": "hardware GPU pass-span durations; normal grouped dispatch execution, not per-dispatch profiling",
+  "network": {
+    "max_ms": 74.9932,
+    "mean_ms": 67.0066195,
+    "min_ms": 66.20739999999999,
+    "p50_ms": 66.49315999999999,
+    "p95_ms": 68.38364,
+    "samples": 80
+  },
+  "output_extent": [
+    256,
+    256
+  ],
+  "percentiles": "nearest rank",
+  "prepare": {
+    "max_ms": 16.86472,
+    "mean_ms": 14.741209624999996,
+    "min_ms": 13.46568,
+    "p50_ms": 14.52284,
+    "p95_ms": 15.96904,
+    "samples": 80
+  },
+  "resolve": {
+    "max_ms": 1.82212,
+    "mean_ms": 1.2907029999999995,
+    "min_ms": 1.2054,
+    "p50_ms": 1.2858800000000001,
+    "p95_ms": 1.387,
+    "samples": 80
+  },
+  "sequence": 0,
+  "sequence_frames": 16,
+  "total": {
+    "max_ms": 91.72059999999999,
+    "mean_ms": 83.038532125,
+    "min_ms": 80.93396,
+    "p50_ms": 82.24812,
+    "p95_ms": 85.08592,
+    "samples": 80
+  },
+  "validation_enabled": false,
+  "warmup_sequences": 2
+}

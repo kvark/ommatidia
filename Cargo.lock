@@ -189,6 +189,7 @@ dependencies = [
 [[package]]
 name = "blade-asset"
 version = "0.2.2"
+source = "git+https://github.com/kvark/blade?rev=d9112e26ab1244d9e206e7d27387295a28cb3fa3#d9112e26ab1244d9e206e7d27387295a28cb3fa3"
 dependencies = [
  "base64 0.22.1",
  "bytemuck",
@@ -200,6 +201,7 @@ dependencies = [
 [[package]]
 name = "blade-graphics"
 version = "0.9.0"
+source = "git+https://github.com/kvark/blade?rev=d9112e26ab1244d9e206e7d27387295a28cb3fa3#d9112e26ab1244d9e206e7d27387295a28cb3fa3"
 dependencies = [
  "ash",
  "ash-window",
@@ -235,6 +237,7 @@ dependencies = [
 [[package]]
 name = "blade-macros"
 version = "0.3.0"
+source = "git+https://github.com/kvark/blade?rev=d9112e26ab1244d9e206e7d27387295a28cb3fa3#d9112e26ab1244d9e206e7d27387295a28cb3fa3"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -244,6 +247,7 @@ dependencies = [
 [[package]]
 name = "blade-render"
 version = "0.6.0"
+source = "git+https://github.com/kvark/blade?rev=d9112e26ab1244d9e206e7d27387295a28cb3fa3#d9112e26ab1244d9e206e7d27387295a28cb3fa3"
 dependencies = [
  "base64 0.22.1",
  "bevy_mikktspace",
@@ -255,7 +259,7 @@ dependencies = [
  "choir",
  "exr",
  "getrandom 0.2.17",
- "glam 0.32.1",
+ "glam 0.33.12",
  "gltf",
  "log",
  "mint",
@@ -1006,9 +1010,9 @@ checksum = "8babf46d4c1c9d92deac9f7be466f76dfc4482b6452fc5024b5e8daf6ffeb3ee"
 
 [[package]]
 name = "glam"
-version = "0.32.1"
+version = "0.33.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f70749695b063ecbf6b62949ccccde2e733ec3ecbbd71d467dca4e5c6c97cca0"
+checksum = "37bfe73dc8ec21f54d181e5a60554327ec3f1c600c455a75ccbfc65d2106a6c4"
 dependencies = [
  "mint",
 ]
@@ -1321,7 +1325,7 @@ dependencies = [
 [[package]]
 name = "meganeura"
 version = "0.3.0"
-source = "git+https://github.com/kvark/meganeura?rev=7c29497fcab1071e8171dc34f27698c807bd378d#7c29497fcab1071e8171dc34f27698c807bd378d"
+source = "git+https://github.com/kvark/meganeura?rev=25ed41cc8426e98849ba6366d7da6634b0e2b57d#25ed41cc8426e98849ba6366d7da6634b0e2b57d"
 dependencies = [
  "blade-graphics",
  "blade-macros",
@@ -1330,7 +1334,6 @@ dependencies = [
  "flate2",
  "half",
  "log",
- "naga",
  "oxionnx-core",
  "oxionnx-proto",
  "ron",
@@ -1374,6 +1377,7 @@ checksum = "e53debba6bda7a793e5f99b8dacf19e626084f525f7829104ba9898f367d85ff"
 [[package]]
 name = "naga"
 version = "30.0.0"
+source = "git+https://github.com/kvark/wgpu?rev=9964733300924e724b6d41ef268e7c2933f3dcdb#9964733300924e724b6d41ef268e7c2933f3dcdb"
 dependencies = [
  "arrayvec",
  "bit-set",
@@ -1398,6 +1402,7 @@ dependencies = [
 [[package]]
 name = "naga-types"
 version = "30.0.0"
+source = "git+https://github.com/kvark/wgpu?rev=9964733300924e724b6d41ef268e7c2933f3dcdb#9964733300924e724b6d41ef268e7c2933f3dcdb"
 dependencies = [
  "hashbrown 0.17.1",
  "indexmap",

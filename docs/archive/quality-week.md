@@ -189,7 +189,7 @@ reference results, not a new selected Ommatidia checkpoint.
 
 ## Compiler conformance repair
 
-The isolated [Naga correction](../../patches/README.md) replaces decorated workgroup
+The isolated [Naga correction](https://github.com/kvark/ommatidia/blob/f47a1d442cb0d8aabaa7d0d3faded1268d5329f6/patches/README.md) replaces decorated workgroup
 composites with undecorated storage types while retaining host-buffer layouts.
 All three debug GPU correctness tests now pass with zero validation errors on
 both RADV and LavaPipe (`corrected-compiler-debug/`,
