@@ -34,6 +34,8 @@ pub struct Sampler {
     rng: Rng,
     pub cursors: Vec<Option<Cursor>>,
     pub crop: [u32; 2],
+    #[serde(default)]
+    pub(crate) context: u32,
     pub unroll: usize,
     low: [u32; 2],
     sequences: usize,
@@ -68,12 +70,62 @@ impl Sampler {
             rng: Rng::new(seed),
             cursors: vec![None; batch],
             crop,
+            context: 0,
             unroll,
             low,
             sequences,
             length,
             windows: 0,
             cold_windows: 0,
+        })
+    }
+
+    /// Keep the random crop and its pyramid phase fixed while expanding the input.
+    pub fn with_context(mut self, radius: u32, config: Config) -> Result<Self> {
+        config.validate(self.crop)?;
+        let stride = (1 << (config.levels - 1)).max(4);
+        if !radius.is_multiple_of(stride) {
+            return Err(format!("context must be a multiple of {stride} LR pixels").into());
+        }
+        for (crop, source) in self.crop.into_iter().zip(self.low) {
+            // A full-frame window cannot follow an arbitrarily positioned crop's phase.
+            if radius > 0 && radius > (source - crop).saturating_sub(stride - 1) / 2 {
+                return Err("context does not fit the source at every sampled stride phase".into());
+            }
+        }
+        self.context = radius;
+        Ok(self)
+    }
+
+    pub fn input_extent(&self) -> [u32; 2] {
+        self.crop.map(|side| side + 2 * self.context)
+    }
+
+    pub fn input_origin(&self, origin: [u32; 2], config: Config) -> [u32; 2] {
+        let extent = self.input_extent();
+        let stride = (1 << (config.levels - 1)).max(4);
+        std::array::from_fn(|axis| {
+            let minimum = origin[axis].saturating_sub(self.low[axis] - extent[axis]);
+            let offset = self
+                .context
+                .min(origin[axis] / stride * stride)
+                .max(minimum.div_ceil(stride) * stride);
+            origin[axis] - offset
+        })
+    }
+
+    pub fn loss_margins(&self, origin: [u32; 2], config: Config, margin: u32) -> [u32; 4] {
+        let input = self.input_origin(origin, config);
+        let edges = self.image_edges(origin);
+        std::array::from_fn(|side| {
+            let axis = side % 2;
+            let start = origin[axis] - input[axis];
+            let extra = if side < 2 {
+                start
+            } else {
+                2 * self.context - start
+            };
+            extra * config.scale + if edges & (1 << side) == 0 { margin } else { 0 }
         })
     }
 
@@ -168,8 +220,8 @@ impl Prefetch {
                                     .crop(
                                         w.sequence,
                                         w.start + i,
-                                        w.origin,
-                                        sampler.crop,
+                                        sampler.input_origin(w.origin, config),
+                                        sampler.input_extent(),
                                         w.gain,
                                         config,
                                     )
@@ -229,6 +281,65 @@ pub fn learning_rate(peak: f32, step: usize, total: usize) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn enlarged_windows_preserve_loss_bounds_and_stride_phase_at_every_origin() {
+        let config = Config::default();
+        let base = Sampler::new(1, 2, [32; 2], 4, [64; 2], 8, 24).unwrap();
+        assert!(base.clone().with_context(3, config).is_err());
+        assert!(base.clone().with_context(16, config).is_err());
+        let wide = base.clone().with_context(8, config).unwrap();
+        assert_eq!(wide.input_extent(), [48; 2]);
+        for y in 0..=32 {
+            for x in 0..=32 {
+                let origin = [x, y];
+                let input = wide.input_origin(origin, config);
+                let small = base.loss_margins(origin, config, 4);
+                let large = wide.loss_margins(origin, config, 4);
+                for i in 0..2 {
+                    assert!(input[i] + 48 <= 64);
+                    assert_eq!(input[i] % 8, origin[i] % 8);
+                    assert_eq!(input[i] * 2 + large[i], origin[i] * 2 + small[i]);
+                    assert_eq!(
+                        (input[i] + 48) * 2 - large[2 + i],
+                        (origin[i] + 32) * 2 - small[2 + i]
+                    );
+                }
+            }
+        }
+        // Mean-reduced losses must assign the same weight to each physical
+        // sample, including partially occupied 4x4 low-frequency blocks.
+        for origin in [[0, 0], [2, 17], [31, 8], [32, 32]] {
+            let masks = |s: &Sampler| {
+                ommatidia::transport::graph::loss_masks(
+                    config,
+                    s.input_extent(),
+                    s.loss_margins(origin, config, 4),
+                )
+                .unwrap()
+            };
+            let start = wide.input_origin(origin, config);
+            for (k, (old, new)) in masks(&base).into_iter().zip(masks(&wide)).enumerate() {
+                let block = if k == 3 { 4 } else { 1 };
+                let (a, b) = (32 / block, 48 / block);
+                let offset = [0, 1].map(|axis| ((origin[axis] - start[axis]) as usize) / block);
+                for (index, &v) in new.iter().enumerate() {
+                    let (x, y, channel) = (index % b, index / b % b, index / (b * b));
+                    let expected = if (offset[0]..offset[0] + a).contains(&x)
+                        && (offset[1]..offset[1] + a).contains(&y)
+                    {
+                        old[(channel * a + y - offset[1]) * a + x - offset[0]]
+                    } else {
+                        0.0
+                    };
+                    let scale = if k == 2 { 1.0 } else { a as f32 / b as f32 };
+                    assert!(
+                        (v * scale - expected).abs() < 2e-6,
+                        "mask {k} at {origin:?}"
+                    );
+                }
+            }
+        }
+    }
     #[test]
     fn crop_boundaries_distinguish_real_image_edges() {
         let sampler = Sampler::new(1, 1, [64; 2], 4, [128; 2], 1, 64).unwrap();

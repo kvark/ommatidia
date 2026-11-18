@@ -28,3 +28,10 @@ energy before accepting any tradeoff. On a miss, test distinct scene count
 at the same 12k budget with the original 32×32 context and seed pair: replace
 the duplicate input captures with four new static and four new moving scenes
 (base seeds 18031001 and 18032001) at the original capture settings.
+
+To reproduce the training change, add `--context 8` to the control's
+`transport --crop 32` command. The radius is in LR pixels per side.
+It must be a multiple of the encoder and pooling stride and leave room for
+every sampled stride phase. The default radius is zero. A training resume
+uses the original radius and restores the full input window's recurrent
+state. Inference takes the same F1 checkpoint and graphics inputs as before.

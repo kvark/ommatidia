@@ -329,8 +329,8 @@ mod tests {
             .into_iter()
             .fold(PlaneSet::new(), |set, p| set.with(p));
         let layout = Layout {
-            lr_width: 8,
-            lr_height: 8,
+            lr_width: 24,
+            lr_height: 24,
             scale: 2,
             lr_source: InputSource::PathTrace,
             lr_planes: planes,
@@ -377,7 +377,7 @@ mod tests {
         assert_eq!(cropped.exposure, 1.0);
         for y in 0..4 {
             for x in 0..4 {
-                let src = original.rays[(y + 2) * 8 + x + 3];
+                let src = original.rays[(y + 2) * 24 + x + 3];
                 let dst = cropped.rays[y * 4 + x];
                 assert_eq!(src.normal_depth, dst.normal_depth);
                 for c in 0..3 {
@@ -388,7 +388,7 @@ mod tests {
         }
         for y in 0..8 {
             for x in 0..8 {
-                let src = original.surfaces[(y + 4) * 16 + x + 6];
+                let src = original.surfaces[(y + 4) * 48 + x + 6];
                 let dst = cropped.surfaces[y * 8 + x];
                 assert_eq!(src.motion, dst.motion);
                 assert_eq!(src.albedo_roughness, dst.albedo_roughness);
@@ -396,13 +396,13 @@ mod tests {
                     assert_eq!(src.emission[c] * 2.0, dst.emission[c]);
                     assert_eq!(
                         target.rgb[(y * 8 + x) * 3 + c],
-                        original_target.rgb[((y + 4) * 16 + x + 6) * 3 + c] * 2.0
+                        original_target.rgb[((y + 4) * 48 + x + 6) * 3 + c] * 2.0
                     );
                 }
                 for c in 0..6 {
                     assert_eq!(
                         target.lobes[config.index([4; 2], c, x, y)],
-                        original_target.lobes[config.index([8; 2], c, x + 6, y + 4)] * 2.0
+                        original_target.lobes[config.index([24; 2], c, x + 6, y + 4)] * 2.0
                     );
                 }
             }
@@ -415,9 +415,33 @@ mod tests {
                 .all(|v| v.is_finite() && *v > 0.0)
         );
         assert!(corpus.disjoint(&corpus).is_err());
-        let sampler = crate::sampler::Sampler::new(31, 2, [4; 2], 4, [8; 2], 2, 16).unwrap();
+        let sampler = crate::sampler::Sampler::new(31, 2, [4; 2], 4, corpus.low, 2, 16).unwrap();
+        let wide = sampler.clone().with_context(4, config).unwrap();
+        let expanded = crate::sampler::Prefetch::new(std::sync::Arc::clone(&corpus), config, wide);
         let worker = crate::sampler::Prefetch::new(std::sync::Arc::clone(&corpus), config, sampler);
         let first = worker.receive().unwrap();
+        let enlarged = expanded.receive().unwrap();
+        assert_eq!(first.windows, enlarged.windows);
+        for (i, w) in first.windows.iter().enumerate() {
+            let start = enlarged.next_sampler.input_origin(w.origin, config);
+            let offset = [0, 1].map(|axis| ((w.origin[axis] - start[axis]) * 2) as usize);
+            for ((_, small), (_, big)) in first.frames[i].iter().zip(&enlarged.frames[i]) {
+                for y in 0..8 {
+                    for x in 0..8 {
+                        let [bx, by] = [x + offset[0], y + offset[1]];
+                        let a = (y * 8 + x) * 3;
+                        let b = (by * 24 + bx) * 3;
+                        assert_eq!(small.rgb[a..a + 3], big.rgb[b..b + 3]);
+                        for c in 0..6 {
+                            assert_eq!(
+                                small.lobes[config.index([4; 2], c, x, y)],
+                                big.lobes[config.index([12; 2], c, bx, by)]
+                            );
+                        }
+                    }
+                }
+            }
+        }
         let restored = crate::sampler::Prefetch::new(
             std::sync::Arc::clone(&corpus),
             config,

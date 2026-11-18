@@ -584,6 +584,7 @@ fn main() -> Result<()> {
     let mut eval_every = 10_000usize;
     let mut batch_size = 8usize;
     let mut crop = 64u32;
+    let mut crop_context = 0u32;
     let mut stop_after = None::<usize>;
     let mut device_id = None;
     let mut weights = graph::LossWeights::default();
@@ -595,7 +596,7 @@ fn main() -> Result<()> {
                 "transport --data TRAIN.omd --eval-data DEV.omd --out DIR
   --steps N [4000] --unroll N [4] --channels N [16] --levels N [4] --seed N [7]
   --lr F [0.0003] --eval-every N [10000] (causal metrics, no images) --device-id ID
-  --batch N [8] --crop N [64] (LR pixels; persistent GPU cursors)\n  --stop-after N (checkpoint an interruption; --steps retains the planned schedule)
+  --batch N [8] --crop N [64] (LR supervised crop) --context N [0] (extra LR pixels per side)\n  --stop-after N (checkpoint an interruption; --steps retains the planned schedule)
   --reset-every N [off] (evaluation: simulated cut each N frames, within each sequence)
   --checkpoint FILE (evaluation, or true resume with matching training bundle)
   --eval-only (loads checkpoint sidecar; evaluation resolution may differ)
@@ -658,6 +659,7 @@ seeds/catalog families must be disjoint. Use a separate final audit split."
             "--eval-every" => eval_every = v.parse()?,
             "--batch" => batch_size = v.parse()?,
             "--crop" => crop = v.parse()?,
+            "--context" => crop_context = v.parse()?,
             "--stop-after" => stop_after = Some(v.parse()?),
             "--reset-every" => {
                 if evaluation.reset_every.replace(v.parse()?).is_some() {
@@ -765,6 +767,7 @@ seeds/catalog families must be disjoint. Use a separate final audit split."
             batch: batch_size,
             unroll,
             crop: [crop; 2],
+            context: crop_context,
             margin: 4,
             peak_rate: rate,
             seed,
@@ -779,7 +782,9 @@ seeds/catalog families must be disjoint. Use a separate final audit split."
             low,
             train.sequences.len(),
             train.length,
-        )?;
+        )?
+        .with_context(crop_context, config)?;
+        graph::loss_mask(config, sampler.crop, 1, [settings.margin; 4])?;
         let last_step = stop_after.unwrap_or(steps);
         if last_step == 0 || last_step > steps || steps > u32::MAX as usize {
             return Err("invalid stop/schedule boundary".into());
@@ -787,7 +792,7 @@ seeds/catalog families must be disjoint. Use a separate final audit split."
         let mut trainer = Trainer::new(
             Arc::clone(&context),
             config,
-            [crop; 2],
+            sampler.input_extent(),
             unroll,
             batch_size,
             4,
@@ -822,7 +827,8 @@ seeds/catalog families must be disjoint. Use a separate final audit split."
                 "preparation":"GPU observation packing and geometric maps; GPU detached state carry",
                 "io":"immutable memory-mapped f16 crops, bounded one-worker prefetch; no requantization",
                 "sampling":"persistent 8-16-window crop lives, uniform fitting start, 0.1 extra reset probability; 2^U(-2,2) radiance gain per life",
-                "loss_margin_hr":4,"loss_margin_scope":"artificial crop borders only; real image edges supervised",
+                "input_extent_lr":sampler.input_extent(),
+                "loss_margin_hr":4,"loss_margin_scope":"artificial target crop borders only; real image edges supervised; additional context excluded",
                 "exposure":1,"gradient_clip_norm":1,
                 "loss_outliers":{"threshold":1,"file":"loss-outliers.jsonl","policy":"diagnostic only; no skipped/clamped batches"},
                 "resume":"Adam moments/step, full GPU state, consumed-batch sampler RNG/cursors and fixed schedule",

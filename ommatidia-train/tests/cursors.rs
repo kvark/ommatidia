@@ -206,6 +206,7 @@ fn resume_restores_adam_schedule_rng_and_gpu_state() {
         batch: 2,
         unroll: 4,
         crop: [8; 2],
+        context: 0,
         margin: 4,
         peak_rate: 0.003,
         seed: 7,

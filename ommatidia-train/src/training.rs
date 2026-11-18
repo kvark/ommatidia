@@ -42,6 +42,11 @@ pub struct Timing {
     pub loss_read: f64,
 }
 
+struct CursorMasks {
+    margins: Option<[u32; 4]>,
+    buffers: [(gpu::Buffer, u64); 4],
+}
+
 pub struct Trainer {
     pub network: graph::Network,
     pub session: meganeura::Session,
@@ -56,7 +61,8 @@ pub struct Trainer {
     state: gpu::Buffer,
     upload: gpu::Buffer,
     losses: gpu::Buffer,
-    loss_masks: Vec<[(gpu::Buffer, u64); 4]>,
+    loss_masks: Vec<CursorMasks>,
+    margin: u32,
     frames: Vec<Upload>,
     state_bytes: usize,
 }
@@ -111,27 +117,17 @@ impl Trainer {
         }
         let upload = buffer("training-batch-upload", frame_bytes * batch * unroll);
         let losses = buffer("training-scalar-losses", batch * 4);
-        // All 16 physical-edge combinations. Upload once, then copy the selected
-        // masks in the existing preparation pass; no per-cursor host wait.
+        // Bounded staging, including asymmetric windows near physical edges.
         let loss_masks = if margin == 0 {
             Vec::new()
         } else {
-            (0..16)
-                .map(|edges| {
-                    let margins =
-                        std::array::from_fn(|i| if edges & (1 << i) == 0 { margin } else { 0 });
-                    graph::loss_masks(config, low, margins).map(|values| {
-                        values.map(|v| {
-                            let bytes = (v.len() * 4) as u64;
-                            let b = buffer("training-loss-mask", bytes as usize);
-                            unsafe {
-                                std::ptr::copy_nonoverlapping(v.as_ptr(), b.data().cast(), v.len());
-                            }
-                            (b, bytes)
-                        })
-                    })
+            let sizes = graph::loss_masks(config, low, [margin; 4])?.map(|v| v.len() * 4);
+            (0..batch)
+                .map(|_| CursorMasks {
+                    margins: None,
+                    buffers: sizes.map(|bytes| (buffer("training-loss-mask", bytes), bytes as u64)),
                 })
-                .collect::<std::result::Result<Vec<_>, String>>()?
+                .collect()
         };
         let frames = (0..batch * unroll)
             .map(|i| {
@@ -169,6 +165,7 @@ impl Trainer {
             upload,
             losses,
             loss_masks,
+            margin,
             frames,
             state_bytes,
         })
@@ -210,9 +207,13 @@ impl Trainer {
     ) -> Result<(f32, Timing)> {
         if batch.frames.len() != self.batch
             || batch.windows.len() != self.batch
+            || batch.next_sampler.input_extent() != self.low
             || batch.frames.iter().any(|v| v.len() != self.unroll)
         {
             return Err("batch shape mismatch".into());
+        }
+        if self.margin == 0 && batch.next_sampler.context != 0 {
+            return Err("additional training context requires a masked loss graph".into());
         }
         let mut timing = Timing::default();
         let start = Instant::now();
@@ -259,12 +260,28 @@ impl Trainer {
         for cursor in 0..self.batch {
             let start = Instant::now();
             self.encoder.start();
-            if !self.loss_masks.is_empty() {
-                let edges = batch.next_sampler.image_edges(batch.windows[cursor].origin);
+            if let Some(masks) = self.loss_masks.get_mut(cursor) {
+                let margins = batch.next_sampler.loss_margins(
+                    batch.windows[cursor].origin,
+                    self.config,
+                    self.margin,
+                );
+                if masks.margins != Some(margins) {
+                    let values = graph::loss_masks(self.config, self.low, margins)?;
+                    for ((buffer, _), values) in masks.buffers.iter().zip(values) {
+                        // The preceding batch waited for its last carry submission.
+                        unsafe {
+                            std::ptr::copy_nonoverlapping(
+                                values.as_ptr(),
+                                buffer.data().cast(),
+                                values.len(),
+                            );
+                        }
+                    }
+                    masks.margins = Some(margins);
+                }
                 let mut transfer = self.encoder.transfer("crop-loss-masks");
-                for (name, &(source, bytes)) in
-                    graph::LOSS_MASK_NAMES.iter().zip(&self.loss_masks[edges])
-                {
+                for (name, &(source, bytes)) in graph::LOSS_MASK_NAMES.iter().zip(&masks.buffers) {
                     transfer.copy_buffer_to_buffer(
                         source.at(0),
                         self.session.input_buffer(name).unwrap(),
@@ -407,7 +424,7 @@ impl Drop for Trainer {
         for buffer in [self.state, self.upload, self.losses] {
             self.context.destroy_buffer(buffer);
         }
-        for (buffer, _) in self.loss_masks.drain(..).flatten() {
+        for (buffer, _) in self.loss_masks.drain(..).flat_map(|m| m.buffers) {
             self.context.destroy_buffer(buffer);
         }
     }

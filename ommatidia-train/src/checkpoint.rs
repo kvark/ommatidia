@@ -11,11 +11,19 @@ pub struct Settings {
     pub batch: usize,
     pub unroll: usize,
     pub crop: [u32; 2],
+    #[serde(default)]
+    pub context: u32,
     pub margin: u32,
     pub peak_rate: f32,
     pub seed: u64,
     pub weights: LossWeights,
     pub model: String,
+}
+impl Settings {
+    fn checkpoint_schema(&self) -> u32 {
+        // Older executables may resume only ordinary crop checkpoints.
+        if self.context == 0 { 4 } else { 5 }
+    }
 }
 #[derive(Serialize, Deserialize)]
 pub struct Checkpoint {
@@ -73,7 +81,7 @@ impl Checkpoint {
         }
         std::fs::write(staging.join("state.f32"), &state)?;
         let checkpoint = Self {
-            schema: 4,
+            schema: settings.checkpoint_schema(),
             step,
             settings,
             captures,
@@ -102,8 +110,8 @@ impl Checkpoint {
             return Err("true resume requires trainer.json, cursor state and Adam moments; weights-only warm starts are forbidden".into());
         }
         let saved: Self = serde_json::from_slice(&std::fs::read(metadata)?)?;
-        if saved.schema != 4 {
-            return Err("checkpoint training contract differs; F1 kernel/direct replacement requires fresh training".into());
+        if saved.schema != saved.settings.checkpoint_schema() {
+            return Err("checkpoint training contract differs from the F1 crop settings".into());
         }
         let state = std::fs::read(directory.join("state.f32"))?;
         if &saved.settings != settings
@@ -113,6 +121,7 @@ impl Checkpoint {
             || saved.sampler.windows != (saved.step * settings.batch) as u64
             || saved.sampler.cursors.len() != settings.batch
             || saved.sampler.crop != settings.crop
+            || saved.sampler.context != settings.context
             || saved.sampler.unroll != settings.unroll
             || saved.weights_sha256 != hash(&std::fs::read(weights)?)
             || saved.state_sha256 != hash(&state)
