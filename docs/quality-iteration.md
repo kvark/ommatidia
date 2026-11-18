@@ -64,3 +64,70 @@ noise pair, image selections, metrics, bootstrap and advancement thresholds.
 Record whether the reference-relative gradient error and the repeatable RGB
 error improve as well. This tests the benefit of more optimization on eight
 training scenes. The official corpus and the v3 comparison remain separate.
+
+## Transfer to the original development benchmark
+
+The September static development capture regenerated bit-for-bit. Its two
+64-frame scenes provide a transfer test at the original 128² → 256² resolution
+and 4,096 spp. Compare the 2k and 12k one-stream models there. Use the old
+capture executable, Blade shaders at `fbb4f28` and the original generation
+settings to recover the remaining four cases. Check every file against
+[the frozen hashes](training-corpus.json) before evaluating the 12k model on
+all ten sequences. Report the difference from the archived corrected v3
+aggregates, including smooth crops and FLIP. The archived aggregates support
+point differences. Paired intervals against v3 require its per-frame outputs.
+
+## First result
+
+At 2k updates, a second input-noise realization cut sensitivity to the input
+samples by **11.5%** (95% interval 7.4–15.8%). The repeatable part of RGB
+error **grew 3.5%** (1.0–6.4%). Warm PSNR rose by 0.172 dB [0.091, 0.262],
+but all-frame FLIP rose from 0.18154 to 0.18184 (difference +0.00030
+[−0.00092, +0.00144]). This looks like a trade of fine detail for stability.
+Keep the single-stream recipe. The warm PSNR interval excluded zero, so the
+predeclared rule did not trigger a second seed. All intervals here resample
+scenes and describe this training seed only. The repeatable error includes
+any noise in the shared finite-sample reference.
+
+## What the images show
+
+![Native-resolution F1 comparisons on static and moving scenes at reset and at frame 23](quality-iteration.png)
+
+All four rows were selected before training. Each tile contains the original
+128×128 evaluation PNG pixels. The 12k model suppresses more of the changing
+speckle, but still places patches of light on the static room's ceiling and
+loses reflections from the foreground sphere. At frame 23, horizontal bands
+cross the left side of the moving room where the reference shows a smooth wall.
+
+Two follow-up checks investigated the patches on development frames. Both
+are exploratory.
+
+- **Screen position.** Compare predictions for the same frame under two
+  independent noisy inputs. At 2k, the mean squared change in that difference
+  across 16-output-pixel grid boundaries was 1.41× the value across other
+  edges (2.23× on cold frames). The raw input-noise difference on the matching
+  eight-input-pixel grid had a ratio of 0.97×. The model output shows a
+  dependence on screen position. Identifying its source takes a separate test.
+- **Crop context.** For each of the eight cold frames, evaluate an aligned
+  32² LR center crop and the full 64² LR frame. Compare the identical central
+  32² output pixels, preserving the encoder stride phase. At 2k the change in
+  prediction had compressed RGB MSE 0.000042, rising to 0.000667 at 12k.
+  At 12k the smaller context actually had lower mean reference error
+  (0.00593 versus 0.00648), though only four of eight scenes improved.
+  This makes training context worth isolating in the next experiment.
+
+## Next quality experiment
+
+1. Keep the F1 graph, target pixels, one-stream input, crop locations and
+   training schedule fixed. Compare the current crop with a larger window
+   around the **same supervised pixels**. Mask the additional pixels out of
+   the loss and preserve real image boundaries. Verify that crop and full-frame
+   references agree on the supervised rectangle. Use both training seeds.
+2. Evaluate the whole 10-sequence development benchmark, including moving
+   lights, disocclusions and authored objects. Report FLIP, cold and warm
+   smooth-crop MSE, temporal error, energy, output-noise sensitivity and the
+   crop-context probe. Keep the image selections fixed. A drop in temporal
+   error alone cannot establish a visual improvement.
+3. Carry a successful change into the 60k schedule on the original 200-scene
+   corpus. Qualify each regenerated training shard by its archived hash.
+   Decision A and the separate confirmation set govern gallery publication.
