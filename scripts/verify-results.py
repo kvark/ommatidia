@@ -71,12 +71,45 @@ assert hashlib.sha256(panel.read_bytes()).hexdigest() == quality["panel_sha256"]
 transfer = quality["historical_development"]
 assert transfer["frames"] == 640 and transfer["sequences"] == 10
 control = json.loads((root / "docs/phase1-results.json").read_text())
-for key, label, decimals, unit in (
-    ("psnr", "Mean PSNR ↑", 2, " dB"),
-    ("flip", "Mean FLIP ↓", 5, ""),
-    ("temporal_mse", "Motion-compensated temporal MSE ↓", 6, ""),
-):
+trial = json.loads((root / "docs/crop-context.json").read_text())
+assert trial["frames_per_protocol"] == 640 and trial["sequences"] == 10
+assert trial["crop_frame_selections"] == 40
+assert hashlib.sha256((root / trial["benchmark"]).read_bytes()).hexdigest() == trial["benchmark_sha256"]
+panel = "docs/crop-context.png"
+assert hashlib.sha256((root / panel).read_bytes()).hexdigest() == trial["panel_sha256"]
+assert f"]({panel})" in readme
+
+metrics = (("psnr", 2), ("flip", 5), ("temporal_mse", 6))
+v3_row = ["Corrected v3"]
+for key, decimals in metrics:
     v3, f1 = transfer["causal"]["all"][key]
     assert v3 == control["protocols"]["causal"]["metrics"]["all"][key]["after"]
-    assert f"| {label} | {v3:.{decimals}f}{unit} | {f1:.{decimals}f}{unit} |" in readme
-print("Published v3 evidence, F1 development metrics and comparison pixels agree.")
+    baseline = trial["experiments"]["context"]["seeds"]["1"]["causal"]["metrics_by_age"]["all"][key][0]
+    assert math.isclose(f1, baseline, rel_tol=1e-8)
+    v3_row.append(f"{v3:.{decimals}f}")
+assert "| " + " | ".join(v3_row) + " |" in readme
+
+for label, arm, index in (
+    ("F1 · 8 scenes · 32×32", "context", 0),
+    ("F1 · 8 scenes · 48×48", "context", 1),
+    ("F1 · 16 scenes · 32×32", "breadth", 1),
+):
+    row = [label]
+    seeds = trial["experiments"][arm]["seeds"]
+    for key, decimals in metrics:
+        values = [seeds[i]["causal"]["metrics_by_age"]["all"][key][index] for i in ("1", "2")]
+        row.append(" / ".join(f"{v:.{decimals}f}" for v in values))
+    assert "| " + " | ".join(row) + " |" in readme
+
+for seed in ("1", "2"):
+    context, breadth = (trial["experiments"][arm]["seeds"][seed] for arm in ("context", "breadth"))
+    assert context["control_weights_sha256"] == breadth["control_weights_sha256"]
+    assert context["supervised_pixel_gradients"] == breadth["supervised_pixel_gradients"]
+    for result in (context, breadth):
+        causal = result["causal"]["metrics_by_age"]
+        reset = result["reset16"]["metrics_by_age"]
+        passed = (causal["all"]["flip"][2] < 0 and causal["warm"]["psnr"][3][0] > 0
+                  and min(causal["cold"]["psnr"][2], reset["cold"]["psnr"][2]) >= -0.1)
+        assert result["passes_primary"] == passed
+        assert reset["warm"]["psnr"] == [None, None, None, None]
+print("Published v3 evidence, paired F1 development results and comparison pixels agree.")

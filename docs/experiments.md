@@ -6,6 +6,71 @@ Only development selects models. Confirmation is reserved for Phase 6.
 
 | Phase | Run | Budget / purpose | Outcome |
 |---|---|---|---|
+| Quality | `context-20261118/control-2-center` | Control, seed 2, cold center crop | 8 frames, mean PSNR 22.639 dB. |
+| Quality | `context-20261118/control-2-causal` | Control, seed 2, continuous history | 640 frames, mean PSNR 25.592 dB. |
+| Quality | `context-20261118/build` | Compile the release trainer | Built with the locked dependencies. |
+| Quality | `context-20261118/cpu` | Workspace tests and Clippy | Workspace checks passed. |
+| Quality | `context-20261118/context-1` | 48² LR input, seed 1, 12k updates | Final finite checkpoint, SHA-256 `7acdb2044e37…`. |
+| Quality | `context-20261118/control-2-causal-flip` | Control, seed 2, causal FLIP | 640 frames, FLIP 0.19588. |
+| Quality | `context-20261118/control-2-reset16` | Control, seed 2, reset every 16 frames | 640 frames, mean PSNR 24.386 dB. |
+| Quality | `context-20261118/mask-parity` | Normalized-mask and stride alignment | All 1,089 crop origins preserved target coordinates, binary support, spatial weights and pooling weights. |
+| Quality | `context-20261118/cursors` | GPU training cursor regression tests | Both tests passed on RADV. |
+| Quality | `context-20261118/final-tests` | Workspace checks and debug trainer build | Decoder fixture matched RGB and lobe values at the original target pixels. Tests and Clippy passed. |
+| Quality | `context-20261118/resume` | Six updates with a mid-run save, new input extent | Strict cross-run file equality failed. See the numerical replay below. |
+| Quality | `context-20261118/control-2-reset16-flip` | Control, seed 2, reset16 FLIP | 640 frames, FLIP 0.22294. |
+| Quality | `context-20261118/context-2` | 48² LR input, seed 2, 12k updates | Final finite checkpoint, SHA-256 `a3d209eebf88…`. |
+| Quality | `context-20261118/resume-audit` | Expanded crop resume and a pre-change checkpoint | Parameter/Adam max difference 1.49e−8. Recurrent state max difference 2.39e−7. Old checkpoint resumed at step 5,001. |
+| Quality | `context-20261118/new-static` | Four new static training scenes | 96 frames, reference and capture settings matched the static control. |
+| Quality | `context-20261118/new-moving` | Four new moving training scenes | 96 frames, reference and capture settings matched the motion control. |
+| Quality | `context-20261118/context-1-causal` | 48² LR input, seed 1, continuous history | 640 frames, mean PSNR 25.758 dB. |
+| Quality | `context-20261118/context-1-causal-flip` | 48² LR input, seed 1, causal FLIP | 640 frames, FLIP 0.19616. |
+| Quality | `context-20261118/context-1-reset16` | 48² LR input, seed 1, reset every 16 frames | 640 frames, mean PSNR 24.738 dB. |
+| Quality | `context-20261118/committed-tests` | Committed tree, workspace checks and GPU cursor suites | Formatting, 103 regular tests and Clippy passed. Both cursor tests passed on RADV and LavaPipe. |
+| Quality | `context-20261118/breadth-1` | 16 training scenes, seed 1, 12k updates | Final finite checkpoint, SHA-256 `e5de880d2f6a…`. |
+| Quality | `context-20261118/history-taps` | Replay both samplers against captured motion | Extra context added history taps at 5,866 and 4,257 supervised temporal destinations. |
+| Quality | `context-20261118/context-1-reset16-flip` | 48² LR input, seed 1, reset16 FLIP | 640 frames, FLIP 0.21943. |
+| Quality | `context-20261118/context-1-noise-a` | 48² LR input, seed 1, primary noise stream | 192 frames, mean PSNR 25.143 dB. |
+| Quality | `context-20261118/breadth-2` | 16 training scenes, seed 2, 12k updates | Final finite checkpoint, SHA-256 `16c990a2d6ba…`. |
+| Quality | `context-20261118/context-1-noise-b` | 48² LR input, seed 1, independent noise stream | 192 frames, mean PSNR 25.047 dB. |
+| Quality | `context-20261118/context-1-center` | 48² LR input, seed 1, cold center crop | 8 frames, mean PSNR 23.308 dB. |
+| Quality | `context-20261118/context-2-causal` | 48² LR input, seed 2, continuous history | 640 frames, mean PSNR 25.551 dB. |
+| Quality | `context-20261118/breadth-1-causal` | 16 training scenes, seed 1, continuous history | 640 frames, mean PSNR 26.577 dB. |
+| Quality | `context-20261118/context-2-causal-flip` | 48² LR input, seed 2, causal FLIP | 640 frames, FLIP 0.19696. |
+| Quality | `context-20261118/breadth-2-causal` | 16 training scenes, seed 2, continuous history | 640 frames, mean PSNR 25.231 dB. |
+| Quality | `context-20261118/context-2-reset16` | 48² LR input, seed 2, reset every 16 frames | 640 frames, mean PSNR 24.448 dB. |
+| Quality | `context-20261118/breadth-1-causal-flip` | 16 training scenes, seed 1, causal FLIP | 640 frames, FLIP 0.18412. |
+| Quality | `context-20261118/replay-1` | Control replay, seed 1, 12k updates | Final finite checkpoint, SHA-256 `798f74b29db7…`. |
+| Quality | `context-20261118/breadth-1-reset16` | 16 training scenes, seed 1, reset every 16 frames | 640 frames, mean PSNR 25.336 dB. |
+| Quality | `context-20261118/breadth-2-causal-flip` | 16 training scenes, seed 2, causal FLIP | 640 frames, FLIP 0.19464. |
+| Quality | `context-20261118/context-2-reset16-flip` | 48² LR input, seed 2, reset16 FLIP | 640 frames, FLIP 0.22510. |
+| Quality | `context-20261118/context-2-noise-a` | 48² LR input, seed 2, primary noise stream | 192 frames, mean PSNR 25.139 dB. |
+| Quality | `context-20261118/context-2-noise-b` | 48² LR input, seed 2, independent noise stream | 192 frames, mean PSNR 25.111 dB. |
+| Quality | `context-20261118/context-2-center` | 48² LR input, seed 2, cold center crop | 8 frames, mean PSNR 22.791 dB. |
+| Quality | `context-20261118/context-report` | Paired wider-context evaluation | Ten scenes, two protocols, 40 fixed crop/frame selections, eight-scene noise and center checks. See [results](crop-context.md). |
+| Quality | `context-20261118/repeat-1` | Same-build repeat, seed 1, 12k updates | Final finite checkpoint, SHA-256 `bca127e2bb1e…`. |
+| Quality | `context-20261118/breadth-1-reset16-flip` | 16 training scenes, seed 1, reset16 FLIP | 640 frames, FLIP 0.21116. |
+| Quality | `context-20261118/replay-2` | Control replay, seed 2, 12k updates | Final finite checkpoint, SHA-256 `f514bcdc55ba…`. |
+| Quality | `context-20261118/replay-1-causal` | Control replay, seed 1, continuous history | 640 frames, mean PSNR 26.078 dB. |
+| Quality | `context-20261118/breadth-1-noise-a` | 16 training scenes, seed 1, primary noise stream | 192 frames, mean PSNR 25.952 dB. |
+| Quality | `context-20261118/breadth-1-noise-b` | 16 training scenes, seed 1, independent noise stream | 192 frames, mean PSNR 25.823 dB. |
+| Quality | `context-20261118/panel` | Four fixed pictures, three recipes and target | All 16 native-resolution tiles match the recorded pixels. |
+| Quality | `context-20261118/breadth-1-center` | 16 training scenes, seed 1, cold center crop | 8 frames, mean PSNR 22.966 dB. |
+| Quality | `context-20261118/breadth-2-reset16` | 16 training scenes, seed 2, reset every 16 frames | 640 frames, mean PSNR 24.389 dB. |
+| Quality | `context-20261118/unroll-probe` | Two repeated 128-update fits at each unroll length | Loss CSV matched at one frame. At four frames, 67 logged losses differed. |
+| Quality | `context-20261118/unroll-values` | Compare named checkpoint tensors and cursor states | One frame matched exactly. Four frames differed by up to 1.08e−7 in parameter/Adam values and 1.43e−4 in recurrent state. |
+| Quality | `context-20261118/replay-1-causal-flip` | Control replay, seed 1, causal FLIP | 640 frames, FLIP 0.18724. |
+| Quality | `context-20261118/replay-2-causal` | Control replay, seed 2, continuous history | 640 frames, mean PSNR 25.543 dB. |
+| Quality | `context-20261118/breadth-2-reset16-flip` | 16 training scenes, seed 2, reset16 FLIP | 640 frames, FLIP 0.21972. |
+| Quality | `context-20261118/repeat-1-causal` | Same-build repeat, seed 1, continuous history | 640 frames, mean PSNR 25.607 dB. |
+| Quality | `context-20261118/breadth-2-noise-a` | 16 training scenes, seed 2, primary noise stream | 192 frames, mean PSNR 25.428 dB. |
+| Quality | `context-20261118/breadth-2-noise-b` | 16 training scenes, seed 2, independent noise stream | 192 frames, mean PSNR 25.404 dB. |
+| Quality | `context-20261118/breadth-2-center` | 16 training scenes, seed 2, cold center crop | 8 frames, mean PSNR 22.362 dB. |
+| Quality | `context-20261118/breadth-report` | Paired 16-scene evaluation | Same two seeds, controls and protocols. See [results](crop-context.md). |
+| Quality | `context-20261118/replay-2-causal-flip` | Control replay, seed 2, causal FLIP | 640 frames, FLIP 0.20469. |
+| Quality | `context-20261118/repeat-1-causal-flip` | Same-build repeat, seed 1, causal FLIP | 640 frames, FLIP 0.19477. |
+| Quality | `context-20261118/replay-report` | Replayed controls, including a same-executable seed-1 pair | Held training captures, seed, sampler and schedule fixed. See [repeatability](crop-context.md#training-repeatability). |
+| Quality | `context-20261118/evidence` | Export both paired comparisons | Frame metrics, crop ratios, lighting and noise diagnostics linked to checkpoints and full reports. |
+| Quality | `context-20261118/publication` | Verify repository numbers and pictures | README metrics, figure hashes and gate decisions verified. Scoring tests passed with one optional artifact case skipped. |
 | Quality | `quality-noise-20261118/build` | Pinned release trainer and capture tool | Built in a separate target directory. |
 | Quality | `quality-noise-20261118/train-static-a` | Four static scenes, offset 0 | 96 jittered frames with 1-spp inputs and 1,024-spp references. |
 | Quality | `quality-noise-20261118/train-moving-a` | Four moving scenes, offset 0 | 96 jittered frames with 1-spp inputs and 1,024-spp references. |

@@ -26,20 +26,29 @@ the single F1 fallback. [Results and gates](docs/phase5-results.md).
 
 ### F1 development
 
-On the original ten development sequences, F1 trained on eight procedural
-scenes for 12,000 updates still trails the corrected v3 control. Both saw the
-same 640 frames at 128×128 → 256×256 with 1-spp input and 4,096-spp targets.
-These numbers use continuous history within each sequence.
+Against the prespecified controls, doubling the training scenes improved F1’s
+perceptual score for both seeds. Warm
+PSNR rose 0.67 dB for seed 1 and fell 0.53 dB for seed 2. Widening the input
+around the same target pixels made mean FLIP worse for both seeds. Repeating
+the identical seed-1 control command also moved warm PSNR by 0.63 dB.
 
-| Metric | Corrected v3 | F1, 12k |
-|---|---:|---:|
-| Mean PSNR ↑ | 30.27 dB | 25.91 dB |
-| Mean FLIP ↓ | 0.10775 | 0.19015 |
-| Motion-compensated temporal MSE ↓ | 0.000359 | 0.000676 |
+All rows use the same ten development sequences, 640 frames, continuous
+history and 4,096-spp references at 256×256. Each F1 cell lists seeds 1 / 2
+after 12,000 updates. The input sizes in the table are training crops.
 
-On a separate eight-scene panel, longer training reduced changing speckle
-but left patches of incorrect lighting. [Fixed F1 pictures, paired
-experiments and next steps](docs/quality-iteration.md#what-the-images-show).
+| Training scenes and LR input | Mean PSNR (dB) ↑ | Mean FLIP ↓ | Temporal MSE ↓ |
+|---|---:|---:|---:|
+| Corrected v3 | 30.27 | 0.10775 | 0.000359 |
+| F1 · 8 scenes · 32×32 | 25.91 / 25.59 | 0.19015 / 0.19588 | 0.000676 / 0.000626 |
+| F1 · 8 scenes · 48×48 | 25.76 / 25.55 | 0.19616 / 0.19696 | 0.000609 / 0.000576 |
+| F1 · 16 scenes · 32×32 | 26.58 / 25.23 | 0.18412 / 0.19464 | 0.000487 / 0.000678 |
+
+The four rows below show static and moving scenes at frames 0 and 23 on a
+separate eight-scene set. Look at the reflections on the large left sphere
+and the bands on the wall in the bottom row. The right column is the
+1,024-spp reference. [Paired results, reset behavior and experiment details](docs/crop-context.md).
+
+![Fixed F1 comparison of two crop sizes and two training scene counts on identical frames](docs/crop-context.png)
 
 ### Published v3 audit
 
@@ -128,7 +137,7 @@ architecture switches or compatibility interpretations of their weights.
 The retained runtime is `ommatidia::transport::native::Native`, config version 4.
 It rejects v3 weights; use the archived executable to reproduce the gallery.
 
-F1 passes 102 regular tests and thirteen GPU gates on both RADV and LavaPipe with
+F1 passes 103 regular tests and thirteen GPU gates on both RADV and LavaPipe with
 zero validation errors, including recurrent HDR/reset parity, f64 gradients,
 production-size directional gradients, mean-gradient accumulation, GPU cursor
 carry, optimizer/cursor resume, caller-encoder parity, reset-motion independence

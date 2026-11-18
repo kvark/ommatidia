@@ -5,7 +5,7 @@ and 0.19015 FLIP** on the original ten development sequences, compared with
 **30.27 dB and 0.10775** for corrected v3. The same 640 frames are now
 reproducible, including authored objects, motion and changing lights.
 Longer training reduces speckle but leaves repeatable errors in the lighting.
-The strongest next test is to enlarge the context around the supervised pixels.
+The follow-up tested wider training context and twice as many scenes with two seeds. [Results and fixed images](crop-context.md).
 
 ## First question
 
@@ -174,7 +174,9 @@ are exploratory.
   (0.00593 versus 0.00648), though only four of eight scenes improved.
   This makes training context worth isolating in the next experiment.
 
-## Next quality experiment
+## Follow-up experiment
+
+Both comparisons below are complete. [Crop context and scene-count results](crop-context.md).
 
 1. Keep the F1 graph, target pixels, one-stream input, crop locations and
    training schedule fixed. Compare the current crop with a larger window
