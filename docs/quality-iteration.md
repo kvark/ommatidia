@@ -52,3 +52,15 @@ If they cannot be recovered, qualify regenerated inputs by hash. Any newly
 captured benchmark requires a matched control before making a quality claim.
 The frozen [Decision A criteria](../PLAN.md#9-phase-5-training-ladder-and-decision-point-a-3-days)
 apply there. Confirmation stays reserved for the selected final model.
+
+## Fixed follow-up on training duration
+
+The first pair improved warm PSNR but missed the mean FLIP gate. Keep the
+single-stream input. Before running the follow-up, fix a single 12,000-update
+fit from scratch, with the same seed, sampler, data and objective as the
+2,000-update control. The planned cosine schedule stretches with the budget.
+Score only the last update against the original control, with the same held-out
+noise pair, image selections, metrics, bootstrap and advancement thresholds.
+Record whether the reference-relative gradient error and the repeatable RGB
+error improve as well. This tests the benefit of more optimization on eight
+training scenes. The official corpus and the v3 comparison remain separate.
