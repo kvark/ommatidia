@@ -10,9 +10,8 @@ One model: a **recurrent kernel/direct-radiance U-Net (v4, F1)**. It reconstruct
 diffuse illumination and specular radiance, then applies observed material albedo
 and emission, learning history blending and a latent recurrent state. At 2x scale
 it has 657,792 parameters and 2.15 convolution GFLOP/frame at 128×128 → 256×256.
-F1 passes correctness checks; its training quality is not yet established.
-Inputs include 1-spp
-low-resolution radiance, motion/jitter and output-resolution primary surfaces.
+Inputs include 1-spp low-resolution radiance, motion/jitter and
+output-resolution primary surfaces.
 
 Before F1, the GPU-cursor training loop reached **7.41 million valid pixel-gradients/s,
 24.77× the earlier loop**, on the RX 7900 XT with the 40-scene profiling corpus.
@@ -24,6 +23,25 @@ The [verified training corpus](docs/training-corpus.md) now contains **200 scene
 the single F1 fallback. [Results and gates](docs/phase5-results.md).
 
 ## Measured results
+
+### F1 development
+
+On the original ten development sequences, F1 trained on eight procedural
+scenes for 12,000 updates still trails the corrected v3 control. Both saw the
+same 640 frames at 128×128 → 256×256 with 1-spp input and 4,096-spp targets.
+These numbers use continuous history within each sequence.
+
+| Metric | Corrected v3 | F1, 12k |
+|---|---:|---:|
+| Mean PSNR ↑ | 30.27 dB | 25.91 dB |
+| Mean FLIP ↓ | 0.10775 | 0.19015 |
+| Motion-compensated temporal MSE ↓ | 0.000359 | 0.000676 |
+
+On a separate eight-scene panel, longer training reduced changing speckle
+but left patches of incorrect lighting. [Fixed F1 pictures, paired
+experiments and next steps](docs/quality-iteration.md#what-the-images-show).
+
+### Published v3 audit
 
 These retained pictures and numbers use the **pre-fix v3 decoder**, not today's
 runtime or a trained v4 model. The checkpoint is unchanged; see the

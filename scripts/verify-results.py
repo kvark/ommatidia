@@ -64,4 +64,19 @@ for audit in manifest["audits"].values():
 for path in shown:
     assert (root / path).is_file(), path
     assert any(e["path"] == path for e in manifest["images"]), path
-print("README images, full-sequence comparisons, development selection and capture visibility agree.")
+
+quality = json.loads((root / "docs/quality-iteration.json").read_text())
+panel = root / "docs/quality-iteration.png"
+assert hashlib.sha256(panel.read_bytes()).hexdigest() == quality["panel_sha256"]
+transfer = quality["historical_development"]
+assert transfer["frames"] == 640 and transfer["sequences"] == 10
+control = json.loads((root / "docs/phase1-results.json").read_text())
+for key, label, decimals, unit in (
+    ("psnr", "Mean PSNR ↑", 2, " dB"),
+    ("flip", "Mean FLIP ↓", 5, ""),
+    ("temporal_mse", "Motion-compensated temporal MSE ↓", 6, ""),
+):
+    v3, f1 = transfer["causal"]["all"][key]
+    assert v3 == control["protocols"]["causal"]["metrics"]["all"][key]["after"]
+    assert f"| {label} | {v3:.{decimals}f}{unit} | {f1:.{decimals}f}{unit} |" in readme
+print("Published v3 evidence, F1 development metrics and comparison pixels agree.")

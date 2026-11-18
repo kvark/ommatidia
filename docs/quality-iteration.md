@@ -1,5 +1,12 @@
 # F1 quality iteration
 
+F1 trained for 12k updates on eight procedural scenes scored **25.91 dB
+and 0.19015 FLIP** on the original ten development sequences, compared with
+**30.27 dB and 0.10775** for corrected v3. The same 640 frames are now
+reproducible, including authored objects, motion and changing lights.
+Longer training reduces speckle but leaves repeatable errors in the lighting.
+The strongest next test is to enlarge the context around the supervised pixels.
+
 ## First question
 
 Does showing the same surface under a second independent 1-spp realization
@@ -77,7 +84,33 @@ all ten sequences. Report the difference from the archived corrected v3
 aggregates, including smooth crops and FLIP. The archived aggregates support
 point differences. Paired intervals against v3 require its per-frame outputs.
 
-## First result
+All five development captures, their six sidecars and the two original ABO
+catalog lists matched their archived SHA-256 values. The five captures total
+2,629,828,928 bytes. They are available at the original paths under
+`runs/quality-week-2026-09-26/data`. Recovery used the existing September
+`target/release/ommatidia-data` (SHA-256 `d33e008c…`), Mesa 26.2.3, the RX
+7900 XT, and the [original per-case settings](archive/quality-week.md#fresh-final-audit-specification)
+with development base seeds 610001 through 650001 in increments of 10,000.
+The procedural and authored-object inputs both reproduced exactly.
+
+| Original development case | 12k F1 causal PSNR ↑ | 12k F1 causal FLIP ↓ |
+|---|---:|---:|
+| Static | 29.11 dB | 0.15199 |
+| Camera motion | 25.64 dB | 0.21623 |
+| Object motion | 25.44 dB | 0.17720 |
+| Moving lights | 24.98 dB | 0.19428 |
+| Authored objects | 24.40 dB | 0.21103 |
+
+On the two original static scenes, increasing training from 2k to 12k raised
+PSNR by 0.67 dB but worsened FLIP from 0.13849 to 0.15199. Across all ten
+scenes, 12k F1's smooth-crop error was **5.78× v3 on cold frames, 9.13× on
+early frames and 4.47× on warm frames**. Both evaluations used the same
+40 predeclared crop/frame selections. Resetting every 16 frames yielded
+24.81 dB and 0.21699 FLIP for F1, versus 29.61 dB and 0.11929 for v3.
+This reset protocol never reaches warm age. Five saved frame-3 reference PNGs
+matched the original digests exactly.
+
+## Independent training noise
 
 At 2k updates, a second input-noise realization cut sensitivity to the input
 samples by **11.5%** (95% interval 7.4–15.8%). The repeatable part of RGB
@@ -88,6 +121,31 @@ Keep the single-stream recipe. The warm PSNR interval excluded zero, so the
 predeclared rule did not trigger a second seed. All intervals here resample
 scenes and describe this training seed only. The repeatable error includes
 any noise in the shared finite-sample reference.
+
+## Training duration on unseen scenes
+
+For seed 1, training the one-stream model longer cut input-noise sensitivity
+by 62% and raised repeatable error by 56%. Cold PSNR rose by 0.75 dB.
+Warm PSNR rose by 0.42 dB, with a paired interval of [−0.06, +0.92] dB.
+The 12k model improved reference-relative gradient error by 7.8%, but mean
+FLIP worsened from 0.18154 to 0.19078. Individual moving-scene final-frame
+PSNR changes were −0.67, +0.10, +1.11 and +0.35 dB. The warm interval
+triggered the predeclared second seed for this duration comparison.
+
+| 2k → 12k, eight unseen scenes | Seed 1 | Seed 2 |
+|---|---:|---:|
+| Cold PSNR change ↑ | +0.75 dB | +0.73 dB |
+| Warm PSNR change ↑ (95% interval) | +0.42 [−0.06, +0.92] dB | −0.18 [−0.78, +0.34] dB |
+| Mean FLIP ↓ | 0.18154 → 0.19078 | 0.17905 → 0.19611 |
+| Temporal MSE change ↓ | −26.3% | −23.9% |
+| Input-noise sensitivity change ↓ | −62.3% | −56.7% |
+| Repeatable RGB error change ↓ | +56.4% | +67.8% |
+
+The longer fit steadied the output in both seeds. Its warm PSNR gain changed
+sign, and its perceptual score worsened in both. Both eight-scene interventions
+missed the quality gates. The 12k checkpoint reproduces the lighting artifacts.
+[Metrics by age, lobe, noise stream, reset protocol and moving-scene final
+frame, with checkpoint and capture identities](quality-iteration.json).
 
 ## What the images show
 
@@ -130,4 +188,6 @@ are exploratory.
    error alone cannot establish a visual improvement.
 3. Carry a successful change into the 60k schedule on the original 200-scene
    corpus. Qualify each regenerated training shard by its archived hash.
+   If wider context misses the quality gates, keep the current crop recipe
+   and test more distinct training scenes at the same optimizer budget.
    Decision A and the separate confirmation set govern gallery publication.

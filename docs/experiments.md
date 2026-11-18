@@ -6,16 +6,62 @@ Only development selects models. Confirmation is reserved for Phase 6.
 
 | Phase | Run | Budget / purpose | Outcome |
 |---|---|---|---|
-| Quality | `quality-noise-20261118/build` | Pinned release trainer and capture tool in a separate build directory | Pending. |
-| Quality | `quality-noise-20261118/train-static-a` | Four static training scenes, noise offset 0 | Pending. |
-| Quality | `quality-noise-20261118/train-moving-a` | Four moving training scenes, noise offset 0 | Pending. |
-| Quality | `quality-noise-20261118/train-static-b` | Four static training scenes, noise offset 512 | Pending. |
-| Quality | `quality-noise-20261118/train-moving-b` | Four moving training scenes, noise offset 512 | Pending. |
-| Quality | `quality-noise-20261118/dev-static` | Four static development scenes, noise offset 0 | Pending. |
-| Quality | `quality-noise-20261118/dev-moving` | Four moving development scenes, noise offset 0 | Pending. |
-| Quality | `quality-noise-20261118/admission` | Check split, reference, guide and path-sample identity before training | Pending. |
-| Quality | `quality-noise-20261118/dev-static-b` | Second realization for held-out static noise sensitivity | Pending. |
-| Quality | `quality-noise-20261118/dev-moving-b` | Second realization for held-out moving noise sensitivity | Pending. |
+| Quality | `quality-noise-20261118/build` | Pinned release trainer and capture tool | Built in a separate target directory. |
+| Quality | `quality-noise-20261118/train-static-a` | Four static scenes, offset 0 | 96 jittered frames with 1-spp inputs and 1,024-spp references. |
+| Quality | `quality-noise-20261118/train-moving-a` | Four moving scenes, offset 0 | 96 jittered frames with 1-spp inputs and 1,024-spp references. |
+| Quality | `quality-noise-20261118/train-static-b` | Four static scenes, offset 512 | 96 jittered frames with 1-spp inputs and 1,024-spp references. |
+| Quality | `quality-noise-20261118/train-moving-b` | Four moving scenes, offset 512 | 96 jittered frames with 1-spp inputs and 1,024-spp references. |
+| Quality | `quality-noise-20261118/dev-static` | Four static scenes, offset 0 | 96 jittered frames with 1-spp inputs and 1,024-spp references. |
+| Quality | `quality-noise-20261118/dev-moving` | Four moving scenes, offset 0 | 96 jittered frames with 1-spp inputs and 1,024-spp references. |
+| Quality | `quality-noise-20261118/dev-static-b` | Four static scenes, offset 512 | 96 jittered frames with 1-spp inputs and 1,024-spp references. |
+| Quality | `quality-noise-20261118/dev-moving-b` | Four moving scenes, offset 512 | 96 jittered frames with 1-spp inputs and 1,024-spp references. |
+| Quality | `quality-noise-20261118/admission` | Independent-noise capture and split checks | All 384 frame pairs passed. Identical targets, emission and guides across 16 disjoint scenes. |
+| Quality | `quality-noise-20261118/s1-one` | F1 seed 1, 2,000 updates, one noise stream | Finite checkpoint. Reload reproduced all 192 frame scores. SHA-256 `23374fd37878…`. |
+| Quality | `quality-noise-20261118/s1-two` | F1 seed 1, 2,000 updates, two noise streams | Finite checkpoint. Reload reproduced all 192 frame scores. SHA-256 `f0bd8b2a2cab…`. |
+| Quality | `quality-noise-20261118/s1-one-causal` | Reload, render and score development frames | 192 frames, PSNR 25.073 dB, FLIP 0.18154. |
+| Quality | `quality-noise-20261118/legacy-static` | Recover original static development capture | 128 frames. OMD and transport metadata match their archived hashes. |
+| Quality | `quality-noise-20261118/s1-two-causal` | Reload, render and score development frames | 192 frames, PSNR 25.273 dB, FLIP 0.18184. |
+| Quality | `quality-noise-20261118/s1-one-reset16` | Reload, render and score development frames | 192 frames, PSNR 24.464 dB, FLIP 0.19296. |
+| Quality | `quality-noise-20261118/s1-two-reset16` | Reload, render and score development frames | 192 frames, PSNR 24.670 dB, FLIP 0.19348. |
+| Quality | `quality-noise-20261118/s1-one-repeat` | Causal replay on the second development-noise stream | 192 finite outputs with identical reference pixels. |
+| Quality | `quality-noise-20261118/s1-two-repeat` | Causal replay on the second development-noise stream | 192 finite outputs with identical reference pixels. |
+| Quality | `quality-noise-20261118/long-one` | F1 seed 1, 12,000 updates, one noise stream | Finite checkpoint. Reload reproduced all 192 frame scores. SHA-256 `6d4bd24ee38d…`. |
+| Quality | `quality-noise-20261118/s1-comparison` | Paired whole-sequence bootstrap | Warm PSNR difference +0.172 dB [+0.091, +0.262]. |
+| Quality | `quality-noise-20261118/s1-one-legacy` | Reload, render and score original static scenes | 128 frames, PSNR 28.447 dB, FLIP 0.13849. |
+| Quality | `quality-noise-20261118/catalog-recovery` | Reproduce original ABO training and development catalog files | Both archived catalog SHA-256 values matched. |
+| Quality | `quality-noise-20261118/legacy-camera` | Recover original camera development capture | 128 frames. OMD and transport metadata match their archived hashes. |
+| Quality | `quality-noise-20261118/metric-tests` | Frame, crop and FLIP scoring tests | 21 passed, two optional artifact-dependent cases skipped. |
+| Quality | `quality-noise-20261118/legacy-objects` | Recover original objects development capture | 128 frames. OMD and transport metadata match their archived hashes. |
+| Quality | `quality-noise-20261118/long-one-causal` | Reload, render and score development frames | 192 frames, PSNR 25.388 dB, FLIP 0.19078. |
+| Quality | `quality-noise-20261118/long-one-reset16` | Reload, render and score development frames | 192 frames, PSNR 24.797 dB, FLIP 0.20380. |
+| Quality | `quality-noise-20261118/panel` | Preselected native-resolution image panel | 16 tiles agree pixel-for-pixel with evaluation PNGs. |
+| Quality | `quality-noise-20261118/long-one-repeat` | Causal replay on the second development-noise stream | 192 finite outputs with identical reference pixels. |
+| Quality | `quality-noise-20261118/long-comparison` | Paired whole-sequence bootstrap | Warm PSNR difference +0.423 dB [-0.060, +0.915]. |
+| Quality | `quality-noise-20261118/long-one-legacy` | Reload, render and score original static scenes | 128 frames, PSNR 29.114 dB, FLIP 0.15199. |
+| Quality | `quality-noise-20261118/legacy-comparison` | Paired whole-sequence bootstrap | Warm PSNR difference +0.788 dB [+0.328, +1.248]. |
+| Quality | `quality-noise-20261118/report` | Audit seed-1 training, scoring and static restoration | Three models, matched samplers and independent reloads verified. |
+| Quality | `quality-noise-20261118/grid` | Explore screen-position dependence in input noise and F1 outputs | Cold 2k output-noise boundary ratio 2.23 versus raw LR 0.98. |
+| Quality | `quality-noise-20261118/legacy-lights` | Recover original lights development capture | 128 frames. OMD and transport metadata match their archived hashes. |
+| Quality | `quality-noise-20261118/context` | Compare cold center pixels with 32² and 64² LR context | Mean 12k prediction-difference MSE 0.000667 across eight scenes. |
+| Quality | `quality-noise-20261118/verification` | Check official FLIP fixture and published evidence | Four FLIP tests passed, mean 0.159715. Published evidence verified. |
+| Quality | `quality-noise-20261118/legacy-catalog` | Recover original catalog development capture | 128 frames. OMD and transport metadata match their archived hashes. |
+| Quality | `quality-noise-20261118/restore` | Restore all verified inputs at the declared benchmark paths | Five OMDs and all eight associated metadata/catalog files verified. |
+| Quality | `quality-noise-20261118/s2-one` | F1 seed 2, 2,000 updates, one noise stream | Finite checkpoint. Reload reproduced all 192 frame scores. SHA-256 `73adf58eb49a…`. |
+| Quality | `quality-noise-20261118/development-causal` | Original 10-sequence development evaluation | 640 frames, mean PSNR 25.914 dB. |
+| Quality | `quality-noise-20261118/s2-long` | F1 seed 2, 12,000 updates, one noise stream | Finite checkpoint. Reload reproduced all 192 frame scores. SHA-256 `a4be12d481ba…`. |
+| Quality | `quality-noise-20261118/development-causal-scored` | Official FLIP on original development frames | 640 frames, mean FLIP 0.19015. |
+| Quality | `quality-noise-20261118/development-reset16` | Original 10-sequence development evaluation | 640 frames, mean PSNR 24.814 dB. |
+| Quality | `quality-noise-20261118/development-reset16-scored` | Official FLIP on original development frames | 640 frames, mean FLIP 0.21699. |
+| Quality | `quality-noise-20261118/development-report` | Validate ten original scenes, references and fixed crops against corrected v3 aggregates | Both protocols, 640 frames and 40 crop selections each. |
+| Quality | `quality-noise-20261118/s2-one-causal` | Reload, render and score development frames | 192 frames, PSNR 25.203 dB, FLIP 0.17905. |
+| Quality | `quality-noise-20261118/s2-long-causal` | Reload, render and score development frames | 192 frames, PSNR 25.081 dB, FLIP 0.19611. |
+| Quality | `quality-noise-20261118/s2-one-reset16` | Reload, render and score development frames | 192 frames, PSNR 24.565 dB, FLIP 0.19149. |
+| Quality | `quality-noise-20261118/s2-long-reset16` | Reload, render and score development frames | 192 frames, PSNR 24.472 dB, FLIP 0.21000. |
+| Quality | `quality-noise-20261118/s2-one-repeat` | Causal replay on the second development-noise stream | 192 finite outputs with identical reference pixels. |
+| Quality | `quality-noise-20261118/s2-long-repeat` | Causal replay on the second development-noise stream | 192 finite outputs with identical reference pixels. |
+| Quality | `quality-noise-20261118/s2-comparison` | Paired whole-sequence bootstrap | Warm PSNR difference -0.177 dB [-0.780, +0.343]. |
+| Quality | `quality-noise-20261118/final-report` | Audit both seeds and assemble the quality evidence | Five checkpoints verified. [Results](quality-iteration.md). |
+| Quality | `quality-noise-20261118/publication` | Verify README numbers, image hashes and final report | Archived v3 evidence and F1 development numbers and pixels agree. |
 | Integration | `meganeura-20261118/check` | Locked workspace and all targets on the new renderer/compiler pins | Compile identified the new Blade compute pipeline subgroup field. |
 | Integration | `meganeura-20261118/workspace` | Locked all-target Clippy and workspace tests with updated pipeline descriptors | Passed Clippy and all 102 regular tests. |
 | Integration | `meganeura-20261118/radv` | Debug reconstruction, training cursors/resume and caller-encoder example on RX 7900 XT | All 13 passed, one submission, zero validation errors. |

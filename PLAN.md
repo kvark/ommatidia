@@ -5,8 +5,9 @@ is implemented. Seed 1 started on September 29. Its final development scores
 are unverified as of November 18. Owner: kvark.
 Read all of §0–§3 before starting. Open decisions for the owner are in §12.
 
-The [November quality plan](docs/quality-iteration.md) tests the approved F1
-model on a reproducible development panel while the September artifacts are missing.
+The [November quality experiments](docs/quality-iteration.md) test F1 on
+independent noisy captures and on all ten restored September development
+sequences.
 
 Implementation started from `origin/main` at `232a278`, after the owner merged
 PRs #21 (this plan) and #22 (the rebaseline). No duplicate merge is needed.
