@@ -6,6 +6,16 @@ Only development selects models. Confirmation is reserved for Phase 6.
 
 | Phase | Run | Budget / purpose | Outcome |
 |---|---|---|---|
+| Quality | `quality-noise-20261118/build` | Pinned release trainer and capture tool in a separate build directory | Pending. |
+| Quality | `quality-noise-20261118/train-static-a` | Four static training scenes, noise offset 0 | Pending. |
+| Quality | `quality-noise-20261118/train-moving-a` | Four moving training scenes, noise offset 0 | Pending. |
+| Quality | `quality-noise-20261118/train-static-b` | Four static training scenes, noise offset 512 | Pending. |
+| Quality | `quality-noise-20261118/train-moving-b` | Four moving training scenes, noise offset 512 | Pending. |
+| Quality | `quality-noise-20261118/dev-static` | Four static development scenes, noise offset 0 | Pending. |
+| Quality | `quality-noise-20261118/dev-moving` | Four moving development scenes, noise offset 0 | Pending. |
+| Quality | `quality-noise-20261118/admission` | Check split, reference, guide and path-sample identity before training | Pending. |
+| Quality | `quality-noise-20261118/dev-static-b` | Second realization for held-out static noise sensitivity | Pending. |
+| Quality | `quality-noise-20261118/dev-moving-b` | Second realization for held-out moving noise sensitivity | Pending. |
 | Integration | `meganeura-20261118/check` | Locked workspace and all targets on the new renderer/compiler pins | Compile identified the new Blade compute pipeline subgroup field. |
 | Integration | `meganeura-20261118/workspace` | Locked all-target Clippy and workspace tests with updated pipeline descriptors | Passed Clippy and all 102 regular tests. |
 | Integration | `meganeura-20261118/radv` | Debug reconstruction, training cursors/resume and caller-encoder example on RX 7900 XT | All 13 passed, one submission, zero validation errors. |
