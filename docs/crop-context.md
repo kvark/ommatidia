@@ -7,6 +7,16 @@ also moved warm PSNR by 0.63 dB.
 
 ## Results on the original development set
 
+The absolute means below use all 640 development frames under continuous
+history. Each F1 entry gives seeds 1 and 2.
+
+| Training scenes and LR input | Mean PSNR (dB) ↑ | Mean FLIP ↓ | Temporal MSE ↓ |
+|---|---:|---:|---:|
+| Corrected v3 | 30.27 | 0.10775 | 0.000359 |
+| F1 · 8 scenes · 32×32 | 25.91 / 25.59 | 0.19015 / 0.19588 | 0.000676 / 0.000626 |
+| F1 · 8 scenes · 48×48 | 25.76 / 25.55 | 0.19616 / 0.19696 | 0.000609 / 0.000576 |
+| F1 · 16 scenes · 32×32 | 26.58 / 25.23 | 0.18412 / 0.19464 | 0.000487 / 0.000678 |
+
 Both wider-context runs lost warm PSNR and increased mean FLIP. Cold PSNR
 improved, and temporal MSE fell, but the wider window also increased warm
 smooth-region MSE by 24% and 31%. The 16-scene runs lowered mean FLIP in
@@ -91,10 +101,9 @@ trajectory and temporal loss, so this check does not identify a faulty kernel.
 Keep the original training crop as the default. The data result supports
 investigating coverage of lighting and reflective objects. It falls short of
 the two-seed threshold for carrying this intervention into the 60k schedule.
-For the next quality iteration, replay one saved four-frame minibatch from
-identical model and Adam state and compare the recurrent warp gradients
-against a fixed-order reference. Measure the effect of any correction on
-12k repeatability and on held-out FLIP and warm PSNR. The 200-scene,
+The follow-up replayed one saved four-frame minibatch from the same model
+and Adam state, checked the recurrent gradient against a CPU reference and
+compared independent 12k fits. [Results and training-data comparison](warp-gradient.md). The 200-scene,
 60k F1 benchmark remains the production-scale comparison.
 
 The [machine-readable results](crop-context.json) include both reset protocols,

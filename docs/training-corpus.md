@@ -26,6 +26,10 @@ including verifier development failures, is in the [ledger](experiments.md).
 The exhaustive data audit took 6.95 minutes; the cold-start mapped-loader
 admission check took 9.18 minutes. Neither measures training update throughput.
 
+The November quality pilot recovered the first 20 of these scenes on this
+workstation. All five captures, five transport sidecars and the catalog
+selection matched the archived SHA-256 values. [F1 data comparison](warp-gradient.md).
+
 ## Reproduction and admission
 
 `scripts/phase4-corpus.py` derives commands from the recorded

@@ -6,6 +6,92 @@ Only development selects models. Confirmation is reserved for Phase 6.
 
 | Phase | Run | Budget / purpose | Outcome |
 |---|---|---|---|
+| Quality | `warp-20261119/freeze` | Resume control to capture a training transaction | Saved step 5,005, next cursors 1 and 0. |
+| Quality | `warp-20261119/geometry` | Measure per-tap source collisions | Maximum whole-frame fan-in 23 on static and 7 on moving training captures, including sequence starts. |
+| Quality | `warp-20261119/freeze-motion` | Resume control to capture a training transaction | Saved step 5,011, next cursors 2 and 3. |
+| Quality | `warp-20261119/frozen-batch` | Resume control to capture a training transaction | Saved step 5,035, next cursors 5 and 15. |
+| Quality | `warp-20261119/build-ordered` | Compile isolated Meganeura experiment | Release trainer built with the fixed-order scalar reduction. |
+| Quality | `warp-20261119/ordered-step-a` | One frozen four-frame update | Seed 1, update 5,036, checkpoint `a61f375c3626…`. |
+| Quality | `warp-20261119/ordered-step-b` | One frozen four-frame update | Seed 1, update 5,036, checkpoint `a61f375c3626…`. |
+| Quality | `warp-20261119/atomic-step-a` | One frozen four-frame update | Seed 1, update 5,036, checkpoint `345bd2245a00…`. |
+| Quality | `warp-20261119/atomic-step-b` | One frozen four-frame update | Seed 1, update 5,036, checkpoint `02ec5a67b56a…`. |
+| Quality | `warp-20261119/ordered-1a` | Fit F1 from scratch | Seed 1, update 12,000, checkpoint `bf34917069f7…`. |
+| Quality | `warp-20261119/build-probe-atomic` | Build gradient diagnostic, atomic | Release build passed. |
+| Quality | `warp-20261119/probe-atomic` | Frozen minibatch, 16 gradient replays | Maximum parameter-gradient spread 5.82e-10, 0 out-of-bound sums. |
+| Quality | `warp-20261119/build-probe-ordered` | Build gradient diagnostic, ordered | Release build passed. |
+| Quality | `warp-20261119/probe-ordered` | Frozen minibatch, 16 gradient replays | Maximum parameter-gradient spread 0, 0 out-of-bound sums. |
+| Quality | `warp-20261119/ordered-1b` | Fit F1 from scratch | Seed 1, update 12,000, checkpoint `bf34917069f7…`. |
+| Quality | `warp-20261119/ordered-1a-causal` | causal development evaluation | 640 frames, mean PSNR 25.643 dB. |
+| Quality | `warp-20261119/recover-static` | Regenerate archived static training capture | Four 64-frame scenes. Capture and sidecar hashes verified before training. |
+| Quality | `warp-20261119/ordered-1a-causal-flip` | Official FLIP on development | 640 frames, mean FLIP 0.19316. |
+| Quality | `warp-20261119/replay-1-reset16` | periodic-cuts development evaluation | 640 frames, mean PSNR 24.782 dB. |
+| Quality | `warp-20261119/ordered-2` | Fit F1 from scratch | Seed 2, update 12,000, checkpoint `6ae08a433518…`. |
+| Quality | `warp-20261119/repeatability` | Compare saved transactions by tensor name | All 120 tensors, every loss and every cursor byte matched across ordered 12k seed-1 fits. |
+| Quality | `warp-20261119/recover-camera` | Regenerate archived camera training capture | Four 64-frame scenes. Capture and sidecar hashes verified before training. |
+| Quality | `warp-20261119/replay-1-reset16-flip` | Official FLIP on development | 640 frames, mean FLIP 0.21618. |
+| Quality | `warp-20261119/ordered-1a-reset16` | periodic-cuts development evaluation | 640 frames, mean PSNR 24.643 dB. |
+| Quality | `warp-20261119/recover-objects` | Regenerate archived objects training capture | Four 64-frame scenes. Capture and sidecar hashes verified before training. |
+| Quality | `warp-20261119/verify-build-atomic` | Build gradient diagnostic, atomic | Release build passed. |
+| Quality | `warp-20261119/verify-probe-atomic` | Frozen minibatch, 16 gradient replays | Maximum parameter-gradient spread 5.24e-10, 0 out-of-bound sums. |
+| Quality | `warp-20261119/synthetic-lavapipe-atomic` | LavaPipe synthetic scalar reduction | 23 of 32,768 sums differ from ascending f32, all within the f64 roundoff bound. |
+| Quality | `warp-20261119/verify-build-ordered` | Build gradient diagnostic, ordered | Release build passed. |
+| Quality | `warp-20261119/verify-probe-ordered` | Frozen minibatch, 16 gradient replays | Maximum parameter-gradient spread 0, 0 out-of-bound sums. |
+| Quality | `warp-20261119/synthetic-lavapipe-ordered` | LavaPipe synthetic scalar reduction | 0 of 32,768 sums differ from ascending f32, all within the f64 roundoff bound. |
+| Quality | `warp-20261119/workspace-checks` | Workspace and evidence verification | All recorded checks passed. |
+| Quality | `warp-20261119/ordered-1a-reset16-flip` | Official FLIP on development | 640 frames, mean FLIP 0.21687. |
+| Quality | `warp-20261119/final-build-atomic` | Build gradient diagnostic, atomic | Release build passed. |
+| Quality | `warp-20261119/final-probe-atomic` | Frozen minibatch, 16 gradient replays | Maximum parameter-gradient spread 5.82e-10, 0 out-of-bound sums. |
+| Quality | `warp-20261119/replay-2-reset16` | periodic-cuts development evaluation | 640 frames, mean PSNR 24.445 dB. |
+| Quality | `warp-20261119/final-lavapipe-atomic` | LavaPipe synthetic scalar reduction | 18 of 32,768 sums differ from ascending f32, all within the f64 roundoff bound. |
+| Quality | `warp-20261119/final-build-ordered` | Build gradient diagnostic, ordered | Release build passed. |
+| Quality | `warp-20261119/final-probe-ordered` | Frozen minibatch, 16 gradient replays | Maximum parameter-gradient spread 0, 0 out-of-bound sums. |
+| Quality | `warp-20261119/final-lavapipe-ordered` | LavaPipe synthetic scalar reduction | 0 of 32,768 sums differ from ascending f32, all within the f64 roundoff bound. |
+| Quality | `warp-20261119/recover-lights` | Regenerate archived lights training capture | Four 64-frame scenes. Capture and sidecar hashes verified before training. |
+| Quality | `warp-20261119/replay-2-reset16-flip` | Official FLIP on development | 640 frames, mean FLIP 0.23048. |
+| Quality | `warp-20261119/replay-1-pictures` | causal development evaluation | 192 frames, mean PSNR 24.800 dB. |
+| Quality | `warp-20261119/repeat-1-pictures` | causal development evaluation | 192 frames, mean PSNR 25.210 dB. |
+| Quality | `warp-20261119/ordered-1a-pictures` | causal development evaluation | 192 frames, mean PSNR 25.435 dB. |
+| Quality | `warp-20261119/ordered-2-causal` | causal development evaluation | 640 frames, mean PSNR 23.289 dB. |
+| Quality | `warp-20261119/recover-catalog` | Regenerate archived catalog training capture | Four 64-frame scenes. Capture and sidecar hashes verified before training. |
+| Quality | `warp-20261119/ordered-1a-noise-b` | causal development evaluation | 192 frames, mean PSNR 25.395 dB. |
+| Quality | `warp-20261119/ordered-2-noise-a` | causal development evaluation | 192 frames, mean PSNR 25.102 dB. |
+| Quality | `warp-20261119/ordered-2-noise-b` | causal development evaluation | 192 frames, mean PSNR 25.077 dB. |
+| Quality | `warp-20261119/ordered-2-causal-flip` | Official FLIP on development | 640 frames, mean FLIP 0.23330. |
+| Quality | `warp-20261119/ordered-2-reset16` | periodic-cuts development evaluation | 640 frames, mean PSNR 23.423 dB. |
+| Quality | `warp-20261119/native-1` | Fit F1 from scratch | Seed 1, update 12,000, checkpoint `abec7987ed14…`. |
+| Quality | `warp-20261119/restore-training` | Restore archived training paths | Five captures, five sidecars and catalog selection matched the frozen manifest. |
+| Quality | `warp-20261119/shipping-1` | Fit F1 from scratch | Seed 1, update 12,000, checkpoint `d7aa7d598a93…`. |
+| Quality | `warp-20261119/ordered-2-reset16-flip` | Official FLIP on development | 640 frames, mean FLIP 0.24339. |
+| Quality | `warp-20261119/order-report` | Two-seed reduction-order comparison | Paired 640-frame scores under both reset protocols and all 40 fixed crop/frame selections. |
+| Quality | `warp-20261119/shipping-2` | Fit F1 from scratch | Seed 2, update 12,000, checkpoint `2def09c81d8a…`. |
+| Quality | `warp-20261119/native-2` | Fit F1 from scratch | Seed 2, update 12,000, checkpoint `e6cc93eec2c5…`. |
+| Quality | `warp-20261119/native-1-noise-b` | causal development evaluation | 192 frames, mean PSNR 25.781 dB. |
+| Quality | `warp-20261119/native-1-causal` | causal development evaluation | 640 frames, mean PSNR 27.872 dB. |
+| Quality | `warp-20261119/native-1-causal-flip` | Official FLIP on development | 640 frames, mean FLIP 0.15352. |
+| Quality | `warp-20261119/panel` | Fixed seed-1 comparison images | Every displayed tile matches the same display transform of its recorded linear output. |
+| Quality | `warp-20261119/native-1-reset16` | periodic-cuts development evaluation | 640 frames, mean PSNR 26.555 dB. |
+| Quality | `warp-20261119/shipping-1-causal` | causal development evaluation | 640 frames, mean PSNR 27.945 dB. |
+| Quality | `warp-20261119/native-1-reset16-flip` | Official FLIP on development | 640 frames, mean FLIP 0.18205. |
+| Quality | `warp-20261119/native-1-pictures` | causal development evaluation | 192 frames, mean PSNR 25.910 dB. |
+| Quality | `warp-20261119/gpu-checks` | Debug transport and cursor validation | All 13 GPU tests passed on each of RADV and LavaPipe. |
+| Quality | `warp-20261119/independent-noise-1` | Two independent input-noise streams | 192 paired frames with matched references. Input-dependent and repeatable error scored separately. |
+| Quality | `warp-20261119/panel-small` | Fixed seed-1 comparison images | Every displayed tile matches the same display transform of its recorded linear output. |
+| Quality | `warp-20261119/shipping-1-causal-flip` | Official FLIP on development | 640 frames, mean FLIP 0.15160. |
+| Quality | `warp-20261119/shipping-2-causal` | causal development evaluation | 640 frames, mean PSNR 27.755 dB. |
+| Quality | `warp-20261119/native-2-causal` | causal development evaluation | 640 frames, mean PSNR 27.653 dB. |
+| Quality | `warp-20261119/native-2-noise-a` | causal development evaluation | 192 frames, mean PSNR 26.059 dB. |
+| Quality | `warp-20261119/native-2-noise-b` | causal development evaluation | 192 frames, mean PSNR 25.918 dB. |
+| Quality | `warp-20261119/independent-noise-2` | Two independent input-noise streams | 192 paired frames with matched references. Input-dependent and repeatable error scored separately. |
+| Quality | `warp-20261119/native-2-causal-flip` | Official FLIP on development | 640 frames, mean FLIP 0.15398. |
+| Quality | `warp-20261119/native-2-reset16` | periodic-cuts development evaluation | 640 frames, mean PSNR 26.221 dB. |
+| Quality | `warp-20261119/shipping-2-causal-flip` | Official FLIP on development | 640 frames, mean FLIP 0.15208. |
+| Quality | `warp-20261119/shipping-report` | Shipping trainer, two-seed causal transfer | Compared two native-resolution fits with the same-executable eight-scene replays. |
+| Quality | `warp-20261119/native-2-reset16-flip` | Official FLIP on development | 640 frames, mean FLIP 0.18621. |
+| Quality | `warp-20261119/native-report` | Two-seed training-data comparison | Paired 640-frame scores under both reset protocols and all 40 fixed crop/frame selections. |
+| Quality | `warp-20261119/evidence` | Verify and assemble measured results | Source reconstruction, checkpoint identities, noise-pair references and panel hashes passed. |
+| Quality | `warp-20261119/publication-checks` | Check code and published evidence | Rust checks passed. Python test discovery found zero hyphenated suites and exited 5. Explicit suites ran below. |
+| Quality | `warp-20261119/evidence-tests` | Run explicit Python suites and check the README | Tests and picture/number verification passed. The optional historical crop report was unavailable. FLIP fixtures ran separately. |
+| Quality | `warp-20261119/flip-fixtures` | Official NVlabs reference images | All four wrapper and upstream mean checks passed. |
 | Quality | `context-20261118/control-2-center` | Control, seed 2, cold center crop | 8 frames, mean PSNR 22.639 dB. |
 | Quality | `context-20261118/control-2-causal` | Control, seed 2, continuous history | 640 frames, mean PSNR 25.592 dB. |
 | Quality | `context-20261118/build` | Compile the release trainer | Built with the locked dependencies. |

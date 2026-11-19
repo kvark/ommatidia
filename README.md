@@ -26,29 +26,35 @@ the single F1 fallback. [Results and gates](docs/phase5-results.md).
 
 ### F1 development
 
-Against the prespecified controls, doubling the training scenes improved F1’s
-perceptual score for both seeds. Warm
-PSNR rose 0.67 dB for seed 1 and fell 0.53 dB for seed 2. Widening the input
-around the same target pixels made mean FLIP worse for both seeds. Repeating
-the identical seed-1 control command also moved warm PSNR by 0.63 dB.
+F1 produces cleaner moving frames when trained on the five scene types at
+the benchmark resolution. The 20-scene set includes moving lights and
+authored objects. The eight-scene set contains smaller procedural scenes.
+Both use 1-spp inputs, 1,024-spp training targets and 12,000 updates.
 
-All rows use the same ten development sequences, 640 frames, continuous
-history and 4,096-spp references at 256×256. Each F1 cell lists seeds 1 / 2
-after 12,000 updates. The input sizes in the table are training crops.
+The table uses the same ten development sequences, 640 frames, continuous
+history and 4,096-spp references at 256×256. Each F1 cell gives seeds 1 / 2
+trained from scratch with the shipping Meganeura kernel.
 
-| Training scenes and LR input | Mean PSNR (dB) ↑ | Mean FLIP ↓ | Temporal MSE ↓ |
+| Training data | Mean PSNR (dB) ↑ | Mean FLIP ↓ | Temporal MSE ↓ |
 |---|---:|---:|---:|
 | Corrected v3 | 30.27 | 0.10775 | 0.000359 |
-| F1 · 8 scenes · 32×32 | 25.91 / 25.59 | 0.19015 / 0.19588 | 0.000676 / 0.000626 |
-| F1 · 8 scenes · 48×48 | 25.76 / 25.55 | 0.19616 / 0.19696 | 0.000609 / 0.000576 |
-| F1 · 16 scenes · 32×32 | 26.58 / 25.23 | 0.18412 / 0.19464 | 0.000487 / 0.000678 |
+| F1 · 8 procedural scenes | 26.08 / 25.54 | 0.18724 / 0.20469 | 0.000575 / 0.000578 |
+| F1 · 20 native-resolution scenes | 27.94 / 27.76 | 0.15160 / 0.15208 | 0.000367 / 0.000433 |
 
-The four rows below show static and moving scenes at frames 0 and 23 on a
-separate eight-scene set. Look at the reflections on the large left sphere
-and the bands on the wall in the bottom row. The right column is the
-1,024-spp reference. [Paired results, reset behavior and experiment details](docs/crop-context.md).
+The 20-scene fits gained **1.87 / 2.21 dB** over the eight-scene controls.
+The gain also held with fixed-order warp gradients, which made a repeated
+12k fit bit-identical. On eight separate scenes with two independent 1-spp
+inputs, those models reduced output variation from path noise by
+39% / 18%. Corrected v3 still leads on the full development benchmark.
+[Reset behavior, fixed crop errors, noise measurements and training details](docs/warp-gradient.md).
 
-![Fixed F1 comparison of two crop sizes and two training scene counts on identical frames](docs/crop-context.png)
+The pictures compare the two fixed-order seed-1 models on complete
+256×256 development frames.
+Look at the floor under the moving camera, the wall behind the lights and
+the chair cushions. The larger training set reduces blotching. The
+reset frame still shows square patches and the chair seams remain blurred.
+
+![Eight-scene F1, 20-scene F1 and 4,096-spp reference on four fixed development frames](docs/warp-gradient.png)
 
 ### Published v3 audit
 
