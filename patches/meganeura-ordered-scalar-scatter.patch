@@ -1,0 +1,102 @@
+diff --git a/src/compile/emit.rs b/src/compile/emit.rs
+index 0c7fa9d..c563154 100644
+--- a/src/compile/emit.rs
++++ b/src/compile/emit.rs
+@@ -1988,3 +1988,33 @@ impl<'a> Compiler<'a> {
+                 let params = vec![total, seq_len, embed_dim, 0];
+-                if u64::from(vocab_size as u32) * u64::from(seq_len) > 1_000_000 {
++                let large = u64::from(vocab_size as u32) * u64::from(seq_len) > 1_000_000;
++                if large && embed_dim == 1 {
++                    // One head per output row and one link per input row.
++                    let lists = self.alloc_buffer((vocab_size + seq_len as usize) * 4);
++                    self.plan.dispatches.push(Dispatch {
++                        shader: ShaderEntry::Generated,
++                        workgroups: [total.div_ceil(256), 1, 1],
++                        input_buffers: vec![src],
++                        output_buffer: lists,
++                        params: vec![total, 0, 0, 0],
++                        kernel: Kernel::Pointwise(PointwiseDAG {
++                            n_inputs: 1,
++                            ops: vec![Pw::const_f32(0.0)],
++                            output: 0,
++                        }),
++                        ..Default::default()
++                    });
++                    for (mode, count, inputs, output) in [
++                        (3, seq_len, vec![indices, src, lists], lists),
++                        (4, total, vec![indices, src, lists], out_buf),
++                    ] {
++                        self.plan.dispatches.push(Dispatch {
++                            shader: ShaderEntry::ScatterAddAtomic,
++                            workgroups: [count.div_ceil(256), 1, 1],
++                            input_buffers: inputs,
++                            output_buffer: output,
++                            params: vec![total, seq_len, 1, mode],
++                            ..Default::default()
++                        });
++                    }
++                } else if large {
+                     self.plan.dispatches.push(Dispatch {
+diff --git a/src/shaders/scatter_add_atomic.wgsl b/src/shaders/scatter_add_atomic.wgsl
+index 8c6f95b..f6e91e1 100644
+--- a/src/shaders/scatter_add_atomic.wgsl
++++ b/src/shaders/scatter_add_atomic.wgsl
+@@ -9,3 +9,3 @@ var<storage> indices: array<u32>;
+ var<storage> src: array<f32>;
+-var<storage> row_scale: array<f32>;
++var<storage> row_scale: array<u32>;
+ var<storage, read_write> dst: array<atomic<u32>>;
+@@ -19,2 +19,43 @@ var<uniform> params: Params;
+ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
++    if params._pad == 3u {
++        let i = gid.x;
++        if i < params.seq_len && src[i] != 0.0 {
++            let row = indices[i];
++            if row < params.total {
++                let next = atomicExchange(&dst[row], i + 1u);
++                atomicStore(&dst[params.total + i], next);
++            }
++        }
++        return;
++    }
++    if params._pad == 4u {
++        let row = gid.x;
++        if row >= params.total { return; }
++        // The build pass can append in any order. Reduce in source-row order.
++        var ids: array<u32, 8>;
++        var n = 0u;
++        var link = row_scale[row];
++        while link != 0u && n < 8u {
++            let id = link - 1u;
++            var j = n;
++            while j > 0u && ids[j - 1u] > id {
++                ids[j] = ids[j - 1u];
++                j -= 1u;
++            }
++            ids[j] = id;
++            n += 1u;
++            link = row_scale[params.total + id];
++        }
++        var sum = 0.0;
++        if link == 0u {
++            for (var j = 0u; j < n; j++) { sum += src[ids[j]]; }
++        } else {
++            // All fan-in sizes use the same order, including dense collisions.
++            for (var j = 0u; j < params.seq_len; j++) {
++                if indices[j] == row { sum += src[j]; }
++            }
++        }
++        atomicStore(&dst[row], bitcast<u32>(sum));
++        return;
++    }
+     if params._pad == 2u {
+@@ -23,3 +64,3 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+
+-        let scale = row_scale[source_row];
++        let scale = bitcast<f32>(row_scale[source_row]);
+         if scale == 0.0 { return; }
+@@ -55,3 +96,3 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+     if params._pad == 1u {
+-        value *= row_scale[source_row];
++        value *= bitcast<f32>(row_scale[source_row]);
+     }
